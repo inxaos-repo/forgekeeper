@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Forgekeeper.Core.Interfaces;
 using Forgekeeper.Infrastructure.Data;
@@ -12,6 +13,8 @@ public class ThumbnailService : IThumbnailService
     private readonly IDbContextFactory<ForgeDbContext> _dbFactory;
     private readonly IConfiguration _config;
     private readonly ILogger<ThumbnailService> _logger;
+    private readonly ConcurrentQueue<Guid> _priorityQueue = new();
+    private bool? _rendererAvailable;
 
     public ThumbnailService(
         IDbContextFactory<ForgeDbContext> dbFactory,
@@ -23,8 +26,64 @@ public class ThumbnailService : IThumbnailService
         _logger = logger;
     }
 
+    /// <summary>
+    /// Enqueue a specific variant for priority thumbnail generation.
+    /// </summary>
+    public void EnqueueVariant(Guid variantId) => _priorityQueue.Enqueue(variantId);
+
+    /// <summary>
+    /// Check whether the configured thumbnail renderer (stl-thumb) is available on PATH.
+    /// Result is cached after first check.
+    /// </summary>
+    public bool IsRendererAvailable()
+    {
+        if (_rendererAvailable.HasValue)
+            return _rendererAvailable.Value;
+
+        var renderer = _config.GetValue("Thumbnails:Renderer", "stl-thumb")!;
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = renderer,
+                Arguments = "--version",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var process = Process.Start(psi);
+            if (process == null)
+            {
+                _rendererAvailable = false;
+            }
+            else
+            {
+                process.WaitForExit(5000);
+                _rendererAvailable = process.ExitCode == 0;
+            }
+        }
+        catch
+        {
+            _rendererAvailable = false;
+        }
+
+        if (!_rendererAvailable.Value)
+            _logger.LogWarning(
+                "Thumbnail renderer '{Renderer}' not found on PATH. Thumbnail generation will be skipped. " +
+                "Install stl-thumb: https://github.com/unlimitedbacon/stl-thumb",
+                renderer);
+        else
+            _logger.LogInformation("Thumbnail renderer '{Renderer}' is available", renderer);
+
+        return _rendererAvailable.Value;
+    }
+
     public async Task GenerateThumbnailAsync(string stlPath, string outputPath, CancellationToken ct = default)
     {
+        if (!IsRendererAvailable())
+            return;
+
         var renderer = _config.GetValue("Thumbnails:Renderer", "stl-thumb");
         var size = _config.GetValue("Thumbnails:Size", "256x256");
 
@@ -49,13 +108,21 @@ public class ThumbnailService : IThumbnailService
                 return;
             }
 
-            await process.WaitForExitAsync(ct);
+            // Use a timeout to avoid hanging on a single file
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
+
+            await process.WaitForExitAsync(timeoutCts.Token);
 
             if (process.ExitCode != 0)
             {
                 var stderr = await process.StandardError.ReadToEndAsync(ct);
                 _logger.LogWarning("Thumbnail generation failed for {Path}: {Error}", stlPath, stderr);
             }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning("Thumbnail generation timed out for {Path}", stlPath);
         }
         catch (Exception ex)
         {
@@ -68,10 +135,25 @@ public class ThumbnailService : IThumbnailService
         if (!_config.GetValue("Thumbnails:Enabled", true))
             return;
 
+        if (!IsRendererAvailable())
+            return;
+
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var basePaths = _config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
         var thumbDir = _config.GetValue("Storage:ThumbnailDir", ".thumbnails")!;
         var format = _config.GetValue("Thumbnails:Format", "webp")!;
+
+        // Process priority queue first (user-requested thumbnails)
+        while (_priorityQueue.TryDequeue(out var variantId))
+        {
+            ct.ThrowIfCancellationRequested();
+            var variant = await db.Variants
+                .Include(v => v.Model)
+                .FirstOrDefaultAsync(v => v.Id == variantId, ct);
+
+            if (variant == null) continue;
+            await GenerateForVariantAsync(variant, basePaths[0], thumbDir, format, db, ct);
+        }
 
         // Find variants without thumbnails (STL/OBJ only)
         var pendingVariants = await db.Variants
@@ -84,26 +166,32 @@ public class ThumbnailService : IThumbnailService
         foreach (var variant in pendingVariants)
         {
             ct.ThrowIfCancellationRequested();
+            await GenerateForVariantAsync(variant, basePaths[0], thumbDir, format, db, ct);
+        }
+    }
 
-            var stlPath = Path.Combine(variant.Model.BasePath, variant.FilePath);
-            if (!File.Exists(stlPath))
-                continue;
+    private async Task GenerateForVariantAsync(
+        Core.Models.Variant variant, string basePath, string thumbDir, string format,
+        ForgeDbContext db, CancellationToken ct)
+    {
+        var stlPath = Path.Combine(variant.Model.BasePath, variant.FilePath);
+        if (!File.Exists(stlPath))
+            return;
 
-            var thumbFileName = $"{variant.Id}.{format}";
-            var thumbPath = Path.Combine(basePaths[0], ".forgekeeper", thumbDir, thumbFileName);
+        var thumbFileName = $"{variant.Id}.{format}";
+        var thumbPath = Path.Combine(basePath, ".forgekeeper", thumbDir, thumbFileName);
 
-            await GenerateThumbnailAsync(stlPath, thumbPath, ct);
+        await GenerateThumbnailAsync(stlPath, thumbPath, ct);
 
-            if (File.Exists(thumbPath))
-            {
-                variant.ThumbnailPath = thumbPath;
+        if (File.Exists(thumbPath))
+        {
+            variant.ThumbnailPath = thumbPath;
 
-                // Also set as model thumbnail if model doesn't have one
-                if (variant.Model.ThumbnailPath == null)
-                    variant.Model.ThumbnailPath = thumbPath;
+            // Also set as model thumbnail if model doesn't have one
+            if (variant.Model.ThumbnailPath == null)
+                variant.Model.ThumbnailPath = thumbPath;
 
-                await db.SaveChangesAsync(ct);
-            }
+            await db.SaveChangesAsync(ct);
         }
     }
 }

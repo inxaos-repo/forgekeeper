@@ -6,6 +6,7 @@ using Forgekeeper.Infrastructure.Services;
 using Forgekeeper.Infrastructure.SourceAdapters;
 using Forgekeeper.Api.BackgroundServices;
 using Forgekeeper.Api.Endpoints;
+using Forgekeeper.Api.Mcp;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
@@ -91,6 +92,20 @@ app.MapStatsEndpoints();
 app.MapVariantEndpoints();
 app.MapSourceEndpoints();
 app.MapPluginEndpoints();
+
+// --- MCP Endpoints ---
+app.MapGet("/mcp/tools", () =>
+    Results.Ok(ForgekeeperMcpServer.GetToolDefinitions()))
+    .WithTags("MCP").WithName("McpListTools");
+
+app.MapPost("/mcp/invoke", async (
+    McpInvokeRequest request,
+    IServiceProvider services,
+    CancellationToken ct) =>
+{
+    var response = await ForgekeeperMcpServer.InvokeAsync(request, services, ct);
+    return response.IsError ? Results.BadRequest(response) : Results.Ok(response);
+}).WithTags("MCP").WithName("McpInvokeTool");
 
 // SPA fallback — serve index.html for non-API, non-file routes
 app.MapFallbackToFile("index.html");

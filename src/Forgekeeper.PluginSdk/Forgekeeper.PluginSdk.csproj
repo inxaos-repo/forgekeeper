@@ -4,10 +4,28 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- NuGet Package Metadata -->
+    <PackageId>Forgekeeper.PluginSdk</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Forgekeeper Contributors</Authors>
+    <Description>Plugin SDK for building Forgekeeper library scraper plugins. Provides interfaces and types for creating custom source integrations (MyMiniFactory, Thangs, Cults3D, Patreon, etc.).</Description>
+    <PackageTags>forgekeeper;3d-printing;stl;plugin;scraper;miniatures;warhammer</PackageTags>
+    <RepositoryUrl>https://github.com/your-org/forgekeeper</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/your-org/forgekeeper</PackageProjectUrl>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

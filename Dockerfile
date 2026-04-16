@@ -1,3 +1,8 @@
+# ============================================================
+# Forgekeeper — Multi-stage Production Build
+# ============================================================
+
+# --- Stage 1: Build .NET backend ---
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
@@ -5,29 +10,89 @@ WORKDIR /src
 COPY Forgekeeper.sln ./
 COPY src/Forgekeeper.Core/Forgekeeper.Core.csproj src/Forgekeeper.Core/
 COPY src/Forgekeeper.Infrastructure/Forgekeeper.Infrastructure.csproj src/Forgekeeper.Infrastructure/
+COPY src/Forgekeeper.PluginSdk/Forgekeeper.PluginSdk.csproj src/Forgekeeper.PluginSdk/
 COPY src/Forgekeeper.Api/Forgekeeper.Api.csproj src/Forgekeeper.Api/
-RUN dotnet restore
 
-# Copy source and build
+# Restore
+RUN dotnet restore src/Forgekeeper.Api/Forgekeeper.Api.csproj
+
+# Copy source and publish
 COPY src/ src/
 RUN dotnet publish src/Forgekeeper.Api/Forgekeeper.Api.csproj -c Release -o /app/publish --no-restore
 
-# Runtime image
+# --- Stage 2: Build plugins ---
+FROM build AS plugins-build
+WORKDIR /src
+
+COPY plugins/ plugins/
+RUN if [ -f plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj ]; then \
+      dotnet publish plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj \
+        -c Release -o /app/plugins/Forgekeeper.Scraper.Mmf --no-restore; \
+    fi
+
+# --- Stage 3: Build Vue.js frontend ---
+FROM node:22-alpine AS frontend-build
+WORKDIR /web
+
+COPY src/Forgekeeper.Web/package*.json ./
+RUN npm ci --ignore-scripts 2>/dev/null || echo "No frontend package.json, skipping"
+
+COPY src/Forgekeeper.Web/ ./
+RUN if [ -f vite.config.ts ] || [ -f vite.config.js ]; then \
+      npm run build; \
+    else \
+      mkdir -p dist && echo '<html><body><h1>Forgekeeper</h1></body></html>' > dist/index.html; \
+    fi
+
+# --- Stage 4: Runtime image ---
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
 # Install stl-thumb for thumbnail generation
+# Using placeholder — replace with actual binary URL for your architecture
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
+    libglib2.0-0 \
+    libgl1-mesa-glx \
+    libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# stl-thumb would be installed here — placeholder for actual binary
-# RUN wget -qO /usr/local/bin/stl-thumb https://github.com/unlimitedbacon/stl-thumb/releases/download/v0.5.0/stl-thumb-linux-x86_64 \
-#     && chmod +x /usr/local/bin/stl-thumb
+# stl-thumb installation (uncomment and set correct URL for your platform)
+# AMD64:
+# RUN wget -qO /tmp/stl-thumb.deb https://github.com/unlimitedbacon/stl-thumb/releases/download/v0.5.0/stl-thumb_0.5.0_amd64.deb \
+#     && dpkg -i /tmp/stl-thumb.deb || apt-get install -f -y \
+#     && rm /tmp/stl-thumb.deb
+# ARM64:
+# RUN wget -qO /tmp/stl-thumb.deb https://github.com/unlimitedbacon/stl-thumb/releases/download/v0.5.0/stl-thumb_0.5.0_arm64.deb \
+#     && dpkg -i /tmp/stl-thumb.deb || apt-get install -f -y \
+#     && rm /tmp/stl-thumb.deb
 
+# Copy published application
 COPY --from=build /app/publish .
 
-ENV ASPNETCORE_URLS=http://+:5000
+# Copy plugins
+COPY --from=plugins-build /app/plugins /app/plugins
+
+# Copy frontend build output to wwwroot for static file serving
+COPY --from=frontend-build /web/dist ./wwwroot/
+
+# Create directories for runtime data
+RUN mkdir -p /app/plugins /data
+
+# Environment defaults
+ENV ASPNETCORE_URLS=http://+:5000 \
+    ASPNETCORE_ENVIRONMENT=Production \
+    Forgekeeper__PluginsDirectory=/app/plugins \
+    Storage__ThumbnailDir=.thumbnails \
+    Thumbnails__Enabled=true \
+    Thumbnails__Renderer=stl-thumb \
+    Thumbnails__Size=256x256 \
+    Thumbnails__Format=webp
+
 EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD wget -qO- http://localhost:5000/health || exit 1
 
 ENTRYPOINT ["dotnet", "Forgekeeper.Api.dll"]

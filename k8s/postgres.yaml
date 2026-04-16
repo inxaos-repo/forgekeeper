@@ -1,0 +1,61 @@
+---
+# CloudNativePG (CNPG) Cluster for Forgekeeper
+# Requires: CNPG operator installed in the cluster
+# Docs: https://cloudnative-pg.io/documentation/
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: forgekeeper-db
+  namespace: forgekeeper
+spec:
+  instances: 2  # Primary + 1 replica for HA
+
+  postgresql:
+    parameters:
+      shared_buffers: "256MB"
+      effective_cache_size: "768MB"
+      maintenance_work_mem: "64MB"
+      max_connections: "100"
+    pg_hba:
+      - host forgekeeper forgekeeper all md5
+
+  bootstrap:
+    initdb:
+      database: forgekeeper
+      owner: forgekeeper
+      secret:
+        name: forgekeeper-db-credentials
+      postInitSQL:
+        - CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+  storage:
+    size: 10Gi
+    storageClass: longhorn  # Adjust to your storage class
+
+  monitoring:
+    enablePodMonitor: true
+
+  backup:
+    barmanObjectStore:
+      destinationPath: "s3://backups/forgekeeper/"
+      endpointURL: "https://s3.example.com"
+      s3Credentials:
+        accessKeyId:
+          name: forgekeeper-s3-creds
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: forgekeeper-s3-creds
+          key: SECRET_ACCESS_KEY
+    retentionPolicy: "30d"
+
+---
+# Database credentials secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: forgekeeper-db-credentials
+  namespace: forgekeeper
+type: kubernetes.io/basic-auth
+stringData:
+  username: forgekeeper
+  password: change-me-in-production  # Use sealed-secrets or external-secrets in real deployments

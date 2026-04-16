@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "Forgekeeper Contributors",
+  "classifications": ["Plugin", "3D Printing", "Forgekeeper"],
+  "identity": "Forgekeeper.Scraper.Template",
+  "name": "Forgekeeper Library Scraper Plugin",
+  "shortName": "forgekeeper-scraper",
+  "description": "A template for creating a Forgekeeper library scraper plugin that integrates with a 3D model source.",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "sourceName": "MySourceScraper",
+  "preferNameDirectory": true,
+  "symbols": {
+    "sourceSlug": {
+      "type": "parameter",
+      "datatype": "string",
+      "description": "URL-safe slug for the source (e.g., 'mysource')",
+      "defaultValue": "mysource",
+      "replaces": "mysource"
+    },
+    "sourceName": {
+      "type": "parameter",
+      "datatype": "string",
+      "description": "Human-readable source name (e.g., 'My Source')",
+      "defaultValue": "My Source",
+      "replaces": "My Source"
+    }
+  }
+}

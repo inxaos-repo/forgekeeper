@@ -1,22 +1,46 @@
 services:
   forgekeeper:
     build: .
+    restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
       - ConnectionStrings__ForgeDb=Host=postgres;Port=5432;Database=forgekeeper;Username=forgekeeper;Password=forgekeeper
       - Storage__BasePaths__0=/mnt/3dprinting
+      - Storage__ThumbnailDir=.thumbnails
+      - Forgekeeper__PluginsDirectory=/app/plugins
+      - Forgekeeper__SourcesDirectory=/mnt/3dprinting/sources
+      - Thumbnails__Enabled=true
+      - Thumbnails__Renderer=stl-thumb
+      - Thumbnails__Size=256x256
+      - Thumbnails__Format=webp
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5000
     volumes:
-      # Mount your 3D printing collection here
-      - ./sample-data:/mnt/3dprinting
+      # Mount your 3D printing collection — READ-ONLY if you don't need import/scan to move files
+      - /path/to/3dprinting:/mnt/3dprinting
+      # Plugin directory for custom scrapers
+      - ./plugins-runtime:/app/plugins
+      # Persistent data (thumbnails, cache)
+      - forgekeeper-data:/data
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
 
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: forgekeeper
       POSTGRES_USER: forgekeeper
@@ -31,6 +55,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
 
 volumes:
   pgdata:
+  forgekeeper-data:
