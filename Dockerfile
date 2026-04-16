@@ -6,18 +6,22 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-# Copy solution and project files first for layer caching
+# Copy solution and ALL project files for layer caching
 COPY Forgekeeper.sln ./
 COPY src/Forgekeeper.Core/Forgekeeper.Core.csproj src/Forgekeeper.Core/
 COPY src/Forgekeeper.Infrastructure/Forgekeeper.Infrastructure.csproj src/Forgekeeper.Infrastructure/
 COPY src/Forgekeeper.PluginSdk/Forgekeeper.PluginSdk.csproj src/Forgekeeper.PluginSdk/
 COPY src/Forgekeeper.Api/Forgekeeper.Api.csproj src/Forgekeeper.Api/
+COPY tests/Forgekeeper.Tests/Forgekeeper.Tests.csproj tests/Forgekeeper.Tests/
+COPY plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj plugins/Forgekeeper.Scraper.Mmf/
 
-# Restore
+# Restore full solution
 RUN dotnet restore
 
-# Copy source and publish
+# Copy all source and publish
 COPY src/ src/
+COPY tests/ tests/
+COPY plugins/ plugins/
 RUN dotnet publish src/Forgekeeper.Api/Forgekeeper.Api.csproj -c Release -o /app/publish --no-restore
 
 # --- Stage 2: Build plugins ---
