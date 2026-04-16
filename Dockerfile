@@ -14,7 +14,7 @@ COPY src/Forgekeeper.PluginSdk/Forgekeeper.PluginSdk.csproj src/Forgekeeper.Plug
 COPY src/Forgekeeper.Api/Forgekeeper.Api.csproj src/Forgekeeper.Api/
 
 # Restore
-RUN dotnet restore src/Forgekeeper.Api/Forgekeeper.Api.csproj
+RUN dotnet restore
 
 # Copy source and publish
 COPY src/ src/
