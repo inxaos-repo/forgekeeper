@@ -1,7 +1,9 @@
 using Forgekeeper.Core.DTOs;
 using Forgekeeper.Core.Interfaces;
 using Forgekeeper.Core.Models;
+using Forgekeeper.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace Forgekeeper.Api.Endpoints;
 
@@ -174,5 +176,263 @@ public static class ModelEndpoints
             await repo.UpdateAsync(model, ct);
             return Results.Ok(model.Components);
         }).WithName("UpdateComponents");
+
+        // --- Thumbnail (model-level) ---
+
+        group.MapGet("/{id:guid}/thumbnail", async (
+            Guid id,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            var model = await db.Models
+                .Include(m => m.Variants)
+                .FirstOrDefaultAsync(m => m.Id == id, ct);
+
+            if (model == null) return Results.NotFound();
+
+            // 1. Use model's own thumbnail if set
+            if (!string.IsNullOrEmpty(model.ThumbnailPath) && File.Exists(model.ThumbnailPath))
+                return Results.File(model.ThumbnailPath, "image/webp");
+
+            // 2. Try first variant with a thumbnail
+            var variantThumb = model.Variants
+                .Where(v => !string.IsNullOrEmpty(v.ThumbnailPath))
+                .Select(v => v.ThumbnailPath)
+                .FirstOrDefault();
+
+            if (variantThumb != null && File.Exists(variantThumb))
+                return Results.File(variantThumb, "image/webp");
+
+            // 3. Try first preview image
+            if (model.PreviewImages.Count > 0)
+            {
+                var previewPath = Path.Combine(model.BasePath, model.PreviewImages[0]);
+                if (File.Exists(previewPath))
+                {
+                    var ext = Path.GetExtension(previewPath).ToLowerInvariant();
+                    var mime = ext switch
+                    {
+                        ".webp" => "image/webp",
+                        ".png" => "image/png",
+                        ".jpg" or ".jpeg" => "image/jpeg",
+                        ".gif" => "image/gif",
+                        _ => "application/octet-stream"
+                    };
+                    return Results.File(previewPath, mime);
+                }
+            }
+
+            return Results.NotFound();
+        }).WithName("GetModelThumbnail");
+
+        // --- Related Models ---
+
+        group.MapGet("/{id:guid}/related", async (
+            Guid id,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            var model = await db.Models
+                .Include(m => m.RelationsFrom).ThenInclude(r => r.RelatedModel)
+                .Include(m => m.RelationsTo).ThenInclude(r => r.Model)
+                .FirstOrDefaultAsync(m => m.Id == id, ct);
+
+            if (model == null) return Results.NotFound();
+
+            var related = model.RelationsFrom
+                .Select(r => new RelatedModelSummary
+                {
+                    Id = r.RelatedModelId,
+                    Name = r.RelatedModel?.Name ?? "",
+                    ThumbnailPath = r.RelatedModel?.ThumbnailPath,
+                    RelationType = r.RelationType,
+                })
+                .Concat(model.RelationsTo
+                    .Select(r => new RelatedModelSummary
+                    {
+                        Id = r.ModelId,
+                        Name = r.Model?.Name ?? "",
+                        ThumbnailPath = r.Model?.ThumbnailPath,
+                        RelationType = r.RelationType,
+                    }))
+                .ToList();
+
+            return Results.Ok(related);
+        }).WithName("GetRelatedModels");
+
+        group.MapPost("/{id:guid}/related", async (
+            Guid id,
+            [FromBody] AddRelationRequest request,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            var model = await db.Models.FindAsync([id], ct);
+            if (model == null) return Results.NotFound(new { message = $"Model {id} not found" });
+
+            var relatedModel = await db.Models.FindAsync([request.RelatedModelId], ct);
+            if (relatedModel == null) return Results.NotFound(new { message = $"Related model {request.RelatedModelId} not found" });
+
+            // Check for existing relation
+            var exists = await db.ModelRelations.AnyAsync(
+                r => r.ModelId == id && r.RelatedModelId == request.RelatedModelId && r.RelationType == request.RelationType, ct);
+            if (exists)
+                return Results.Conflict(new { message = "Relation already exists" });
+
+            var relation = new ModelRelation
+            {
+                Id = Guid.NewGuid(),
+                ModelId = id,
+                RelatedModelId = request.RelatedModelId,
+                RelationType = request.RelationType,
+            };
+
+            db.ModelRelations.Add(relation);
+            await db.SaveChangesAsync(ct);
+
+            return Results.Created($"/api/v1/models/{id}/related", new RelatedModelSummary
+            {
+                Id = request.RelatedModelId,
+                Name = relatedModel.Name,
+                ThumbnailPath = relatedModel.ThumbnailPath,
+                RelationType = request.RelationType,
+            });
+        }).WithName("AddRelation");
+
+        // --- Bulk Update ---
+
+        group.MapPost("/bulk", async (
+            [FromBody] BulkUpdateRequest request,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            if (request.ModelIds.Count == 0)
+                return Results.BadRequest(new { message = "No model IDs provided" });
+
+            if (request.ModelIds.Count > 500)
+                return Results.BadRequest(new { message = "Maximum 500 models per bulk operation" });
+
+            var models = await db.Models
+                .Include(m => m.Tags)
+                .Where(m => request.ModelIds.Contains(m.Id))
+                .ToListAsync(ct);
+
+            if (models.Count == 0)
+                return Results.NotFound(new { message = "No matching models found" });
+
+            switch (request.Operation.ToLowerInvariant())
+            {
+                case "tag":
+                    var tagName = request.Value.ToLowerInvariant().Trim();
+                    var tag = await db.Tags.FirstOrDefaultAsync(t => t.Name == tagName, ct);
+                    if (tag == null)
+                    {
+                        tag = new Tag { Id = Guid.NewGuid(), Name = tagName };
+                        db.Tags.Add(tag);
+                    }
+                    foreach (var m in models)
+                    {
+                        if (!m.Tags.Any(t => t.Name == tagName))
+                            m.Tags.Add(tag);
+                    }
+                    break;
+
+                case "categorize":
+                    foreach (var m in models) m.Category = request.Value;
+                    break;
+
+                case "setgamesystem":
+                    foreach (var m in models) m.GameSystem = request.Value;
+                    break;
+
+                case "setscale":
+                    foreach (var m in models) m.Scale = request.Value;
+                    break;
+
+                case "setrating":
+                    if (int.TryParse(request.Value, out var rating) && rating >= 1 && rating <= 5)
+                        foreach (var m in models) m.Rating = rating;
+                    else
+                        return Results.BadRequest(new { message = "Rating must be 1-5" });
+                    break;
+
+                case "setlicense":
+                    foreach (var m in models) m.LicenseType = request.Value;
+                    break;
+
+                default:
+                    return Results.BadRequest(new { message = $"Unknown operation: {request.Operation}" });
+            }
+
+            foreach (var m in models)
+                m.UpdatedAt = DateTime.UtcNow;
+
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new BulkUpdateResponse
+            {
+                AffectedCount = models.Count,
+                Operation = request.Operation,
+                Value = request.Value,
+            });
+        }).WithName("BulkUpdateModels");
+
+        // --- Duplicates ---
+
+        group.MapGet("/duplicates", async (
+            ForgeDbContext db,
+            [FromQuery] double? minSimilarity,
+            [FromQuery] int? limit,
+            CancellationToken ct) =>
+        {
+            var threshold = minSimilarity ?? 0.7;
+            var maxResults = Math.Clamp(limit ?? 50, 1, 200);
+
+            // Find models with exact duplicate names (different creators or sources)
+            var nameDupes = await db.Models
+                .Include(m => m.Creator)
+                .GroupBy(m => m.Name.ToLower())
+                .Where(g => g.Count() > 1)
+                .Take(maxResults)
+                .Select(g => new DuplicateGroup
+                {
+                    MatchType = "name",
+                    Similarity = 1.0,
+                    Models = g.Select(m => new DuplicateModel
+                    {
+                        Id = m.Id,
+                        Name = m.Name,
+                        CreatorName = m.Creator.Name,
+                        BasePath = m.BasePath,
+                        TotalSizeBytes = m.TotalSizeBytes,
+                    }).ToList(),
+                })
+                .ToListAsync(ct);
+
+            // Find models with duplicate file hashes (cross-source dedup)
+            var hashDupes = await db.Variants
+                .Where(v => v.FileHash != null && v.FileHash != "")
+                .GroupBy(v => v.FileHash!)
+                .Where(g => g.Count() > 1)
+                .Take(maxResults)
+                .Select(g => new DuplicateGroup
+                {
+                    MatchType = "hash",
+                    Similarity = 1.0,
+                    Models = g.Select(v => v.Model)
+                        .Distinct()
+                        .Select(m => new DuplicateModel
+                        {
+                            Id = m.Id,
+                            Name = m.Name,
+                            CreatorName = m.Creator.Name,
+                            BasePath = m.BasePath,
+                            TotalSizeBytes = m.TotalSizeBytes,
+                        }).ToList(),
+                })
+                .ToListAsync(ct);
+
+            var results = nameDupes.Concat(hashDupes).Take(maxResults).ToList();
+            return Results.Ok(results);
+        }).WithName("FindDuplicates");
     }
 }

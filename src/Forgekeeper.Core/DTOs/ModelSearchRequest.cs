@@ -18,6 +18,16 @@ public class ModelSearchRequest
     public string? CollectionName { get; set; }
 
     /// <summary>
+    /// Filter by tag name(s). Comma-separated for multiple tags.
+    /// </summary>
+    public string? Tags { get; set; }
+
+    /// <summary>
+    /// Filter by creator name (substring match).
+    /// </summary>
+    public string? Creator { get; set; }
+
+    /// <summary>
     /// Filter by acquisition method (Purchase, Subscription, Free, Campaign, Gift).
     /// </summary>
     public AcquisitionMethod? AcquisitionMethod { get; set; }

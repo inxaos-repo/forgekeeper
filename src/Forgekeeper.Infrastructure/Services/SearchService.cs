@@ -77,6 +77,25 @@ public class SearchService : ISearchService
         if (!string.IsNullOrEmpty(request.CollectionName))
             query = query.Where(m => m.CollectionName == request.CollectionName);
 
+        // Tag filter: comma-separated list, model must have ALL specified tags
+        if (!string.IsNullOrEmpty(request.Tags))
+        {
+            var tagNames = request.Tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(t => t.ToLowerInvariant())
+                .ToList();
+            foreach (var tagName in tagNames)
+            {
+                query = query.Where(m => m.Tags.Any(t => t.Name == tagName));
+            }
+        }
+
+        // Creator name filter (substring match)
+        if (!string.IsNullOrEmpty(request.Creator))
+        {
+            var creatorSearch = request.Creator.Trim();
+            query = query.Where(m => EF.Functions.ILike(m.Creator.Name, $"%{creatorSearch}%"));
+        }
+
         if (request.AcquisitionMethod.HasValue)
             query = query.Where(m => m.AcquisitionMethod == request.AcquisitionMethod.Value);
 

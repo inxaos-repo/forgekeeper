@@ -215,16 +215,38 @@ public class ImportService : IImportService
         var name = Path.GetFileName(path);
         var isDirectory = Directory.Exists(path);
 
-        // Try to detect creator by matching against known creators
-        var knownCreators = _db.Creators.Select(c => c.Name).ToList();
+        // Try to detect creator by matching against known creators (fuzzy)
+        var knownCreators = _db.Creators
+            .Select(c => new { c.Name, c.Source })
+            .ToList();
         foreach (var creator in knownCreators)
         {
-            if (name.Contains(creator, StringComparison.OrdinalIgnoreCase))
+            if (name.Contains(creator.Name, StringComparison.OrdinalIgnoreCase))
             {
-                item.DetectedCreator = creator;
+                item.DetectedCreator = creator.Name;
+                item.DetectedSource = creator.Source;
                 item.ConfidenceScore += 0.4;
                 break;
             }
+        }
+
+        // Try to detect source from common filename patterns
+        if (item.DetectedSource == null)
+        {
+            var nameLower = name.ToLowerInvariant();
+            if (nameLower.Contains("mmf") || nameLower.Contains("myminifactory"))
+                item.DetectedSource = SourceType.Mmf;
+            else if (nameLower.Contains("patreon"))
+                item.DetectedSource = SourceType.Patreon;
+            else if (nameLower.Contains("thangs"))
+                item.DetectedSource = SourceType.Thangs;
+            else if (nameLower.Contains("cults") || nameLower.Contains("cults3d"))
+                item.DetectedSource = SourceType.Cults3d;
+            else if (nameLower.Contains("thingiverse"))
+                item.DetectedSource = SourceType.Thingiverse;
+
+            if (item.DetectedSource != null)
+                item.ConfidenceScore += 0.2;
         }
 
         // If directory, check for variant subfolders (indicates 3D model collection)
@@ -234,18 +256,46 @@ public class ImportService : IImportService
             var hasVariants = subdirs.Any(d =>
                 d != null && (d.Equals("supported", StringComparison.OrdinalIgnoreCase) ||
                              d.Equals("unsupported", StringComparison.OrdinalIgnoreCase) ||
-                             d.Equals("presupported", StringComparison.OrdinalIgnoreCase)));
+                             d.Equals("presupported", StringComparison.OrdinalIgnoreCase) ||
+                             d.Equals("lychee", StringComparison.OrdinalIgnoreCase)));
 
             if (hasVariants)
             {
-                item.ConfidenceScore += 0.3;
+                item.ConfidenceScore += 0.2;
                 item.DetectedModelName = name;
             }
 
-            // Check for metadata.json
+            // Check for metadata.json — big confidence boost
             if (File.Exists(Path.Combine(path, "metadata.json")))
             {
                 item.ConfidenceScore += 0.3;
+
+                // Try to extract info from metadata.json
+                try
+                {
+                    var json = File.ReadAllText(Path.Combine(path, "metadata.json"));
+                    var metadata = System.Text.Json.JsonSerializer.Deserialize<SourceMetadata>(json,
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                    if (metadata != null)
+                    {
+                        item.DetectedModelName ??= metadata.Name;
+                        item.DetectedCreator ??= metadata.Creator?.DisplayName ?? metadata.Creator?.Username;
+
+                        if (Enum.TryParse<SourceType>(metadata.Source, true, out var src))
+                            item.DetectedSource ??= src;
+                    }
+                }
+                catch { /* metadata parse failure is non-fatal */ }
+            }
+
+            // Check if it has model files at all
+            var hasModelFiles = Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+                .Any(f => ModelExtensions.Contains(Path.GetExtension(f)));
+            if (hasModelFiles)
+            {
+                item.DetectedModelName ??= name;
+                item.ConfidenceScore += 0.1;
             }
         }
         else
@@ -259,7 +309,10 @@ public class ImportService : IImportService
             }
         }
 
-        item.Status = item.ConfidenceScore >= 0.7
+        // Cap confidence at 1.0
+        item.ConfidenceScore = Math.Min(item.ConfidenceScore, 1.0);
+
+        item.Status = item.ConfidenceScore >= 0.8
             ? ImportStatus.AutoSorted
             : ImportStatus.AwaitingReview;
 
