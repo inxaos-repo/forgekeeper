@@ -35,13 +35,20 @@ FROM node:22-alpine AS frontend-build
 WORKDIR /web
 
 COPY src/Forgekeeper.Web/package*.json ./
-RUN npm ci --ignore-scripts 2>/dev/null || echo "No frontend package.json, skipping"
+# Use npm install (not ci) since we may not have a lock file
+RUN npm install 2>&1 || echo "npm install failed, continuing with placeholder"
 
 COPY src/Forgekeeper.Web/ ./
-RUN if [ -f vite.config.ts ] || [ -f vite.config.js ]; then \
-      npm run build; \
+RUN if [ -f node_modules/.bin/vite ]; then \
+      npx vite build; \
+    elif [ -f vite.config.ts ] || [ -f vite.config.js ]; then \
+      npm install && npx vite build; \
     else \
-      mkdir -p dist && echo '<html><body><h1>Forgekeeper</h1></body></html>' > dist/index.html; \
+      echo "No Vite found, using placeholder"; \
+    fi && \
+    mkdir -p dist && \
+    if [ ! -f dist/index.html ]; then \
+      echo '<html><body><h1>Forgekeeper</h1></body></html>' > dist/index.html; \
     fi
 
 # --- Stage 4: Runtime image ---
