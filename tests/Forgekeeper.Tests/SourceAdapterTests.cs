@@ -1,3 +1,4 @@
+using Xunit;
 using Forgekeeper.Core.Enums;
 using Forgekeeper.Infrastructure.SourceAdapters;
 

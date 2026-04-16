@@ -49,6 +49,27 @@ public class Model3D
     public string? CollectionName { get; set; }
 
     /// <summary>
+    /// Published date from metadata.json dates.published
+    /// </summary>
+    public DateTime? PublishedAt { get; set; }
+
+    /// <summary>
+    /// Print settings stored as JSONB from metadata.json printSettings field.
+    /// </summary>
+    public PrintSettingsInfo? PrintSettings { get; set; }
+
+    /// <summary>
+    /// How the model was acquired (purchase, subscription, free, campaign, gift).
+    /// Denormalized from metadata.json acquisition.method for filtering.
+    /// </summary>
+    public AcquisitionMethod? AcquisitionMethod { get; set; }
+
+    /// <summary>
+    /// Order or campaign ID from the acquisition, if applicable.
+    /// </summary>
+    public string? AcquisitionOrderId { get; set; }
+
+    /// <summary>
     /// Computed from PrintHistory — true if any print was successful.
     /// Not stored in database; computed on read.
     /// </summary>
@@ -66,4 +87,8 @@ public class Model3D
     public Source? SourceEntity { get; set; }
     public List<Variant> Variants { get; set; } = [];
     public List<Tag> Tags { get; set; } = [];
+
+    // Model relations (self-referencing many-to-many)
+    public List<ModelRelation> RelationsFrom { get; set; } = [];
+    public List<ModelRelation> RelationsTo { get; set; } = [];
 }

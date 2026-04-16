@@ -14,6 +14,7 @@ public class ForgeDbContext : DbContext
     public DbSet<Source> Sources => Set<Source>();
     public DbSet<ImportQueueItem> ImportQueue => Set<ImportQueueItem>();
     public DbSet<ScanState> ScanStates => Set<ScanState>();
+    public DbSet<ModelRelation> ModelRelations => Set<ModelRelation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -61,10 +62,17 @@ public class ForgeDbContext : DbContext
             entity.Property(e => e.Extra).HasColumnType("jsonb");
             entity.Property(e => e.LicenseType).HasMaxLength(100);
             entity.Property(e => e.CollectionName).HasMaxLength(500);
+            entity.Property(e => e.AcquisitionOrderId).HasMaxLength(200);
+
+            // Enum stored as string
+            entity.Property(e => e.AcquisitionMethod)
+                .HasConversion<string>()
+                .HasMaxLength(50);
 
             // JSONB columns
             entity.Property(e => e.PrintHistory).HasColumnType("jsonb");
             entity.Property(e => e.Components).HasColumnType("jsonb");
+            entity.Property(e => e.PrintSettings).HasColumnType("jsonb");
 
             // Printed is a computed property, ignore it for EF
             entity.Ignore(e => e.Printed);
@@ -87,16 +95,29 @@ public class ForgeDbContext : DbContext
                     l => l.HasOne(typeof(Tag)).WithMany().HasForeignKey("TagId"),
                     r => r.HasOne(typeof(Model3D)).WithMany().HasForeignKey("ModelId"));
 
+            // Indexes
             entity.HasIndex(e => e.BasePath).IsUnique();
             entity.HasIndex(e => e.CreatorId);
             entity.HasIndex(e => e.Source);
-            entity.HasIndex(e => e.Category);
-            entity.HasIndex(e => e.GameSystem);
             entity.HasIndex(e => e.LicenseType);
             entity.HasIndex(e => e.CollectionName);
+            entity.HasIndex(e => e.AcquisitionMethod);
+
+            // Partial indexes for nullable filter columns
+            entity.HasIndex(e => e.Category)
+                .HasFilter("category IS NOT NULL");
+            entity.HasIndex(e => e.GameSystem)
+                .HasFilter("game_system IS NOT NULL");
+
+            // pg_trgm GIN index on name for fuzzy search
             entity.HasIndex(e => e.Name)
                 .HasMethod("gin")
                 .HasOperators("gin_trgm_ops");
+
+            // GIN index on extra JSONB for metadata queries
+            entity.HasIndex(e => e.Extra)
+                .HasMethod("gin")
+                .HasOperators("jsonb_path_ops");
         });
 
         // Variant
@@ -110,6 +131,7 @@ public class ForgeDbContext : DbContext
             entity.Property(e => e.FileName).HasMaxLength(500).IsRequired();
             entity.Property(e => e.FileType).HasConversion<string>().HasMaxLength(50);
             entity.Property(e => e.ThumbnailPath).HasMaxLength(1000);
+            entity.Property(e => e.FileHash).HasMaxLength(200);
 
             // JSONB column for physical properties
             entity.Property(e => e.PhysicalProperties).HasColumnType("jsonb");
@@ -130,7 +152,30 @@ public class ForgeDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
             entity.Property(e => e.Name).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Source).HasMaxLength(50);
             entity.HasIndex(e => e.Name).IsUnique();
+        });
+
+        // ModelRelation (WP18: self-referencing many-to-many)
+        modelBuilder.Entity<ModelRelation>(entity =>
+        {
+            entity.ToTable("model_relations");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.RelationType).HasMaxLength(50).IsRequired();
+
+            entity.HasOne(e => e.Model)
+                .WithMany(m => m.RelationsFrom)
+                .HasForeignKey(e => e.ModelId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.RelatedModel)
+                .WithMany(m => m.RelationsTo)
+                .HasForeignKey(e => e.RelatedModelId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Prevent duplicate relations
+            entity.HasIndex(e => new { e.ModelId, e.RelatedModelId, e.RelationType }).IsUnique();
         });
 
         // ImportQueueItem

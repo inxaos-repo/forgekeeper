@@ -16,6 +16,22 @@ public class ModelSearchRequest
     public int? MinRating { get; set; }
     public string? LicenseType { get; set; }
     public string? CollectionName { get; set; }
+
+    /// <summary>
+    /// Filter by acquisition method (Purchase, Subscription, Free, Campaign, Gift).
+    /// </summary>
+    public AcquisitionMethod? AcquisitionMethod { get; set; }
+
+    /// <summary>
+    /// Filter models published on or after this date.
+    /// </summary>
+    public DateTime? PublishedAfter { get; set; }
+
+    /// <summary>
+    /// Filter models published on or before this date.
+    /// </summary>
+    public DateTime? PublishedBefore { get; set; }
+
     public string? SortBy { get; set; } = "name";
     public bool SortDescending { get; set; }
     public int Page { get; set; } = 1;

@@ -22,6 +22,10 @@ public class ModelRepository : IModelRepository
             .Include(m => m.SourceEntity)
             .Include(m => m.Variants)
             .Include(m => m.Tags)
+            .Include(m => m.RelationsFrom)
+                .ThenInclude(r => r.RelatedModel)
+            .Include(m => m.RelationsTo)
+                .ThenInclude(r => r.Model)
             .FirstOrDefaultAsync(m => m.Id == id, ct);
     }
 

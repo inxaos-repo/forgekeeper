@@ -1,13 +1,39 @@
+# .NET
 bin/
 obj/
 *.user
 *.suo
+*.userosscache
+*.sln.docstates
 .vs/
+*.DotSettings.user
+
+# IDE
+.idea/
 *.swp
 *~
-.idea/
-*.DotSettings.user
+.vscode/
+
+# Node / Frontend
 node_modules/
 dist/
 .env
+.env.local
+.env.*.local
+
+# Build artifacts
+out/
+publish/
+artifacts/
+TestResults/
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Project-specific
 sample-data/
+*.bak
+*.tmp

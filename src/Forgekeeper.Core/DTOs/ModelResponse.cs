@@ -27,6 +27,9 @@ public class ModelResponse
     public string? Notes { get; set; }
     public string? LicenseType { get; set; }
     public string? CollectionName { get; set; }
+    public AcquisitionMethod? AcquisitionMethod { get; set; }
+    public string? AcquisitionOrderId { get; set; }
+    public DateTime? PublishedAt { get; set; }
     public List<string> Tags { get; set; } = [];
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
@@ -37,6 +40,19 @@ public class ModelDetailResponse : ModelResponse
     public List<VariantResponse> Variants { get; set; } = [];
     public List<PrintHistoryEntry>? PrintHistory { get; set; }
     public List<ComponentInfo>? Components { get; set; }
+    public PrintSettingsInfo? PrintSettings { get; set; }
+    public List<RelatedModelSummary> RelatedModels { get; set; } = [];
+}
+
+/// <summary>
+/// Lightweight summary of a related model for API responses.
+/// </summary>
+public class RelatedModelSummary
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? ThumbnailPath { get; set; }
+    public string RelationType { get; set; } = string.Empty;
 }
 
 public class VariantResponse
