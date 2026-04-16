@@ -31,7 +31,7 @@ WORKDIR /src
 COPY plugins/ plugins/
 RUN if [ -f plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj ]; then \
       dotnet publish plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj \
-        -c Release -o /app/plugins/Forgekeeper.Scraper.Mmf --no-restore; \
+        -c Release -o /app/plugins/Forgekeeper.Scraper.Mmf; \
     fi
 
 # --- Stage 3: Build Vue.js frontend ---
