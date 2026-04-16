@@ -62,7 +62,7 @@ Each source has an adapter (implementing `ISourceAdapter`) that handles scanning
 
 | Source | Adapter | Auto-Scan | Notes |
 |--------|---------|-----------|-------|
-| **mmf** | `MmfSourceAdapter` | Yes | MMFDownloader output = canonical schema (Damon's custom app) |
+| **mmf** | `MmfSourceAdapter` | Yes | MMFDownloader output = canonical schema (a custom downloader app) |
 | **thangs** | `GenericSourceAdapter` | Yes | Creator/Model structure |
 | **patreon** | `PatreonSourceAdapter` | Yes | Date-based releases (YYYY-MM/) |
 | **cults3d** | `GenericSourceAdapter` | Yes | Simpler structure |
@@ -95,7 +95,7 @@ When files land in `/unsorted/`:
 
 ### MMFDownloader Integration
 
-MMFDownloader (Damon's custom app) output IS the canonical format. The `MmfSourceAdapter` is the reference implementation. Other adapters map their structure INTO this same pattern on disk. Future: add `metadata.json` output to MMFDownloader with source URL, download date, model ID.
+MMFDownloader (a custom downloader app) output IS the canonical format. The `MmfSourceAdapter` is the reference implementation. Other adapters map their structure INTO this same pattern on disk. Future: add `metadata.json` output to MMFDownloader with source URL, download date, model ID.
 
 ### Unified UX
 
@@ -709,7 +709,7 @@ GET    /api/v1/stats/creators            # Per-creator stats
 
 ---
 
-## Open Questions for Damon
+## Open Questions
 
 1. **Do you want to modify the existing folder structure**, or should Forgekeeper be read-only against the current layout?
 2. **Are there other folder patterns** beyond MMFDownloader that I should account for? (Thingiverse downloads, manual saves, etc.)
@@ -1086,9 +1086,9 @@ unsorted/
 - **Future scale:** Must handle **500K+ files** without degradation
 
 ### Developer Context
-- **Owner:** Damon Prater — experienced C# developer, will maintain this long-term
+- **Owner:** The project owner — experienced C# developer
 - **This is a personal project** — code clarity and maintainability over enterprise patterns
-- **Damon's preference:** Clean, pragmatic C# — not over-engineered, not sloppy
+- **Preference:** Clean, pragmatic C# — not over-engineered, not sloppy
 - **Testing approach:** Integration tests over mocks where practical (Testcontainers for PostgreSQL)
 
 ### MMF Scraper Plugin
@@ -1114,12 +1114,12 @@ unsorted/
 
 | Consideration | Decision |
 |---------------|----------|
-| **Owner's primary language** | Damon writes C# professionally — this ensures long-term maintainability |
+| **Owner's primary language** | The owner writes C# professionally — ensures long-term maintainability |
 | **Performance** | .NET 9 is competitive with Go/Rust for I/O-bound workloads; AOT compilation available |
 | **Ecosystem** | Rich NuGet ecosystem for EF Core, file handling, image processing |
 | **Container support** | First-class Docker/k8s support, small runtime-deps images |
 
-> **Rejected:** Python/FastAPI (Damon's less fluent, runtime performance concerns at scale), Go (less comfortable for rapid iteration), Rust (overkill for a CRUD+files app).
+> **Rejected:** Python/FastAPI (less preferred, runtime performance concerns at scale), Go (less comfortable for rapid iteration), Rust (overkill for a CRUD+files app).
 
 ### Why Minimal APIs over Controllers
 
@@ -1162,7 +1162,7 @@ unsorted/
 | **Lightweight** | Smaller bundle than React/Angular for a relatively simple SPA |
 | **Composition API** | Clean composable functions (`useSearch`, `useModels`) — natural fit for this project |
 | **Three.js integration** | Well-documented Vue + Three.js patterns; `TresJS` or raw integration both work |
-| **Learning curve** | Damon can pick up Vue quickly — simpler mental model than React hooks |
+| **Learning curve** | Developers can pick up Vue quickly — simpler mental model than React hooks |
 
 ### Why Three.js for 3D Preview
 
