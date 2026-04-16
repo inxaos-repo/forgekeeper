@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+/* Forgekeeper Dark Theme — Tailwind v4 CSS-based config */
+@theme {
+  --color-forge-bg: #1a1a2e;
+  --color-forge-surface: #16213e;
+  --color-forge-card: #1e2a4a;
+  --color-forge-border: #2a3a5e;
+  --color-forge-accent: #4ecca3;
+  --color-forge-accent-hover: #3db890;
+  --color-forge-text: #e0e0e0;
+  --color-forge-text-muted: #8892a8;
+  --color-forge-danger: #e94560;
+
+  /* Source badge colors */
+  --color-source-mmf: #f59e0b;
+  --color-source-thangs: #3b82f6;
+  --color-source-patreon: #ef4444;
+  --color-source-cults3d: #a855f7;
+  --color-source-thingiverse: #06b6d4;
+  --color-source-manual: #6b7280;
+}
+
+/* Base styles */
+body {
+  background-color: var(--color-forge-bg);
+  color: var(--color-forge-text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-forge-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-forge-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-forge-accent);
+}
+
+/* STL viewer canvas */
+.stl-viewer canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}

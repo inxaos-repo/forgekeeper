@@ -1,0 +1,13 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.swp
+*~
+.idea/
+*.DotSettings.user
+node_modules/
+dist/
+.env
+sample-data/
