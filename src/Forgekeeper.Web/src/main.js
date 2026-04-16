@@ -10,6 +10,7 @@ const routes = [
   { path: '/creators/:id', name: 'CreatorDetail', component: () => import('./views/CreatorDetail.vue'), props: true },
   { path: '/import', name: 'Import', component: () => import('./views/ImportQueue.vue') },
   { path: '/stats', name: 'Stats', component: () => import('./views/StatsView.vue') },
+  { path: '/plugins', name: 'Plugins', component: () => import('./views/PluginsView.vue') },
 ]
 
 const router = createRouter({

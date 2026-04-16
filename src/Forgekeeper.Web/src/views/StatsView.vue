@@ -1,9 +1,9 @@
 <!--
   StatsView.vue — Dashboard with collection statistics
-  Total counts, charts (CSS-based, no chart library needed), recent additions
+  Total counts, CSS-based bar charts, donut chart, recent additions
 -->
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useApi } from '../composables/useApi.js'
 
 const api = useApi()
@@ -18,7 +18,6 @@ function formatSize(bytes) {
   return `${size.toFixed(i > 1 ? 2 : 0)} ${units[i]}`
 }
 
-// Source colors for bar charts
 const sourceColors = {
   mmf: 'bg-source-mmf',
   thangs: 'bg-source-thangs',
@@ -28,9 +27,13 @@ const sourceColors = {
   manual: 'bg-source-manual',
 }
 
-// Compute max for bar scaling
 function maxOf(items) {
   return Math.max(...(items || []).map((i) => i.count || i.value || 0), 1)
+}
+
+function printedPercent() {
+  if (!stats.value?.totalModels) return 0
+  return Math.round((stats.value.printedCount || 0) / stats.value.totalModels * 100)
 }
 
 async function fetchStats() {
@@ -79,11 +82,11 @@ onMounted(fetchStats)
           <p class="text-xs text-forge-text-muted mt-1 uppercase">Storage</p>
         </div>
         <div class="bg-forge-card border border-forge-border rounded-xl p-4 text-center">
-          <p class="text-2xl font-bold text-forge-accent">{{ stats.printedCount || 0 }}</p>
+          <p class="text-2xl font-bold text-forge-accent">{{ (stats.printedCount || 0).toLocaleString() }}</p>
           <p class="text-xs text-forge-text-muted mt-1 uppercase">Printed</p>
         </div>
         <div class="bg-forge-card border border-forge-border rounded-xl p-4 text-center">
-          <p class="text-2xl font-bold text-forge-text-muted">{{ stats.unprintedCount || 0 }}</p>
+          <p class="text-2xl font-bold text-forge-text-muted">{{ (stats.unprintedCount || 0).toLocaleString() }}</p>
           <p class="text-xs text-forge-text-muted mt-1 uppercase">Unprinted</p>
         </div>
       </div>
@@ -129,6 +132,61 @@ onMounted(fetchStats)
           </div>
         </div>
 
+        <!-- Models by Game System -->
+        <div class="bg-forge-card border border-forge-border rounded-xl p-5">
+          <h3 class="text-sm font-semibold text-forge-text-muted uppercase mb-4">Models by Game System</h3>
+          <div class="space-y-3">
+            <div v-for="item in (stats.byGameSystem || [])" :key="item.gameSystem" class="space-y-1">
+              <div class="flex justify-between text-sm">
+                <span class="text-forge-text">{{ item.gameSystem || 'Unassigned' }}</span>
+                <span class="text-forge-text-muted">{{ (item.count || 0).toLocaleString() }}</span>
+              </div>
+              <div class="h-3 bg-forge-bg rounded-full overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-source-thangs/60 transition-all duration-500"
+                  :style="{ width: `${Math.max(2, ((item.count || 0) / maxOf(stats.byGameSystem)) * 100)}%` }"
+                ></div>
+              </div>
+            </div>
+            <div v-if="!stats.byGameSystem?.length" class="text-sm text-forge-text-muted">No data</div>
+          </div>
+        </div>
+
+        <!-- Printed vs Unprinted donut -->
+        <div class="bg-forge-card border border-forge-border rounded-xl p-5">
+          <h3 class="text-sm font-semibold text-forge-text-muted uppercase mb-4">Print Status</h3>
+          <div class="flex items-center justify-center py-8">
+            <div class="relative w-40 h-40">
+              <div
+                class="w-full h-full rounded-full"
+                :style="{
+                  background: `conic-gradient(
+                    var(--color-forge-accent) 0% ${printedPercent()}%,
+                    var(--color-forge-border) ${printedPercent()}% 100%
+                  )`,
+                }"
+              >
+                <div class="absolute inset-4 rounded-full bg-forge-card flex items-center justify-center">
+                  <div class="text-center">
+                    <p class="text-lg font-bold text-forge-accent">{{ printedPercent() }}%</p>
+                    <p class="text-xs text-forge-text-muted">printed</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="flex justify-center gap-6 text-sm">
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-forge-accent"></div>
+              <span class="text-forge-text-muted">Printed ({{ (stats.printedCount || 0).toLocaleString() }})</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-forge-border"></div>
+              <span class="text-forge-text-muted">Unprinted ({{ (stats.unprintedCount || 0).toLocaleString() }})</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Top Creators -->
         <div class="bg-forge-card border border-forge-border rounded-xl p-5">
           <h3 class="text-sm font-semibold text-forge-text-muted uppercase mb-4">Top Creators</h3>
@@ -142,7 +200,7 @@ onMounted(fetchStats)
                 <span class="text-forge-text-muted text-xs w-5 text-right">{{ idx + 1 }}.</span>
                 <RouterLink
                   v-if="creator.id"
-                  :to="{ path: '/', query: { creatorId: creator.id } }"
+                  :to="{ name: 'CreatorDetail', params: { id: creator.id } }"
                   class="text-forge-text hover:text-forge-accent truncate"
                 >
                   {{ creator.name }}
@@ -157,40 +215,21 @@ onMounted(fetchStats)
           </div>
         </div>
 
-        <!-- Printed vs Unprinted -->
-        <div class="bg-forge-card border border-forge-border rounded-xl p-5">
-          <h3 class="text-sm font-semibold text-forge-text-muted uppercase mb-4">Print Status</h3>
-          <div class="flex items-center justify-center py-8">
-            <div class="relative w-40 h-40">
-              <!-- Simple donut chart using CSS conic-gradient -->
-              <div
-                class="w-full h-full rounded-full"
-                :style="{
-                  background: `conic-gradient(
-                    var(--color-forge-accent) 0% ${stats.totalModels ? ((stats.printedCount || 0) / stats.totalModels * 100) : 0}%,
-                    var(--color-forge-border) ${stats.totalModels ? ((stats.printedCount || 0) / stats.totalModels * 100) : 0}% 100%
-                  )`,
-                }"
-              >
-                <div class="absolute inset-4 rounded-full bg-forge-card flex items-center justify-center">
-                  <div class="text-center">
-                    <p class="text-lg font-bold text-forge-accent">
-                      {{ stats.totalModels ? Math.round((stats.printedCount || 0) / stats.totalModels * 100) : 0 }}%
-                    </p>
-                    <p class="text-xs text-forge-text-muted">printed</p>
-                  </div>
-                </div>
+        <!-- Models by Scale -->
+        <div v-if="stats.byScale?.length" class="bg-forge-card border border-forge-border rounded-xl p-5">
+          <h3 class="text-sm font-semibold text-forge-text-muted uppercase mb-4">Models by Scale</h3>
+          <div class="space-y-3">
+            <div v-for="item in stats.byScale" :key="item.scale" class="space-y-1">
+              <div class="flex justify-between text-sm">
+                <span class="text-forge-text">{{ item.scale || 'Unspecified' }}</span>
+                <span class="text-forge-text-muted">{{ (item.count || 0).toLocaleString() }}</span>
               </div>
-            </div>
-          </div>
-          <div class="flex justify-center gap-6 text-sm">
-            <div class="flex items-center gap-2">
-              <div class="w-3 h-3 rounded-full bg-forge-accent"></div>
-              <span class="text-forge-text-muted">Printed ({{ stats.printedCount || 0 }})</span>
-            </div>
-            <div class="flex items-center gap-2">
-              <div class="w-3 h-3 rounded-full bg-forge-border"></div>
-              <span class="text-forge-text-muted">Unprinted ({{ stats.unprintedCount || 0 }})</span>
+              <div class="h-3 bg-forge-bg rounded-full overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-source-patreon/60 transition-all duration-500"
+                  :style="{ width: `${Math.max(2, ((item.count || 0) / maxOf(stats.byScale)) * 100)}%` }"
+                ></div>
+              </div>
             </div>
           </div>
         </div>

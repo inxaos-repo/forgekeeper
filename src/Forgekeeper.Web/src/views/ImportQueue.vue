@@ -1,9 +1,10 @@
 <!--
   ImportQueue.vue — Import queue for unsorted files
-  Shows pending items, lets user confirm/edit metadata or reject
+  Shows pending items with confidence, lets user confirm/edit metadata or reject.
+  Can trigger unsorted/ scan and shows scan status.
 -->
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useApi } from '../composables/useApi.js'
 import SourceBadge from '../components/SourceBadge.vue'
 
@@ -12,18 +13,21 @@ const api = useApi()
 const items = ref([])
 const scanStatus = ref(null)
 const scanning = ref(false)
+const statusPollTimer = ref(null)
+const filterStatus = ref('')
 
 const sources = ['mmf', 'thangs', 'patreon', 'cults3d', 'thingiverse', 'manual']
 
 async function fetchQueue() {
   try {
-    const result = await api.getImportQueue()
+    const params = {}
+    if (filterStatus.value) params.status = filterStatus.value
+    const result = await api.getImportQueue(params)
     items.value = (result?.items || result || []).map((item) => ({
       ...item,
-      // Local editable copies
-      editCreator: item.suggestedCreator || '',
-      editSource: item.suggestedSource || 'manual',
-      editName: item.suggestedName || item.detectedFilename || '',
+      editCreator: item.suggestedCreator || item.detectedCreator || '',
+      editSource: item.suggestedSource || item.detectedSource || 'manual',
+      editName: item.suggestedName || item.detectedModelName || item.detectedFilename || '',
       confirming: false,
       rejecting: false,
     }))
@@ -32,17 +36,39 @@ async function fetchQueue() {
   }
 }
 
+async function fetchScanStatus() {
+  try {
+    scanStatus.value = await api.getScanStatus()
+  } catch { /* ignore */ }
+}
+
 async function triggerScan() {
   scanning.value = true
   try {
     await api.processUnsorted()
-    // Poll status briefly
-    await new Promise((r) => setTimeout(r, 2000))
-    await fetchQueue()
+    // Start polling scan status
+    startStatusPoll()
   } catch {
-    // error shown in UI
-  } finally {
     scanning.value = false
+  }
+}
+
+function startStatusPoll() {
+  stopStatusPoll()
+  statusPollTimer.value = setInterval(async () => {
+    await fetchScanStatus()
+    if (!scanStatus.value?.isRunning) {
+      stopStatusPoll()
+      scanning.value = false
+      await fetchQueue()
+    }
+  }, 2000)
+}
+
+function stopStatusPoll() {
+  if (statusPollTimer.value) {
+    clearInterval(statusPollTimer.value)
+    statusPollTimer.value = null
   }
 }
 
@@ -55,11 +81,8 @@ async function confirmItem(item) {
       sourceSlug: item.editSource,
     })
     items.value = items.value.filter((i) => i.id !== item.id)
-  } catch {
-    // error shown
-  } finally {
-    item.confirming = false
-  }
+  } catch { /* error shown */ }
+  finally { item.confirming = false }
 }
 
 async function rejectItem(item) {
@@ -67,10 +90,14 @@ async function rejectItem(item) {
   try {
     await api.rejectImport(item.id)
     items.value = items.value.filter((i) => i.id !== item.id)
-  } catch {
-    // error shown
-  } finally {
-    item.rejecting = false
+  } catch { /* error shown */ }
+  finally { item.rejecting = false }
+}
+
+async function confirmAll() {
+  const highConfidence = items.value.filter((i) => (i.confidence ?? i.confidenceScore ?? 0) >= 0.8)
+  for (const item of highConfidence) {
+    await confirmItem(item)
   }
 }
 
@@ -86,7 +113,22 @@ function confidenceLabel(confidence) {
   return 'Low'
 }
 
-onMounted(fetchQueue)
+function confidenceWidth(confidence) {
+  return `${Math.round((confidence || 0) * 100)}%`
+}
+
+function confidenceBarColor(confidence) {
+  if (confidence >= 0.8) return 'bg-forge-accent'
+  if (confidence >= 0.5) return 'bg-source-mmf'
+  return 'bg-forge-danger'
+}
+
+onMounted(() => {
+  fetchQueue()
+  fetchScanStatus()
+})
+
+onBeforeUnmount(stopStatusPoll)
 </script>
 
 <template>
@@ -98,17 +140,62 @@ onMounted(fetchQueue)
           {{ items.length }} items pending review
         </p>
       </div>
+      <div class="flex items-center gap-2">
+        <!-- Confirm all high-confidence -->
+        <button
+          v-if="items.some((i) => (i.confidence ?? i.confidenceScore ?? 0) >= 0.8)"
+          @click="confirmAll"
+          class="px-4 py-2 rounded-lg text-sm font-medium bg-forge-card border border-forge-accent text-forge-accent hover:bg-forge-accent/10 transition-colors"
+        >
+          ✓ Auto-confirm high confidence
+        </button>
+        <button
+          @click="triggerScan"
+          :disabled="scanning"
+          :class="[
+            'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
+            scanning
+              ? 'bg-forge-card text-forge-text-muted cursor-not-allowed'
+              : 'bg-forge-accent hover:bg-forge-accent-hover text-forge-bg',
+          ]"
+        >
+          {{ scanning ? '🔄 Scanning...' : '🔍 Scan for New Files' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Scan status -->
+    <div
+      v-if="scanStatus?.isRunning || scanning"
+      class="bg-forge-card border border-forge-accent/30 rounded-xl p-4 mb-6"
+    >
+      <div class="flex items-center gap-3 text-sm">
+        <div class="w-5 h-5 border-2 border-forge-accent border-t-transparent rounded-full animate-spin shrink-0"></div>
+        <div class="flex-1">
+          <p class="text-forge-text font-medium">{{ scanStatus?.status || 'Scanning unsorted files...' }}</p>
+          <div v-if="scanStatus?.directoriesScanned || scanStatus?.modelsFound" class="flex gap-4 text-xs text-forge-text-muted mt-1">
+            <span v-if="scanStatus?.directoriesScanned">{{ scanStatus.directoriesScanned }} dirs scanned</span>
+            <span v-if="scanStatus?.modelsFound">{{ scanStatus.modelsFound }} models found</span>
+            <span v-if="scanStatus?.newModels">{{ scanStatus.newModels }} new</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter tabs -->
+    <div class="flex gap-2 mb-4">
       <button
-        @click="triggerScan"
-        :disabled="scanning"
+        v-for="status in ['', 'AwaitingReview', 'Pending', 'AutoSorted']"
+        :key="status"
+        @click="filterStatus = status; fetchQueue()"
         :class="[
-          'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-          scanning
-            ? 'bg-forge-card text-forge-text-muted cursor-not-allowed'
-            : 'bg-forge-accent hover:bg-forge-accent-hover text-forge-bg',
+          'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+          filterStatus === status
+            ? 'bg-forge-accent text-forge-bg'
+            : 'bg-forge-card border border-forge-border text-forge-text-muted hover:text-forge-text',
         ]"
       >
-        {{ scanning ? '🔄 Scanning...' : '🔍 Scan for New Files' }}
+        {{ status || 'All' }}
       </button>
     </div>
 
@@ -136,30 +223,37 @@ onMounted(fetchQueue)
         <div class="flex flex-col lg:flex-row lg:items-start gap-4">
           <!-- Left: Detected info -->
           <div class="flex-1 space-y-3">
-            <!-- Detected filename -->
             <div class="flex items-start gap-3">
               <span class="text-lg">📁</span>
               <div class="min-w-0">
                 <p class="text-sm font-medium text-forge-text break-all">
-                  {{ item.detectedFilename || item.path }}
+                  {{ item.detectedFilename || item.originalPath || item.path }}
                 </p>
-                <p v-if="item.path" class="text-xs text-forge-text-muted font-mono mt-0.5 break-all">
-                  {{ item.path }}
+                <p v-if="item.originalPath || item.path" class="text-xs text-forge-text-muted font-mono mt-0.5 break-all">
+                  {{ item.originalPath || item.path }}
                 </p>
               </div>
             </div>
 
-            <!-- Confidence -->
-            <div v-if="item.confidence != null" class="flex items-center gap-2">
-              <span class="text-xs text-forge-text-muted">Confidence:</span>
-              <span :class="['text-xs font-medium', confidenceColor(item.confidence)]">
-                {{ confidenceLabel(item.confidence) }} ({{ Math.round(item.confidence * 100) }}%)
-              </span>
+            <!-- Confidence bar -->
+            <div v-if="(item.confidence ?? item.confidenceScore) != null" class="space-y-1">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-forge-text-muted">Confidence:</span>
+                <span :class="['text-xs font-medium', confidenceColor(item.confidence ?? item.confidenceScore)]">
+                  {{ confidenceLabel(item.confidence ?? item.confidenceScore) }}
+                  ({{ Math.round((item.confidence ?? item.confidenceScore) * 100) }}%)
+                </span>
+              </div>
+              <div class="h-1.5 bg-forge-bg rounded-full overflow-hidden">
+                <div
+                  :class="[confidenceBarColor(item.confidence ?? item.confidenceScore), 'h-full rounded-full transition-all duration-300']"
+                  :style="{ width: confidenceWidth(item.confidence ?? item.confidenceScore) }"
+                ></div>
+              </div>
             </div>
 
             <!-- Editable fields -->
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <!-- Model name -->
               <div>
                 <label class="block text-xs text-forge-text-muted mb-1">Model Name</label>
                 <input
@@ -168,8 +262,6 @@ onMounted(fetchQueue)
                   class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
                 />
               </div>
-
-              <!-- Creator -->
               <div>
                 <label class="block text-xs text-forge-text-muted mb-1">Creator</label>
                 <input
@@ -178,8 +270,6 @@ onMounted(fetchQueue)
                   class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
                 />
               </div>
-
-              <!-- Source -->
               <div>
                 <label class="block text-xs text-forge-text-muted mb-1">Source</label>
                 <select
