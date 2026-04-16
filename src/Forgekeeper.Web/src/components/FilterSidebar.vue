@@ -107,12 +107,7 @@ onMounted(async () => {
     creators.value = creatorsRes?.items || creatorsRes || []
     tags.value = tagsRes?.items || tagsRes || []
 
-    // Load distinct collection names from models search
-    try {
-      const modelsRes = await api.searchModels({ pageSize: 1 })
-      // Collection names would need a dedicated endpoint; for now, leave empty
-      // and let users type or pick from what's available
-    } catch { /* non-critical */ }
+    // Collection names would need a dedicated endpoint; text input for now
   } catch {
     // Filters still work, just without autocomplete
   }
@@ -245,6 +240,26 @@ onMounted(async () => {
         placeholder="Filter by collection..."
         class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
       />
+    </div>
+
+    <!-- Min Rating -->
+    <div>
+      <h4 class="text-xs font-medium text-forge-text-muted mb-2 uppercase">Min Rating</h4>
+      <div class="flex gap-1">
+        <button
+          v-for="r in [0, 1, 2, 3, 4, 5]"
+          :key="r"
+          @click="setFilter('minRating', r || undefined)"
+          :class="[
+            'px-2 py-1 rounded-lg text-xs font-medium transition-colors',
+            (parseInt(localFilters.minRating) || 0) === r
+              ? 'bg-forge-accent text-forge-bg'
+              : 'bg-forge-bg text-forge-text-muted hover:text-forge-text border border-forge-border',
+          ]"
+        >
+          {{ r === 0 ? 'Any' : '★'.repeat(r) }}
+        </button>
+      </div>
     </div>
 
     <!-- Printed status -->

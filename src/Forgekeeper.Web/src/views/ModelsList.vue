@@ -1,6 +1,7 @@
 <!--
   ModelsList.vue — Main browse/search page
   Search bar, filter sidebar, sort options, paginated grid of model cards
+  Supports bulk selection + bulk actions (tag, categorize, rate)
 -->
 <script setup>
 import { ref, reactive, computed, watch, onMounted } from 'vue'
@@ -17,7 +18,7 @@ const models = ref([])
 const totalCount = ref(0)
 const totalPages = ref(0)
 const searchQuery = ref(route.query.search || '')
-const showFilters = ref(false) // mobile filter toggle
+const showFilters = ref(false)
 
 const filters = reactive({
   source: route.query.source || undefined,
@@ -27,6 +28,9 @@ const filters = reactive({
   scale: route.query.scale || undefined,
   tag: route.query.tag || undefined,
   printed: route.query.printed || undefined,
+  minRating: route.query.minRating || undefined,
+  licenseType: route.query.licenseType || undefined,
+  collectionName: route.query.collectionName || undefined,
 })
 
 const sortBy = ref(route.query.sortBy || 'name')
@@ -40,15 +44,93 @@ const sortOptions = [
   { value: 'fileCount', label: 'File Count' },
   { value: 'totalSizeBytes', label: 'Size' },
   { value: 'rating', label: 'Rating' },
+  { value: 'creatorName', label: 'Creator' },
 ]
 
+// ─── Bulk Selection ──────────────────────────────────────
+const selectedIds = ref(new Set())
+const bulkMode = ref(false)
+const bulkAction = ref('')
+const bulkTag = ref('')
+const bulkCategory = ref('')
+const bulkGameSystem = ref('')
+const bulkRating = ref(0)
+const bulkProcessing = ref(false)
+
+const allSelected = computed(() =>
+  models.value.length > 0 && models.value.every((m) => selectedIds.value.has(m.id))
+)
+
+function toggleSelectAll() {
+  if (allSelected.value) {
+    selectedIds.value = new Set()
+  } else {
+    selectedIds.value = new Set(models.value.map((m) => m.id))
+  }
+}
+
+function toggleSelect(id) {
+  const s = new Set(selectedIds.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  selectedIds.value = s
+}
+
+function cancelBulk() {
+  bulkMode.value = false
+  selectedIds.value = new Set()
+  bulkAction.value = ''
+  bulkTag.value = ''
+  bulkCategory.value = ''
+  bulkGameSystem.value = ''
+  bulkRating.value = 0
+}
+
+const categories = [
+  'Miniature', 'Terrain', 'Vehicle', 'Prop', 'Bust', 'Base', 'Scenery', 'Accessory', 'Other',
+]
+const gameSystems = [
+  'Warhammer 40K', 'Age of Sigmar', 'D&D', 'Pathfinder', 'Star Wars Legion',
+  'Bolt Action', 'Malifaux', 'Kill Team', 'Necromunda', 'Other',
+]
+
+async function executeBulkAction() {
+  if (!selectedIds.value.size) return
+  bulkProcessing.value = true
+  try {
+    const ids = [...selectedIds.value]
+    const payload = { modelIds: ids }
+
+    if (bulkAction.value === 'tag' && bulkTag.value.trim()) {
+      payload.addTags = [bulkTag.value.trim().toLowerCase()]
+    } else if (bulkAction.value === 'category' && bulkCategory.value) {
+      payload.category = bulkCategory.value
+    } else if (bulkAction.value === 'gameSystem' && bulkGameSystem.value) {
+      payload.gameSystem = bulkGameSystem.value
+    } else if (bulkAction.value === 'rating' && bulkRating.value > 0) {
+      payload.rating = bulkRating.value
+    } else {
+      return
+    }
+
+    await api.bulkUpdateModels(payload)
+    cancelBulk()
+    await fetchModels()
+  } catch {
+    // error shown by api.error
+  } finally {
+    bulkProcessing.value = false
+  }
+}
+
+// ─── Fetch + Query Sync ──────────────────────────────────
 async function fetchModels() {
   try {
     const params = {
-      search: searchQuery.value || undefined,
+      q: searchQuery.value || undefined,
       ...filters,
       sortBy: sortBy.value,
-      sortDir: sortDir.value,
+      sortDescending: sortDir.value === 'desc' ? true : undefined,
       page: page.value,
       pageSize: pageSize.value,
     }
@@ -61,7 +143,6 @@ async function fetchModels() {
   }
 }
 
-// Update URL query params
 function syncQueryParams() {
   const query = {}
   if (searchQuery.value) query.search = searchQuery.value
@@ -72,6 +153,9 @@ function syncQueryParams() {
   if (filters.scale) query.scale = filters.scale
   if (filters.tag) query.tag = filters.tag
   if (filters.printed) query.printed = filters.printed
+  if (filters.minRating) query.minRating = filters.minRating
+  if (filters.licenseType) query.licenseType = filters.licenseType
+  if (filters.collectionName) query.collectionName = filters.collectionName
   if (sortBy.value !== 'name') query.sortBy = sortBy.value
   if (sortDir.value !== 'asc') query.sortDir = sortDir.value
   if (page.value > 1) query.page = page.value
@@ -110,7 +194,6 @@ function goToPage(p) {
   window.scrollTo(0, 0)
 }
 
-// Pagination range
 const pageRange = computed(() => {
   const total = totalPages.value
   const current = page.value
@@ -131,7 +214,6 @@ watch(() => route.query.search, (val) => {
   }
 })
 
-// Watch for creator filter from /creators/:id route
 watch(() => route.query.creatorId, (val) => {
   if (val !== filters.creatorId) {
     filters.creatorId = val || undefined
@@ -147,7 +229,6 @@ onMounted(fetchModels)
   <div>
     <!-- Search + Sort bar -->
     <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-6">
-      <!-- Search input -->
       <form @submit.prevent="onSearch" class="flex-1 relative">
         <input
           v-model="searchQuery"
@@ -161,7 +242,6 @@ onMounted(fetchModels)
         >🔍</button>
       </form>
 
-      <!-- Sort dropdown -->
       <div class="flex items-center gap-2">
         <select
           :value="sortBy"
@@ -180,7 +260,20 @@ onMounted(fetchModels)
           {{ sortDir === 'asc' ? '↑' : '↓' }}
         </button>
 
-        <!-- Mobile filter toggle -->
+        <!-- Bulk mode toggle -->
+        <button
+          @click="bulkMode = !bulkMode; if (!bulkMode) cancelBulk()"
+          :class="[
+            'p-2.5 border rounded-lg text-sm font-medium transition-colors',
+            bulkMode
+              ? 'bg-forge-accent/15 border-forge-accent text-forge-accent'
+              : 'bg-forge-card border-forge-border text-forge-text-muted hover:text-forge-accent',
+          ]"
+          title="Bulk select"
+        >
+          ☑
+        </button>
+
         <button
           @click="showFilters = !showFilters"
           class="lg:hidden p-2.5 bg-forge-card border border-forge-border rounded-lg text-forge-text-muted hover:text-forge-accent"
@@ -190,13 +283,102 @@ onMounted(fetchModels)
       </div>
     </div>
 
-    <!-- Result count -->
-    <p class="text-sm text-forge-text-muted mb-4">
-      {{ totalCount.toLocaleString() }} models found
-    </p>
+    <!-- Bulk action bar -->
+    <div
+      v-if="bulkMode && selectedIds.size > 0"
+      class="bg-forge-card border border-forge-accent/30 rounded-xl p-4 mb-6 flex flex-wrap items-center gap-3"
+    >
+      <span class="text-sm font-medium text-forge-accent">
+        {{ selectedIds.size }} selected
+      </span>
+
+      <select
+        v-model="bulkAction"
+        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+      >
+        <option value="">Choose action...</option>
+        <option value="tag">Add Tag</option>
+        <option value="category">Set Category</option>
+        <option value="gameSystem">Set Game System</option>
+        <option value="rating">Set Rating</option>
+      </select>
+
+      <!-- Tag input -->
+      <input
+        v-if="bulkAction === 'tag'"
+        v-model="bulkTag"
+        type="text"
+        placeholder="Tag name..."
+        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
+      />
+
+      <!-- Category select -->
+      <select
+        v-if="bulkAction === 'category'"
+        v-model="bulkCategory"
+        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+      >
+        <option value="">Choose...</option>
+        <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
+      </select>
+
+      <!-- Game system select -->
+      <select
+        v-if="bulkAction === 'gameSystem'"
+        v-model="bulkGameSystem"
+        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+      >
+        <option value="">Choose...</option>
+        <option v-for="gs in gameSystems" :key="gs" :value="gs">{{ gs }}</option>
+      </select>
+
+      <!-- Rating select -->
+      <select
+        v-if="bulkAction === 'rating'"
+        v-model.number="bulkRating"
+        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+      >
+        <option :value="0">Choose...</option>
+        <option v-for="r in 5" :key="r" :value="r">{{ '★'.repeat(r) }}</option>
+      </select>
+
+      <button
+        @click="executeBulkAction"
+        :disabled="bulkProcessing || !bulkAction"
+        class="px-4 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+      >
+        {{ bulkProcessing ? 'Applying...' : 'Apply' }}
+      </button>
+
+      <button
+        @click="cancelBulk"
+        class="px-3 py-1.5 text-sm text-forge-text-muted hover:text-forge-danger transition-colors"
+      >
+        Cancel
+      </button>
+    </div>
+
+    <!-- Result count + select all -->
+    <div class="flex items-center gap-3 mb-4">
+      <label
+        v-if="bulkMode"
+        class="flex items-center gap-2 cursor-pointer text-sm text-forge-text-muted hover:text-forge-text"
+      >
+        <input
+          type="checkbox"
+          :checked="allSelected"
+          @change="toggleSelectAll"
+          class="rounded border-forge-border bg-forge-bg text-forge-accent focus:ring-forge-accent"
+        />
+        Select all on page
+      </label>
+      <p class="text-sm text-forge-text-muted">
+        {{ totalCount.toLocaleString() }} models found
+      </p>
+    </div>
 
     <div class="flex gap-6">
-      <!-- Filter sidebar (desktop always visible, mobile toggleable) -->
+      <!-- Filter sidebar -->
       <div
         :class="[
           'w-64 shrink-0',
@@ -227,7 +409,25 @@ onMounted(fetchModels)
           v-else
           class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-4"
         >
-          <ModelCard v-for="model in models" :key="model.id" :model="model" />
+          <div v-for="model in models" :key="model.id" class="relative">
+            <!-- Bulk checkbox overlay -->
+            <label
+              v-if="bulkMode"
+              class="absolute top-2 left-2 z-10 cursor-pointer"
+              @click.stop
+            >
+              <input
+                type="checkbox"
+                :checked="selectedIds.has(model.id)"
+                @change="toggleSelect(model.id)"
+                class="w-5 h-5 rounded border-forge-border bg-forge-bg/80 text-forge-accent focus:ring-forge-accent"
+              />
+            </label>
+            <ModelCard
+              :model="model"
+              :class="{ 'ring-2 ring-forge-accent/50': selectedIds.has(model.id) }"
+            />
+          </div>
         </div>
 
         <!-- Pagination -->

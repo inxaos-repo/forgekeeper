@@ -1,6 +1,6 @@
 <!--
-  CreatorsList.vue — Creator list page
-  Search/filter creators, grid of creator cards, click to see their models
+  CreatorsList.vue — Creator directory page
+  Server-side search/sort, avatars, paginated grid
 -->
 <script setup>
 import { ref, computed, onMounted } from 'vue'
@@ -14,32 +14,69 @@ const api = useApi()
 const creators = ref([])
 const searchQuery = ref('')
 const sortBy = ref('name')
+const sortDir = ref('asc')
+const page = ref(1)
+const pageSize = ref(120)
+const totalCount = ref(0)
+const totalPages = ref(0)
 
-const filteredCreators = computed(() => {
-  let list = [...creators.value]
-  if (searchQuery.value) {
-    const q = searchQuery.value.toLowerCase()
-    list = list.filter((c) => c.name.toLowerCase().includes(q))
+const sortOptions = [
+  { value: 'name', label: 'Name' },
+  { value: 'modelCount', label: 'Model Count' },
+]
+
+const pageRange = computed(() => {
+  const total = totalPages.value
+  const current = page.value
+  const range = []
+  const delta = 2
+  for (let i = Math.max(1, current - delta); i <= Math.min(total, current + delta); i++) {
+    range.push(i)
   }
-  list.sort((a, b) => {
-    if (sortBy.value === 'modelCount') return (b.modelCount || 0) - (a.modelCount || 0)
-    return a.name.localeCompare(b.name)
-  })
-  return list
+  return range
 })
-
-function goToCreator(creator) {
-  // Navigate to models page filtered by this creator
-  router.push({ path: '/', query: { creatorId: creator.id } })
-}
 
 async function fetchCreators() {
   try {
-    const result = await api.getCreators({ pageSize: 10000 })
+    const result = await api.getCreators({
+      q: searchQuery.value || undefined,
+      sortBy: sortBy.value,
+      sortDescending: sortDir.value === 'desc' ? true : undefined,
+      page: page.value,
+      pageSize: pageSize.value,
+    })
     creators.value = result?.items || result || []
+    totalCount.value = result?.totalCount ?? creators.value.length
+    totalPages.value = result?.totalPages ?? Math.ceil(totalCount.value / pageSize.value)
   } catch {
     creators.value = []
   }
+}
+
+function onSearch() {
+  page.value = 1
+  fetchCreators()
+}
+
+function onSort(field) {
+  if (sortBy.value === field) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortBy.value = field
+    sortDir.value = field === 'modelCount' ? 'desc' : 'asc'
+  }
+  page.value = 1
+  fetchCreators()
+}
+
+function goToPage(p) {
+  page.value = p
+  fetchCreators()
+  window.scrollTo(0, 0)
+}
+
+function goToCreator(creator) {
+  router.push({ name: 'CreatorDetail', params: { id: creator.id } })
 }
 
 onMounted(fetchCreators)
@@ -51,23 +88,34 @@ onMounted(fetchCreators)
 
     <!-- Search + Sort -->
     <div class="flex flex-col sm:flex-row gap-3 mb-6">
-      <input
-        v-model="searchQuery"
-        type="text"
-        placeholder="Search creators..."
-        class="flex-1 bg-forge-card border border-forge-border rounded-lg px-4 py-2.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
-      />
-      <select
-        v-model="sortBy"
-        class="bg-forge-card border border-forge-border rounded-lg px-3 py-2.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
-      >
-        <option value="name">Sort by Name</option>
-        <option value="modelCount">Sort by Model Count</option>
-      </select>
+      <form @submit.prevent="onSearch" class="flex-1 relative">
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="Search creators..."
+          class="w-full bg-forge-card border border-forge-border rounded-lg px-4 py-2.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent focus:ring-1 focus:ring-forge-accent"
+        />
+        <button type="submit" class="absolute right-3 top-1/2 -translate-y-1/2 text-forge-text-muted hover:text-forge-accent">🔍</button>
+      </form>
+      <div class="flex items-center gap-2">
+        <select
+          :value="sortBy"
+          @change="onSort($event.target.value)"
+          class="bg-forge-card border border-forge-border rounded-lg px-3 py-2.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+        >
+          <option v-for="opt in sortOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+        </select>
+        <button
+          @click="sortDir = sortDir === 'asc' ? 'desc' : 'asc'; fetchCreators()"
+          class="p-2.5 bg-forge-card border border-forge-border rounded-lg text-forge-text-muted hover:text-forge-accent transition-colors"
+        >
+          {{ sortDir === 'asc' ? '↑' : '↓' }}
+        </button>
+      </div>
     </div>
 
     <p class="text-sm text-forge-text-muted mb-4">
-      {{ filteredCreators.length }} creators
+      {{ totalCount.toLocaleString() }} creators
     </p>
 
     <!-- Loading -->
@@ -77,11 +125,11 @@ onMounted(fetchCreators)
 
     <!-- Grid -->
     <div
-      v-else
+      v-else-if="creators.length"
       class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"
     >
       <div
-        v-for="creator in filteredCreators"
+        v-for="creator in creators"
         :key="creator.id"
         @click="goToCreator(creator)"
         class="bg-forge-card border border-forge-border rounded-xl p-4 cursor-pointer hover:border-forge-accent/50 hover:shadow-lg hover:shadow-forge-accent/5 transition-all duration-200 group"
@@ -93,6 +141,7 @@ onMounted(fetchCreators)
             :src="creator.avatarUrl"
             :alt="creator.name"
             class="w-full h-full object-cover"
+            loading="lazy"
           />
           <span v-else class="text-2xl text-forge-text-muted/30">👤</span>
         </div>
@@ -115,9 +164,44 @@ onMounted(fetchCreators)
     </div>
 
     <!-- Empty state -->
-    <div v-if="!api.loading.value && !filteredCreators.length" class="text-center py-20">
+    <div v-else class="text-center py-20">
       <span class="text-5xl">👤</span>
       <p class="text-forge-text-muted mt-4">No creators found</p>
+    </div>
+
+    <!-- Pagination -->
+    <div v-if="totalPages > 1" class="flex items-center justify-center gap-2 mt-8">
+      <button
+        @click="goToPage(1)"
+        :disabled="page === 1"
+        class="px-3 py-1.5 rounded-lg text-sm bg-forge-card border border-forge-border text-forge-text-muted hover:text-forge-accent disabled:opacity-30 disabled:cursor-not-allowed"
+      >«</button>
+      <button
+        @click="goToPage(page - 1)"
+        :disabled="page === 1"
+        class="px-3 py-1.5 rounded-lg text-sm bg-forge-card border border-forge-border text-forge-text-muted hover:text-forge-accent disabled:opacity-30 disabled:cursor-not-allowed"
+      >‹</button>
+      <button
+        v-for="p in pageRange"
+        :key="p"
+        @click="goToPage(p)"
+        :class="[
+          'px-3 py-1.5 rounded-lg text-sm border transition-colors',
+          p === page
+            ? 'bg-forge-accent text-forge-bg border-forge-accent font-medium'
+            : 'bg-forge-card border-forge-border text-forge-text-muted hover:text-forge-accent',
+        ]"
+      >{{ p }}</button>
+      <button
+        @click="goToPage(page + 1)"
+        :disabled="page >= totalPages"
+        class="px-3 py-1.5 rounded-lg text-sm bg-forge-card border border-forge-border text-forge-text-muted hover:text-forge-accent disabled:opacity-30 disabled:cursor-not-allowed"
+      >›</button>
+      <button
+        @click="goToPage(totalPages)"
+        :disabled="page >= totalPages"
+        class="px-3 py-1.5 rounded-lg text-sm bg-forge-card border border-forge-border text-forge-text-muted hover:text-forge-accent disabled:opacity-30 disabled:cursor-not-allowed"
+      >»</button>
     </div>
   </div>
 </template>

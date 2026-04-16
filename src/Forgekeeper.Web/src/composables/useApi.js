@@ -15,7 +15,6 @@ export function useApi() {
     error.value = null
     try {
       const headers = { ...options.headers }
-      // Only set Content-Type for requests with a body
       if (options.body) {
         headers['Content-Type'] = 'application/json'
       }
@@ -37,16 +36,13 @@ export function useApi() {
   const get = (path) => request(path)
   const post = (path, body) =>
     request(path, { method: 'POST', body: body != null ? JSON.stringify(body) : undefined })
+  const put = (path, body) =>
+    request(path, { method: 'PUT', body: JSON.stringify(body) })
   const patch = (path, body) =>
     request(path, { method: 'PATCH', body: JSON.stringify(body) })
   const del = (path) => request(path, { method: 'DELETE' })
 
   // ─── Models ────────────────────────────────────────────
-  /**
-   * Search/browse models with filters.
-   * @param {Object} params - query params (search, source, creatorId, category,
-   *   gameSystem, scale, tag, printed, sortBy, sortDir, page, pageSize)
-   */
   function getModels(params = {}) {
     const qs = buildQuery(params)
     return get(`/models${qs}`)
@@ -62,6 +58,20 @@ export function useApi() {
 
   function deleteModel(id) {
     return del(`/models/${id}`)
+  }
+
+  /** Bulk update multiple models (tag, categorize, etc.) */
+  function bulkUpdateModels(data) {
+    return post('/models/bulk', data)
+  }
+
+  // ─── Related Models ────────────────────────────────────
+  function addRelatedModel(modelId, relatedModelId, relation = 'related') {
+    return post(`/models/${modelId}/related`, { relatedModelId, relation })
+  }
+
+  function removeRelatedModel(modelId, relatedModelId) {
+    return del(`/models/${modelId}/related/${relatedModelId}`)
   }
 
   // ─── Creators ──────────────────────────────────────────
@@ -163,12 +173,38 @@ export function useApi() {
     return get('/stats/creators')
   }
 
+  // ─── Plugins ───────────────────────────────────────────
+  function getPlugins() {
+    return get('/plugins')
+  }
+
+  function getPluginStatus(slug) {
+    return get(`/plugins/${encodeURIComponent(slug)}/status`)
+  }
+
+  function getPluginConfig(slug) {
+    return get(`/plugins/${encodeURIComponent(slug)}/config`)
+  }
+
+  function updatePluginConfig(slug, config) {
+    return put(`/plugins/${encodeURIComponent(slug)}/config`, config)
+  }
+
+  function triggerPluginSync(slug) {
+    return post(`/plugins/${encodeURIComponent(slug)}/sync`)
+  }
+
+  function getPluginAdminHtml(slug) {
+    return get(`/plugins/${encodeURIComponent(slug)}/admin`)
+  }
+
   return {
     loading,
     error,
     // Raw helpers
     get,
     post,
+    put,
     patch,
     del,
     // Models
@@ -176,6 +212,10 @@ export function useApi() {
     getModel,
     updateModel,
     deleteModel,
+    bulkUpdateModels,
+    // Related Models
+    addRelatedModel,
+    removeRelatedModel,
     // Creators
     getCreators,
     getCreator,
@@ -205,6 +245,13 @@ export function useApi() {
     // Stats
     getStats,
     getCreatorStats,
+    // Plugins
+    getPlugins,
+    getPluginStatus,
+    getPluginConfig,
+    updatePluginConfig,
+    triggerPluginSync,
+    getPluginAdminHtml,
   }
 }
 

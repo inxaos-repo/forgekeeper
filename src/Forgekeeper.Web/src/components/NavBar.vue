@@ -22,6 +22,7 @@ const navLinks = [
   { to: '/creators', label: 'Creators', name: 'Creators' },
   { to: '/import', label: 'Import', name: 'Import' },
   { to: '/stats', label: 'Stats', name: 'Stats' },
+  { to: '/plugins', label: 'Plugins', name: 'Plugins' },
 ]
 </script>
 
