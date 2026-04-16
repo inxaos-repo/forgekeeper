@@ -40,6 +40,7 @@ builder.Services.AddSingleton<ISourceAdapter>(
 builder.Services.AddSingleton<ISourceAdapter, PatreonSourceAdapter>();
 
 // Services
+builder.Services.AddSingleton<IMetadataService, MetadataService>();
 builder.Services.AddSingleton<IScannerService, FileScannerService>();
 builder.Services.AddScoped<ISearchService, SearchService>();
 builder.Services.AddScoped<IImportService, ImportService>();

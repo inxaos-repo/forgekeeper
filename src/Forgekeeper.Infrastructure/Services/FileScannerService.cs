@@ -14,6 +14,7 @@ public class FileScannerService : IScannerService
 {
     private readonly IDbContextFactory<ForgeDbContext> _dbFactory;
     private readonly IEnumerable<ISourceAdapter> _adapters;
+    private readonly IMetadataService _metadataService;
     private readonly IConfiguration _config;
     private readonly ILogger<FileScannerService> _logger;
     private ScanProgress _progress = new();
@@ -37,11 +38,13 @@ public class FileScannerService : IScannerService
     public FileScannerService(
         IDbContextFactory<ForgeDbContext> dbFactory,
         IEnumerable<ISourceAdapter> adapters,
+        IMetadataService metadataService,
         IConfiguration config,
         ILogger<FileScannerService> logger)
     {
         _dbFactory = dbFactory;
         _adapters = adapters;
+        _metadataService = metadataService;
         _config = config;
         _logger = logger;
     }
@@ -207,24 +210,8 @@ public class FileScannerService : IScannerService
 
         lock (_lock) _progress.DirectoriesScanned++;
 
-        // Check for metadata.json
-        SourceMetadata? metadata = null;
-        var metadataPath = Path.Combine(modelDir, "metadata.json");
-        if (File.Exists(metadataPath))
-        {
-            try
-            {
-                var json = await File.ReadAllTextAsync(metadataPath, ct);
-                metadata = JsonSerializer.Deserialize<SourceMetadata>(json, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to parse metadata.json at {Path}", metadataPath);
-            }
-        }
+        // Check for metadata.json via MetadataService
+        var metadata = await _metadataService.ReadAsync(modelDir, ct);
 
         // Get or create creator
         var creatorName = metadata?.Creator?.DisplayName
@@ -288,6 +275,16 @@ public class FileScannerService : IScannerService
         // Denormalized fields from metadata
         model.LicenseType = metadata?.License?.Type;
         model.CollectionName = metadata?.Collection?.Name;
+        model.PublishedAt = metadata?.Dates?.Published;
+        model.PrintSettings = metadata?.PrintSettings;
+
+        // Acquisition fields from metadata
+        if (metadata?.Acquisition != null)
+        {
+            if (Enum.TryParse<AcquisitionMethod>(metadata.Acquisition.Method, true, out var method))
+                model.AcquisitionMethod = method;
+            model.AcquisitionOrderId = metadata.Acquisition.OrderId;
+        }
 
         // Import components from metadata (only if not already set by user)
         if (metadata?.Components != null && (model.Components == null || model.Components.Count == 0))
@@ -343,6 +340,19 @@ public class FileScannerService : IScannerService
                     db.Tags.Add(tag);
                 }
                 model.Tags.Add(tag);
+            }
+        }
+
+        // Backfill metadata.json if it doesn't exist (database-free recovery)
+        if (metadata == null && Directory.Exists(modelDir))
+        {
+            try
+            {
+                await _metadataService.BackfillAsync(modelDir, model, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to backfill metadata.json at {Path}", modelDir);
             }
         }
 
