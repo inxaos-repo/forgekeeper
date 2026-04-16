@@ -17,6 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Forgekeeper.Core\Forgekeeper.Core.csproj" />
     <ProjectReference Include="..\Forgekeeper.Infrastructure\Forgekeeper.Infrastructure.csproj" />
+    <ProjectReference Include="..\Forgekeeper.PluginSdk\Forgekeeper.PluginSdk.csproj" />
   </ItemGroup>
 
 </Project>

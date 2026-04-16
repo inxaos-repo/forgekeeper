@@ -15,6 +15,7 @@ public class ForgeDbContext : DbContext
     public DbSet<ImportQueueItem> ImportQueue => Set<ImportQueueItem>();
     public DbSet<ScanState> ScanStates => Set<ScanState>();
     public DbSet<ModelRelation> ModelRelations => Set<ModelRelation>();
+    public DbSet<PluginConfig> PluginConfigs => Set<PluginConfig>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -209,6 +210,18 @@ public class ForgeDbContext : DbContext
             entity.Property(e => e.BasePath).HasMaxLength(2000).IsRequired();
             entity.Property(e => e.AdapterType).HasMaxLength(200).IsRequired();
             entity.HasIndex(e => e.Slug).IsUnique();
+        });
+
+        // PluginConfig
+        modelBuilder.Entity<PluginConfig>(entity =>
+        {
+            entity.ToTable("plugin_configs");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.PluginSlug).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Key).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Value).HasColumnType("text").IsRequired();
+            entity.HasIndex(e => new { e.PluginSlug, e.Key }).IsUnique();
         });
 
         // ScanState

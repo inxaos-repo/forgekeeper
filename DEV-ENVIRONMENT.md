@@ -1,12 +1,12 @@
 # Forgekeeper Development Environment
 
-## Shared Dev Setup: Visual Studio (Windows) + Docker SDK (Ginaz)
+## Shared Dev Setup: Visual Studio (Windows) + Docker SDK (your-server)
 
 **How it works:** the developer edits code in Visual Studio on your-desktop (Windows, YOUR_DESKTOP_IP) via SMB share to your-server (YOUR_SERVER_IP). the AI assistant runs builds, tests, and hot-reload inside a .NET 9 SDK Docker container on your-server that volume-mounts the same source directory. Both work on the same files simultaneously — no git needed for the inner dev loop.
 
 ```
 ┌─────────────────────┐         SMB Share          ┌──────────────────────────┐
-│  your-desktop (Windows)   │ ◄──────────────────────── │  Ginaz (Linux)            │
+│  your-desktop (Windows)   │ ◄──────────────────────── │  your-server (Linux)            │
 │  YOUR_DESKTOP_IP        │                            │  YOUR_SERVER_IP             │
 │                      │                            │                           │
 │  Visual Studio 2022  │    \\YOUR_SERVER_IP\share │  Docker containers:       │
@@ -193,7 +193,7 @@ Visual Studio IntelliSense works from the .csproj and source files directly — 
 
 ---
 
-## 5. Bob's Workflow (Docker Exec on Ginaz)
+## 5. AI Assistant Workflow (Docker Exec on your-server)
 
 All commands run through `docker exec` into the SDK container:
 
@@ -256,7 +256,7 @@ docker exec -it forgekeeper-dev dotnet watch run --project src/Forgekeeper.Api
 1. the developer saves a file in VS → write goes over SMB to your-server filesystem
 2. `DOTNET_USE_POLLING_FILE_WATCHER=true` makes dotnet watch poll the filesystem (every ~2 seconds)
 3. Change detected → rebuild → restart Kestrel
-4. Both the developer and Bob's edits trigger the same reload cycle
+4. Both the developer and the AI assistant's edits trigger the same reload cycle
 
 ### What hot reload handles
 
@@ -388,7 +388,7 @@ docker exec forgekeeper-db psql -U forgekeeper -c "SELECT count(*) FROM models;"
    ```
    Then attach to the `dotnet` process using the remote debugger path `/vsdbg/vsdbg`.
 
-### Console debugging (Bob)
+### Console debugging (AI assistant)
 
 ```bash
 # Check what's running
