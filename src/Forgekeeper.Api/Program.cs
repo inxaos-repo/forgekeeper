@@ -49,6 +49,7 @@ builder.Services.AddSingleton<IThumbnailService, ThumbnailService>();
 
 // Background Services
 builder.Services.AddHostedService<ThumbnailWorker>();
+builder.Services.AddHostedService<ScannerWorker>();
 builder.Services.AddSingleton<PluginHostService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PluginHostService>());
 
