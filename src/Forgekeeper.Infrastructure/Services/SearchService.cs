@@ -77,6 +77,15 @@ public class SearchService : ISearchService
         if (!string.IsNullOrEmpty(request.CollectionName))
             query = query.Where(m => m.CollectionName == request.CollectionName);
 
+        if (request.AcquisitionMethod.HasValue)
+            query = query.Where(m => m.AcquisitionMethod == request.AcquisitionMethod.Value);
+
+        if (request.PublishedAfter.HasValue)
+            query = query.Where(m => m.PublishedAt >= request.PublishedAfter.Value);
+
+        if (request.PublishedBefore.HasValue)
+            query = query.Where(m => m.PublishedAt <= request.PublishedBefore.Value);
+
         // Sorting
         query = request.SortBy?.ToLowerInvariant() switch
         {
@@ -131,6 +140,9 @@ public class SearchService : ISearchService
                 Notes = m.Notes,
                 LicenseType = m.LicenseType,
                 CollectionName = m.CollectionName,
+                AcquisitionMethod = m.AcquisitionMethod,
+                AcquisitionOrderId = m.AcquisitionOrderId,
+                PublishedAt = m.PublishedAt,
                 Tags = m.Tags.Select(t => t.Name).ToList(),
                 CreatedAt = m.CreatedAt,
                 UpdatedAt = m.UpdatedAt,

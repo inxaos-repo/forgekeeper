@@ -52,11 +52,32 @@ public static class ModelEndpoints
                 Notes = model.Notes,
                 LicenseType = model.LicenseType,
                 CollectionName = model.CollectionName,
+                AcquisitionMethod = model.AcquisitionMethod,
+                AcquisitionOrderId = model.AcquisitionOrderId,
+                PublishedAt = model.PublishedAt,
                 PrintHistory = model.PrintHistory,
                 Components = model.Components,
+                PrintSettings = model.PrintSettings,
                 Tags = model.Tags.Select(t => t.Name).ToList(),
                 CreatedAt = model.CreatedAt,
                 UpdatedAt = model.UpdatedAt,
+                RelatedModels = model.RelationsFrom
+                    .Select(r => new RelatedModelSummary
+                    {
+                        Id = r.RelatedModelId,
+                        Name = r.RelatedModel?.Name ?? "",
+                        ThumbnailPath = r.RelatedModel?.ThumbnailPath,
+                        RelationType = r.RelationType,
+                    })
+                    .Concat(model.RelationsTo
+                        .Select(r => new RelatedModelSummary
+                        {
+                            Id = r.ModelId,
+                            Name = r.Model?.Name ?? "",
+                            ThumbnailPath = r.Model?.ThumbnailPath,
+                            RelationType = r.RelationType,
+                        }))
+                    .ToList(),
                 Variants = model.Variants.Select(v => new VariantResponse
                 {
                     Id = v.Id,

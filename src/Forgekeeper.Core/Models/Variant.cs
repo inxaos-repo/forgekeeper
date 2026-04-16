@@ -12,6 +12,13 @@ public class Variant
     public FileType FileType { get; set; }
     public long FileSizeBytes { get; set; }
     public string? ThumbnailPath { get; set; }
+
+    /// <summary>
+    /// SHA-256 hash for deduplication across variants/models.
+    /// Format: "sha256:abcdef..."
+    /// </summary>
+    public string? FileHash { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>

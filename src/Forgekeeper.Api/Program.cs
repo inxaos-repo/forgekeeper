@@ -75,6 +75,9 @@ app.UseSerilogRequestLogging();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+// Health check
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
+
 // Map API endpoints
 app.MapModelEndpoints();
 app.MapCreatorEndpoints();

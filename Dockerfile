@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=build /app/publish .
 
-ENV ASPNETCORE_URLS=http://+:8080
-EXPOSE 8080
+ENV ASPNETCORE_URLS=http://+:5000
+EXPOSE 5000
 
 ENTRYPOINT ["dotnet", "Forgekeeper.Api.dll"]

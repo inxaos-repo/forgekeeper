@@ -1,0 +1,54 @@
+services:
+  dev:
+    image: mcr.microsoft.com/dotnet/sdk:9.0
+    working_dir: /workspace
+    command: sleep infinity
+    environment:
+      - ConnectionStrings__ForgeDb=Host=db;Port=5432;Database=forgekeeper;Username=forgekeeper;Password=forgekeeper
+      - Storage__BasePaths__0=/mnt/3dprinting
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:5000
+      - DOTNET_USE_POLLING_FILE_WATCHER=true
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/workspace
+      - nuget-cache:/root/.nuget/packages
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    container_name: forgekeeper-db
+    environment:
+      POSTGRES_DB: forgekeeper
+      POSTGRES_USER: forgekeeper
+      POSTGRES_PASSWORD: forgekeeper
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata-dev:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forgekeeper"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./src/Forgekeeper.Web:/app
+      - node-modules:/app/node_modules
+    depends_on:
+      - dev
+
+volumes:
+  pgdata-dev:
+  nuget-cache:
+  node-modules:
