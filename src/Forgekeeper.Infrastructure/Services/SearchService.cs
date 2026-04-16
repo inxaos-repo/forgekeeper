@@ -27,14 +27,17 @@ public class SearchService : ISearchService
             .Include(m => m.Tags)
             .AsQueryable();
 
-        // Fuzzy text search using pg_trgm
+        // Hybrid search: exact substring (ILIKE) + fuzzy trigram (pg_trgm similarity)
+        // Exact matches ranked first, fuzzy matches follow for typo tolerance
+        string? searchTerm = null;
         if (!string.IsNullOrWhiteSpace(request.Query))
         {
-            var searchTerm = request.Query.Trim();
+            searchTerm = request.Query.Trim();
             query = query.Where(m =>
                 EF.Functions.ILike(m.Name, $"%{searchTerm}%") ||
                 EF.Functions.ILike(m.Creator.Name, $"%{searchTerm}%") ||
-                m.Tags.Any(t => EF.Functions.ILike(t.Name, $"%{searchTerm}%")));
+                m.Tags.Any(t => EF.Functions.ILike(t.Name, $"%{searchTerm}%")) ||
+                EF.Functions.TrigramsSimilarity(m.Name, searchTerm) > 0.3);
         }
 
         // Filters
@@ -105,28 +108,42 @@ public class SearchService : ISearchService
         if (request.PublishedBefore.HasValue)
             query = query.Where(m => m.PublishedAt <= request.PublishedBefore.Value);
 
-        // Sorting
-        query = request.SortBy?.ToLowerInvariant() switch
+        // Sorting — when searching, relevance sort puts exact matches first
+        if (searchTerm != null && string.IsNullOrEmpty(request.SortBy))
         {
-            "date" or "createdat" => request.SortDescending
-                ? query.OrderByDescending(m => m.CreatedAt)
-                : query.OrderBy(m => m.CreatedAt),
-            "filecount" => request.SortDescending
-                ? query.OrderByDescending(m => m.FileCount)
-                : query.OrderBy(m => m.FileCount),
-            "size" or "totalsize" => request.SortDescending
-                ? query.OrderByDescending(m => m.TotalSizeBytes)
-                : query.OrderBy(m => m.TotalSizeBytes),
-            "rating" => request.SortDescending
-                ? query.OrderByDescending(m => m.Rating)
-                : query.OrderBy(m => m.Rating),
-            "creator" => request.SortDescending
-                ? query.OrderByDescending(m => m.Creator.Name)
-                : query.OrderBy(m => m.Creator.Name),
-            _ => request.SortDescending
-                ? query.OrderByDescending(m => m.Name)
-                : query.OrderBy(m => m.Name),
-        };
+            // Relevance sort: exact ILIKE matches first, then by trigram similarity
+            query = query
+                .OrderBy(m => EF.Functions.ILike(m.Name, $"%{searchTerm}%") ? 0 : 1)
+                .ThenByDescending(m => EF.Functions.TrigramsSimilarity(m.Name, searchTerm))
+                .ThenBy(m => m.Name);
+        }
+        else
+        {
+            query = request.SortBy?.ToLowerInvariant() switch
+            {
+                "date" or "createdat" => request.SortDescending
+                    ? query.OrderByDescending(m => m.CreatedAt)
+                    : query.OrderBy(m => m.CreatedAt),
+                "filecount" => request.SortDescending
+                    ? query.OrderByDescending(m => m.FileCount)
+                    : query.OrderBy(m => m.FileCount),
+                "size" or "totalsize" => request.SortDescending
+                    ? query.OrderByDescending(m => m.TotalSizeBytes)
+                    : query.OrderBy(m => m.TotalSizeBytes),
+                "rating" => request.SortDescending
+                    ? query.OrderByDescending(m => m.Rating)
+                    : query.OrderBy(m => m.Rating),
+                "creator" => request.SortDescending
+                    ? query.OrderByDescending(m => m.Creator.Name)
+                    : query.OrderBy(m => m.Creator.Name),
+                "relevance" when searchTerm != null => query
+                    .OrderBy(m => EF.Functions.ILike(m.Name, $"%{searchTerm}%") ? 0 : 1)
+                    .ThenByDescending(m => EF.Functions.TrigramsSimilarity(m.Name, searchTerm)),
+                _ => request.SortDescending
+                    ? query.OrderByDescending(m => m.Name)
+                    : query.OrderBy(m => m.Name),
+            };
+        }
 
         var totalCount = await query.CountAsync(ct);
         var pageSize = Math.Clamp(request.PageSize, 1, 200);
