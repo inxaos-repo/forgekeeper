@@ -48,6 +48,8 @@ builder.Services.AddSingleton<IThumbnailService, ThumbnailService>();
 
 // Background Services
 builder.Services.AddHostedService<ThumbnailWorker>();
+builder.Services.AddSingleton<PluginHostService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PluginHostService>());
 
 // CORS for Vue.js dev server
 builder.Services.AddCors(options =>
@@ -88,6 +90,7 @@ app.MapImportEndpoints();
 app.MapStatsEndpoints();
 app.MapVariantEndpoints();
 app.MapSourceEndpoints();
+app.MapPluginEndpoints();
 
 // SPA fallback — serve index.html for non-API, non-file routes
 app.MapFallbackToFile("index.html");
