@@ -612,7 +612,7 @@ plugins/
 {
   "pluginId": "forgekeeper-scraper-mmf",
   "version": "1.0.0",
-  "author": "Damon Prater",
+  "author": "Forgekeeper Contributors",
   "repository": "https://github.com/forgekeeper/scraper-mmf",
   "entryAssembly": "Forgekeeper.Scraper.Mmf.dll",
   "entryType": "Forgekeeper.Scraper.Mmf.MmfScraperPlugin",

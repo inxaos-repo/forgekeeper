@@ -65,9 +65,10 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// Apply migrations on startup
-using (var scope = app.Services.CreateScope())
+// Apply migrations on startup (skip for InMemory/testing)
+if (!app.Environment.IsEnvironment("Testing"))
 {
+    using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
     await db.Database.MigrateAsync();
 }
@@ -111,3 +112,6 @@ app.MapPost("/mcp/invoke", async (
 app.MapFallbackToFile("index.html");
 
 app.Run();
+
+// Needed for WebApplicationFactory<Program> in integration tests
+public partial class Program { }
