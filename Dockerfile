@@ -22,7 +22,7 @@ RUN dotnet restore
 COPY src/ src/
 COPY tests/ tests/
 COPY plugins/ plugins/
-RUN dotnet publish src/Forgekeeper.Api/Forgekeeper.Api.csproj -c Release -o /app/publish --no-restore
+RUN dotnet publish src/Forgekeeper.Api/Forgekeeper.Api.csproj -c Release -o /app/publish
 
 # --- Stage 2: Build plugins ---
 FROM build AS plugins-build
