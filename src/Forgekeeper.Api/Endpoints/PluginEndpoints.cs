@@ -138,7 +138,7 @@ public static class PluginEndpoints
         // ?force=true to re-authenticate even if token exists
         group.MapGet("/{slug}/auth", async (
             string slug,
-            [FromQuery] bool force,
+            [FromQuery] bool? force,
             PluginHostService pluginHost,
             CancellationToken ct) =>
         {
@@ -148,7 +148,7 @@ public static class PluginEndpoints
             var context = await pluginHost.CreateContextAsync(slug, ct);
 
             // If force=true, clear existing token so AuthenticateAsync generates a new auth URL
-            if (force)
+            if (force == true)
             {
                 await context.TokenStore.DeleteTokenAsync("access_token", ct);
             }
@@ -156,7 +156,7 @@ public static class PluginEndpoints
             var result = await plugin.AuthenticateAsync(context, ct);
 
             // Always include the auth URL if available (for re-auth)
-            if (result.Authenticated && !force)
+            if (result.Authenticated && force != true)
                 return Results.Ok(new { authenticated = true, message = result.Message, authUrl = result.AuthUrl });
 
             if (!string.IsNullOrEmpty(result.AuthUrl))

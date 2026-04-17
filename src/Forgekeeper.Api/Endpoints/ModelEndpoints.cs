@@ -154,7 +154,7 @@ public static class ModelEndpoints
 
         group.MapDelete("/{id:guid}", async (
             Guid id,
-            [FromQuery] bool deleteFiles,
+            [FromQuery] bool? deleteFiles,
             IModelRepository repo,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
@@ -162,7 +162,7 @@ public static class ModelEndpoints
             var model = await repo.GetByIdAsync(id, ct);
             if (model == null) return Results.NotFound();
 
-            if (deleteFiles && model.Variants.Any())
+            if (deleteFiles == true && model.Variants.Any())
             {
                 var logger = loggerFactory.CreateLogger("ModelEndpoints");
                 foreach (var variant in model.Variants)
