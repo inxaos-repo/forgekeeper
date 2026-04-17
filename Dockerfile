@@ -107,7 +107,7 @@ ENV ASPNETCORE_URLS=http://+:5000 \
     Storage__ThumbnailDir=.thumbnails \
     Thumbnails__Enabled=true \
     Thumbnails__Renderer=stl-thumb \
-    Thumbnails__Size=256x256 \
+    Thumbnails__Size=256 \
     Thumbnails__Format=webp
 
 EXPOSE 5000

@@ -85,7 +85,9 @@ public class ThumbnailService : IThumbnailService
             return;
 
         var renderer = _config.GetValue("Thumbnails:Renderer", "stl-thumb");
-        var size = _config.GetValue("Thumbnails:Size", "256x256");
+        var sizeRaw = _config.GetValue("Thumbnails:Size", "256")!;
+        // stl-thumb expects a single integer for square thumbnails, not WxH format
+        var size = sizeRaw.Contains('x') ? sizeRaw.Split('x')[0] : sizeRaw;
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
