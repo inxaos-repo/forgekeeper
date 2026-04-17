@@ -45,6 +45,17 @@ services:
       timeout: 5s
       retries: 5
 
+  # FlareSolverr — Cloudflare bypass for MyMiniFactory plugin
+  # Required for the MMF scraper to log in and fetch your library
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=info
+      - TZ=America/Los_Angeles
+    ports:
+      - "8191:8191"
+
   # E2E tests — run with: docker compose run e2e
   e2e:
     image: mcr.microsoft.com/playwright:v1.52.0-noble

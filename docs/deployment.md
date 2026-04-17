@@ -460,3 +460,39 @@ Adjust log levels via environment variables:
 Serilog__MinimumLevel__Default: "Information"
 Serilog__MinimumLevel__Override__Microsoft: "Warning"
 ```
+
+## FlareSolverr (Required for MMF Plugin)
+
+The MyMiniFactory scraper plugin requires FlareSolverr to bypass Cloudflare protection on myminifactory.com.
+
+### Docker Compose
+
+FlareSolverr is included in `docker-compose.yml` and starts automatically:
+
+```yaml
+flaresolverr:
+  image: ghcr.io/flaresolverr/flaresolverr:latest
+  restart: unless-stopped
+  ports:
+    - "8191:8191"
+```
+
+The MMF plugin auto-detects FlareSolverr at `http://flaresolverr:8191` (Docker networking).
+
+### Kubernetes
+
+Deploy FlareSolverr as a separate service. The default plugin config points to:
+```
+http://flaresolverr.flaresolverr.svc.cluster.local:8191
+```
+
+Configure via the Plugins UI: `FLARESOLVERR_URL` field.
+
+### How It Works
+
+1. FlareSolverr creates a browser session and solves the Cloudflare challenge
+2. The plugin extracts a CSRF token from the login page
+3. Credentials are POSTed to `/login_check` via FlareSolverr
+4. Session cookies (REMEMBERME, PHPSESSID, cf_clearance) are extracted
+5. A plain HttpClient uses those cookies to fetch the data-library API
+6. No Playwright or browser automation needed in the Forgekeeper container

@@ -73,6 +73,12 @@ open http://localhost:5000
 # The scanner runs automatically on startup.
 # Add sources from the UI (Sources tab) or place them in:
 # {LIBRARY_PATH}/sources/{source-name}/  (e.g. sources/mmf/)
+
+# To enable MyMiniFactory library sync:
+# 1. Go to Plugins tab in the UI
+# 2. Configure MMF_USERNAME and MMF_PASSWORD
+# 3. Click Sync — FlareSolverr handles Cloudflare automatically
+# FlareSolverr is included in docker-compose.yml
 ```
 
 ### Run for Development
