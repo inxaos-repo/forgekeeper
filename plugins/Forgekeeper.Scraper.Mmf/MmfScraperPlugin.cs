@@ -392,21 +392,39 @@ public class MmfScraperPlugin : ILibraryScraper
                 CurrentItem = "Fetching library via browser session...",
             });
 
-            // Now fetch the data-library endpoint with session cookies
-            var jsonResult = await page.EvaluateAsync<string>(@"
-                async () => {
-                    const resp = await fetch('https://www.myminifactory.com/api/data-library/objectPreviews', {
-                        credentials: 'include'
-                    });
-                    if (!resp.ok) return JSON.stringify({ error: resp.status });
-                    const data = await resp.json();
-                    return JSON.stringify(data);
-                }
-            ");
+            // Navigate directly to the data-library API endpoint
+            // This ensures the browser handles any Cloudflare challenges naturally
+            context.Logger.LogInformation("[Browser] Fetching data-library via direct navigation...");
+            var apiResponse = await page.GotoAsync("https://www.myminifactory.com/api/data-library/objectPreviews", new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.NetworkIdle,
+                Timeout = 60000
+            });
+
+            string jsonResult;
+            if (apiResponse == null || !apiResponse.Ok)
+            {
+                // Fallback: try fetch() from within the page
+                context.Logger.LogWarning("[Browser] Direct navigation failed (status {Status}), trying fetch()...", apiResponse?.Status);
+                jsonResult = await page.EvaluateAsync<string>(@"
+                    async () => {
+                        const resp = await fetch('/api/data-library/objectPreviews', {
+                            credentials: 'include'
+                        });
+                        if (!resp.ok) return JSON.stringify({ error: resp.status });
+                        const data = await resp.json();
+                        return JSON.stringify(data);
+                    }
+                ");
+            }
+            else
+            {
+                jsonResult = await apiResponse.TextAsync();
+            }
 
             if (string.IsNullOrEmpty(jsonResult) || jsonResult.Contains("\"error\""))
             {
-                context.Logger.LogError("[Browser] Failed to fetch library: {Result}", jsonResult);
+                context.Logger.LogError("[Browser] Failed to fetch library: {Result}", jsonResult?.Substring(0, Math.Min(200, jsonResult?.Length ?? 0)));
                 return [];
             }
 
