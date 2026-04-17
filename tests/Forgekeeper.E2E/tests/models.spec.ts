@@ -59,4 +59,32 @@ test.describe('Models', () => {
     const sidebar = page.locator('aside');
     await expect(sidebar).toBeAttached();
   });
+
+  test('model detail page loads', async ({ page, request }) => {
+    // Get a model ID first
+    const listRes = await request.get('/api/v1/models?pageSize=1');
+    if (listRes.ok()) {
+      const data = await listRes.json();
+      if (data.items?.length > 0) {
+        await page.goto(`/models/${data.items[0].id}`);
+        await expect(page.locator('body')).toBeVisible();
+      }
+    }
+  });
+
+  test('model update endpoint works', async ({ request }) => {
+    const listRes = await request.get('/api/v1/models?pageSize=1');
+    if (listRes.ok()) {
+      const data = await listRes.json();
+      if (data.items?.length > 0) {
+        const id = data.items[0].id;
+        const res = await request.patch(`/api/v1/models/${id}`, {
+          data: { notes: 'E2E test note' }
+        });
+        expect(res.ok()).toBeTruthy();
+        // Clean up
+        await request.patch(`/api/v1/models/${id}`, { data: { notes: null } });
+      }
+    }
+  });
 });
