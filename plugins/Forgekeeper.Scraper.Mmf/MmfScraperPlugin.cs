@@ -138,7 +138,10 @@ public class MmfScraperPlugin : ILibraryScraper
             ?? throw new InvalidOperationException("ModelDirectory not set in context");
 
         var delayMs = GetDelayMs(context);
-        var accessToken = await context.TokenStore.GetTokenAsync("access_token", ct);
+        
+        // Get saved session cookies from FlareSolverr login
+        var sessionCookies = await context.TokenStore.GetTokenAsync("session_cookies", ct);
+        var sessionUA = await context.TokenStore.GetTokenAsync("session_useragent", ct);
 
         context.Progress.Report(new ScrapeProgress
         {
@@ -148,14 +151,16 @@ public class MmfScraperPlugin : ILibraryScraper
 
         try
         {
-            // Fetch model details from v2 API
+            // Fetch model details from v2 API using session cookies
             MmfModelDetails? details = null;
-            if (!string.IsNullOrEmpty(accessToken))
+            if (!string.IsNullOrEmpty(sessionCookies))
             {
-                context.HttpClient.DefaultRequestHeaders.Authorization =
-                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                using var apiClient = new HttpClient();
+                apiClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
+                if (!string.IsNullOrEmpty(sessionUA))
+                    apiClient.DefaultRequestHeaders.Add("User-Agent", sessionUA);
 
-                var response = await context.HttpClient.GetAsync(
+                var response = await apiClient.GetAsync(
                     $"{MmfApiBase}/objects/{model.ExternalId}", ct);
 
                 if (response.IsSuccessStatusCode)
@@ -163,8 +168,16 @@ public class MmfScraperPlugin : ILibraryScraper
                     details = await response.Content.ReadFromJsonAsync<MmfModelDetails>(
                         JsonOptions, ct);
                 }
+                else
+                {
+                    context.Logger.LogDebug("[MMF] API returned {Status} for model {Id}", response.StatusCode, model.ExternalId);
+                }
 
                 await Task.Delay(delayMs, ct);
+            }
+            else
+            {
+                context.Logger.LogWarning("[MMF] No session cookies — skipping API details for {Model}", model.Name);
             }
 
             // Download files
@@ -200,7 +213,12 @@ public class MmfScraperPlugin : ILibraryScraper
 
                     try
                     {
-                        var fileResponse = await context.HttpClient.GetAsync(file.DownloadUrl, ct);
+                        using var dlClient = new HttpClient();
+                        if (!string.IsNullOrEmpty(sessionCookies))
+                            dlClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
+                        if (!string.IsNullOrEmpty(sessionUA))
+                            dlClient.DefaultRequestHeaders.Add("User-Agent", sessionUA);
+                        var fileResponse = await dlClient.GetAsync(file.DownloadUrl, ct);
                         fileResponse.EnsureSuccessStatusCode();
                         await using var fs = File.Create(filePath);
                         await fileResponse.Content.CopyToAsync(fs, ct);
@@ -460,6 +478,11 @@ public class MmfScraperPlugin : ILibraryScraper
             // Build cookie header from FlareSolverr cookies
             var cookieHeader = string.Join("; ", cfCookies.Select(c => $"{c.Name}={c.Value}"));
             
+            // Save cookies + user agent for use in ScrapeModelAsync (file downloads)
+            await context.TokenStore.SaveTokenAsync("session_cookies", cookieHeader, ct);
+            await context.TokenStore.SaveTokenAsync("session_useragent", solvedUserAgent ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", ct);
+            context.Logger.LogInformation("[MMF] Saved session cookies for file downloads");
+
             using var libraryClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
             libraryClient.DefaultRequestHeaders.Add("Cookie", cookieHeader);
             libraryClient.DefaultRequestHeaders.Add("User-Agent", solvedUserAgent ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
