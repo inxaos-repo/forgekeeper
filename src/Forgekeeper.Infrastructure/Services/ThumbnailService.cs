@@ -162,7 +162,7 @@ public class ThumbnailService : IThumbnailService
             .Where(v => v.ThumbnailPath == null &&
                        (v.FileType == Core.Enums.FileType.Stl || v.FileType == Core.Enums.FileType.Obj))
             .Include(v => v.Model)
-            .Take(100) // Process in batches
+            .Take(500) // Process in batches (5 min interval × 500 = ~6,000/hr)
             .ToListAsync(ct);
 
         foreach (var variant in pendingVariants)
