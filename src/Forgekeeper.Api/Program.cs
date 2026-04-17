@@ -7,6 +7,7 @@ using Forgekeeper.Infrastructure.SourceAdapters;
 using Forgekeeper.Api.BackgroundServices;
 using Forgekeeper.Api.Endpoints;
 using Forgekeeper.Api.Mcp;
+using Forgekeeper.Api.Middleware;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
@@ -75,6 +76,7 @@ if (!app.Environment.IsEnvironment("Testing"))
 }
 
 app.UseCors();
+app.UseMiddleware<ApiKeyMiddleware>();
 app.UseSerilogRequestLogging();
 
 // Serve static files (Vue.js build output)

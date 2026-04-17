@@ -37,7 +37,7 @@ public class SearchService : ISearchService
                 EF.Functions.ILike(m.Name, $"%{searchTerm}%") ||
                 EF.Functions.ILike(m.Creator.Name, $"%{searchTerm}%") ||
                 m.Tags.Any(t => EF.Functions.ILike(t.Name, $"%{searchTerm}%")) ||
-                EF.Functions.TrigramsSimilarity(m.Name, searchTerm) > 0.3);
+                EF.Functions.TrigramsSimilarity(m.Name, searchTerm) > _minSimilarity);
         }
 
         // Filters

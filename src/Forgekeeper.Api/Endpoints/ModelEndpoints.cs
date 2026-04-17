@@ -4,6 +4,7 @@ using Forgekeeper.Core.Models;
 using Forgekeeper.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace Forgekeeper.Api.Endpoints;
 
@@ -119,9 +120,40 @@ public static class ModelEndpoints
 
         group.MapDelete("/{id:guid}", async (
             Guid id,
+            [FromQuery] bool deleteFiles,
             IModelRepository repo,
+            ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
+            var model = await repo.GetByIdAsync(id, ct);
+            if (model == null) return Results.NotFound();
+
+            if (deleteFiles && model.Variants.Any())
+            {
+                var logger = loggerFactory.CreateLogger("ModelEndpoints");
+                foreach (var variant in model.Variants)
+                {
+                    var fullPath = Path.Combine(model.BasePath, variant.FilePath);
+                    if (File.Exists(fullPath))
+                    {
+                        try { File.Delete(fullPath); }
+                        catch (Exception ex) { logger.LogWarning(ex, "Failed to delete file {Path}", fullPath); }
+                    }
+                }
+                // Try to clean up empty parent directories
+                var dirs = model.Variants
+                    .Select(v => Path.GetDirectoryName(Path.Combine(model.BasePath, v.FilePath)))
+                    .Distinct();
+                foreach (var dir in dirs)
+                {
+                    if (dir != null && Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+                    {
+                        try { Directory.Delete(dir); }
+                        catch (Exception) { }
+                    }
+                }
+            }
+
             await repo.DeleteAsync(id, ct);
             return Results.NoContent();
         }).WithName("DeleteModel");
