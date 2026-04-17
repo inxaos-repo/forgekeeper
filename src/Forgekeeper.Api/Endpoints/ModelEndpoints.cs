@@ -15,10 +15,32 @@ public static class ModelEndpoints
         var group = app.MapGroup("/api/v1/models").WithTags("Models");
 
         group.MapGet("/", async (
-            [AsParameters] ModelSearchRequest request,
+            [FromQuery] string? query,
+            [FromQuery] Guid? creatorId,
+            [FromQuery] string? category,
+            [FromQuery] string? gameSystem,
+            [FromQuery] string? creator,
+            [FromQuery] string? tags,
+            [FromQuery] string? sortBy,
+            [FromQuery] bool? sortDescending,
+            [FromQuery] int? page,
+            [FromQuery] int? pageSize,
             ISearchService searchService,
             CancellationToken ct) =>
         {
+            var request = new ModelSearchRequest
+            {
+                Query = query,
+                CreatorId = creatorId,
+                Category = category,
+                GameSystem = gameSystem,
+                Creator = creator,
+                Tags = tags,
+                SortBy = sortBy ?? "name",
+                SortDescending = sortDescending ?? false,
+                Page = page ?? 1,
+                PageSize = pageSize ?? 50,
+            };
             var result = await searchService.SearchAsync(request, ct);
             return Results.Ok(result);
         }).WithName("SearchModels");

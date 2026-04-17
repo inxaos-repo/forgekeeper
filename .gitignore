@@ -37,3 +37,5 @@ Desktop.ini
 sample-data/
 *.bak
 *.tmp
+src/Forgekeeper.Api/wwwroot/
+core.*

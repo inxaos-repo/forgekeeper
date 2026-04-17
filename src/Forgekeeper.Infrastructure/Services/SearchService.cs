@@ -171,7 +171,7 @@ public class SearchService : ISearchService
                 ThumbnailPath = m.ThumbnailPath,
                 PreviewImages = m.PreviewImages,
                 BasePath = m.BasePath,
-                Printed = m.PrintHistory != null && m.PrintHistory.Any(p => p.Result == "success"),
+                Printed = m.PrintHistory != null && m.PrintHistory.Count > 0,
                 Rating = m.Rating,
                 Notes = m.Notes,
                 LicenseType = m.LicenseType,

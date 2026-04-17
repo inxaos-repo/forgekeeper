@@ -85,7 +85,8 @@ COPY --from=build /app/publish .
 COPY --from=plugins-build /app/plugins /app/plugins
 
 # Copy frontend build output to wwwroot for static file serving
-COPY --from=frontend-build /web/dist ./wwwroot/
+# vite.config.js outputs to ../../src/Forgekeeper.Api/wwwroot relative to /web
+COPY --from=frontend-build /src/Forgekeeper.Api/wwwroot ./wwwroot/
 
 # Create directories for runtime data
 RUN mkdir -p /app/plugins /data
