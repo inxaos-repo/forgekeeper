@@ -164,18 +164,41 @@ function stopStatusPoll() {
   }
 }
 
-function authenticate(plugin) {
-  // Open auth URL in new window
-  const authUrl = plugin.authUrl || `/api/v1/plugins/${plugin.slug || plugin.sourceSlug}/auth`
-  window.open(authUrl, '_blank', 'width=600,height=700')
+async function authenticate(plugin) {
+  const slug = plugin.slug || plugin.sourceSlug
+  try {
+    // Call the auth endpoint to get the OAuth URL
+    const res = await fetch(`/api/v1/plugins/${slug}/auth`)
+    const data = await res.json()
+    
+    if (data.authenticated) {
+      // Already authenticated
+      await fetchPlugins()
+      return
+    }
+    
+    if (data.authUrl) {
+      // Open OAuth URL in popup
+      window.open(data.authUrl, '_blank', 'width=600,height=700')
+    } else {
+      console.error('No auth URL returned:', data.message)
+      return
+    }
+  } catch (err) {
+    // Fallback to direct URL
+    window.open(`/api/v1/plugins/${slug}/auth`, '_blank', 'width=600,height=700')
+  }
+  
   // Poll for auth completion
   const pollInterval = setInterval(async () => {
-    await fetchPluginStatus(plugin.slug || plugin.sourceSlug)
-    await fetchPlugins()
-    const updated = plugins.value.find((p) => (p.slug || p.sourceSlug) === (plugin.slug || plugin.sourceSlug))
-    if (updated?.isAuthenticated || updated?.authenticated) {
-      clearInterval(pollInterval)
-    }
+    try {
+      const res = await fetch(`/api/v1/plugins/${slug}/auth`)
+      const data = await res.json()
+      if (data.authenticated) {
+        clearInterval(pollInterval)
+        await fetchPlugins()
+      }
+    } catch {}
   }, 3000)
   // Stop polling after 5 minutes
   setTimeout(() => clearInterval(pollInterval), 300000)

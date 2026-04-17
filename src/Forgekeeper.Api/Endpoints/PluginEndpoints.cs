@@ -134,6 +134,27 @@ public static class PluginEndpoints
             }
         }).WithName("TriggerPluginSync");
 
+        // GET /api/v1/plugins/{slug}/auth — initiate authentication flow
+        group.MapGet("/{slug}/auth", async (
+            string slug,
+            PluginHostService pluginHost,
+            CancellationToken ct) =>
+        {
+            var plugin = pluginHost.GetPlugin(slug);
+            if (plugin is null) return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
+
+            var context = await pluginHost.CreateContextAsync(slug, ct);
+            var result = await plugin.AuthenticateAsync(context, ct);
+
+            if (result.Authenticated)
+                return Results.Ok(new { authenticated = true, message = result.Message });
+
+            if (!string.IsNullOrEmpty(result.AuthUrl))
+                return Results.Ok(new { authenticated = false, authUrl = result.AuthUrl, message = result.Message });
+
+            return Results.BadRequest(new { authenticated = false, message = result.Message });
+        }).WithName("PluginAuth");
+
         // GET /api/v1/plugins/{slug}/status — get sync status
         group.MapGet("/{slug}/status", (
             string slug,
