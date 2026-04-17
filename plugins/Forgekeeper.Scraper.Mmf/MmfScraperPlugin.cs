@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -163,8 +164,8 @@ public class MmfScraperPlugin : ILibraryScraper
                 apiClient.DefaultRequestHeaders.UserAgent.ParseAdd(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
 
+                // Get model details
                 var response = await apiClient.GetAsync($"/api/v2/objects/{model.ExternalId}", ct);
-
                 if (response.IsSuccessStatusCode)
                 {
                     details = await response.Content.ReadFromJsonAsync<MmfModelDetails>(JsonOptions, ct);
@@ -173,8 +174,24 @@ public class MmfScraperPlugin : ILibraryScraper
                 {
                     context.Logger.LogDebug("[MMF] API {Status} for model {Id} ({Name})", response.StatusCode, model.ExternalId, model.Name);
                 }
-
                 await Task.Delay(delayMs, ct);
+
+                // Get file download URLs (separate paginated endpoint)
+                if (details != null)
+                {
+                    var filesResponse = await apiClient.GetAsync($"/api/v2/objects/{model.ExternalId}/files?per_page=100", ct);
+                    if (filesResponse.IsSuccessStatusCode)
+                    {
+                        var filesJson = await filesResponse.Content.ReadAsStringAsync(ct);
+                        using var filesDoc = JsonDocument.Parse(filesJson);
+                        if (filesDoc.RootElement.TryGetProperty("items", out var fileItems))
+                        {
+                            details.Files = fileItems.Deserialize<List<MmfFile>>(JsonOptions) ?? [];
+                            context.Logger.LogDebug("[MMF] Got {Count} files for {Name}", details.Files.Count, model.Name);
+                        }
+                    }
+                    await Task.Delay(delayMs, ct);
+                }
             }
             else
             {
@@ -244,6 +261,25 @@ public class MmfScraperPlugin : ILibraryScraper
             }
 
             // Write metadata.json
+            // Extract ZIP archives
+            foreach (var dl in downloadedFiles.Where(f => f.IsArchive && File.Exists(f.LocalPath)).ToList())
+            {
+                try
+                {
+                    var extractDir = Path.Combine(Path.GetDirectoryName(dl.LocalPath)!, 
+                        Path.GetFileNameWithoutExtension(dl.LocalPath));
+                    if (!Directory.Exists(extractDir))
+                    {
+                        System.IO.Compression.ZipFile.ExtractToDirectory(dl.LocalPath, extractDir);
+                        context.Logger.LogDebug("[MMF] Extracted {File}", dl.Filename);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    context.Logger.LogWarning("[MMF] Failed to extract {File}: {Error}", dl.Filename, ex.Message);
+                }
+            }
+
             var metadata = BuildMetadata(model, details, downloadedFiles);
             var metadataPath = Path.Combine(modelDir, "metadata.json");
             var json = JsonSerializer.Serialize(metadata, JsonWriteOptions);
