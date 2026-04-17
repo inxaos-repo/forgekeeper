@@ -140,11 +140,9 @@ public class MmfScraperPlugin : ILibraryScraper
 
         var delayMs = GetDelayMs(context);
         
-        // Get auth tokens — try download_token (from MiniDownloader) or access_token (from OAuth)
+        // Get auth tokens — try download_token (MiniDownloader) or access_token (OAuth)
         var bearerToken = await context.TokenStore.GetTokenAsync("download_token", ct)
             ?? await context.TokenStore.GetTokenAsync("access_token", ct);
-        var sessionCookies = await context.TokenStore.GetTokenAsync("session_cookies", ct);
-        var sessionUA = await context.TokenStore.GetTokenAsync("session_useragent", ct);
 
         context.Progress.Report(new ScrapeProgress
         {
@@ -152,23 +150,50 @@ public class MmfScraperPlugin : ILibraryScraper
             CurrentItem = model.Name,
         });
 
+        int filesDownloaded = 0, filesSkipped = 0, filesFailed = 0;
+
         try
         {
-            // Fetch model details from v2 API using Bearer token (same as MiniDownloader)
+            // ── Step 1: Fetch model details from v2 API ──
             MmfModelDetails? details = null;
+            string? archiveDownloadUrl = null;
+
             if (!string.IsNullOrEmpty(bearerToken))
             {
-                using var apiClient = new HttpClient { BaseAddress = new Uri("https://www.myminifactory.com") };
-                apiClient.DefaultRequestHeaders.Authorization = 
-                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
-                apiClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+                using var apiClient = CreateApiClient(bearerToken);
 
-                // Get model details
                 var response = await apiClient.GetAsync($"/api/v2/objects/{model.ExternalId}", ct);
                 if (response.IsSuccessStatusCode)
                 {
-                    details = await response.Content.ReadFromJsonAsync<MmfModelDetails>(JsonOptions, ct);
+                    var objJson = await response.Content.ReadAsStringAsync(ct);
+                    // HTML response guard (CF error pages, etc.)
+                    if (objJson.TrimStart().StartsWith("<"))
+                    {
+                        context.Logger.LogWarning("[MMF] Got HTML response for model {Id} — CF block?", model.ExternalId);
+                        return ScrapeResult.Failure($"HTML response for {model.Name} (possible CF block)");
+                    }
+                    details = JsonSerializer.Deserialize<MmfModelDetails>(objJson, JsonOptions);
+
+                    // Extract archive_download_url (fallback for models without individual files)
+                    using var objDoc = JsonDocument.Parse(objJson);
+                    if (objDoc.RootElement.TryGetProperty("archive_download_url", out var archUrl))
+                        archiveDownloadUrl = archUrl.GetString();
+
+                    // Try inline files from /objects response first
+                    if (objDoc.RootElement.TryGetProperty("files", out var filesNode))
+                    {
+                        using var inlineDoc = JsonDocument.Parse(filesNode.GetRawText());
+                        if (inlineDoc.RootElement.TryGetProperty("items", out var inlineItems) 
+                            && inlineItems.ValueKind == JsonValueKind.Array)
+                        {
+                            details!.Files = inlineItems.Deserialize<List<MmfFile>>(JsonOptions) ?? [];
+                        }
+                    }
+                }
+                else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    context.Logger.LogDebug("[MMF] 404 for model {Id} ({Name}) — skipping", model.ExternalId, model.Name);
+                    return ScrapeResult.Ok("metadata.json", []); // 404 = skip, still write metadata
                 }
                 else
                 {
@@ -176,21 +201,32 @@ public class MmfScraperPlugin : ILibraryScraper
                 }
                 await Task.Delay(delayMs, ct);
 
-                // Get file download URLs (separate paginated endpoint)
-                if (details != null)
+                // ── Step 2: Fetch file download URLs (if inline was empty) ──
+                if (details != null && (details.Files == null || details.Files.Count == 0))
                 {
                     var filesResponse = await apiClient.GetAsync($"/api/v2/objects/{model.ExternalId}/files?per_page=100", ct);
                     if (filesResponse.IsSuccessStatusCode)
                     {
                         var filesJson = await filesResponse.Content.ReadAsStringAsync(ct);
-                        using var filesDoc = JsonDocument.Parse(filesJson);
-                        if (filesDoc.RootElement.TryGetProperty("items", out var fileItems))
+                        if (!filesJson.TrimStart().StartsWith("<")) // HTML guard
                         {
-                            details.Files = fileItems.Deserialize<List<MmfFile>>(JsonOptions) ?? [];
-                            context.Logger.LogDebug("[MMF] Got {Count} files for {Name}", details.Files.Count, model.Name);
+                            using var filesDoc = JsonDocument.Parse(filesJson);
+                            if (filesDoc.RootElement.TryGetProperty("items", out var fileItems)
+                                && fileItems.ValueKind == JsonValueKind.Array)
+                            {
+                                details.Files = fileItems.Deserialize<List<MmfFile>>(JsonOptions) ?? [];
+                            }
                         }
                     }
                     await Task.Delay(delayMs, ct);
+                }
+
+                // ── Step 3: Fallback to archive_download_url ──
+                if (details != null && (details.Files == null || details.Files.Count == 0) && !string.IsNullOrEmpty(archiveDownloadUrl))
+                {
+                    var archiveName = $"{SanitizeFilename(model.Name)}.zip";
+                    details.Files = [new MmfFile { Filename = archiveName, DownloadUrl = archiveDownloadUrl, Size = 0 }];
+                    context.Logger.LogDebug("[MMF] Using archive_download_url for {Name}", model.Name);
                 }
             }
             else
@@ -198,7 +234,7 @@ public class MmfScraperPlugin : ILibraryScraper
                 context.Logger.LogWarning("[MMF] No bearer token — skipping API details for {Model}", model.Name);
             }
 
-            // Download files
+            // ── Step 4: Download files ──
             var downloadedFiles = new List<DownloadedFile>();
             if (details?.Files is { Count: > 0 })
             {
@@ -207,71 +243,110 @@ public class MmfScraperPlugin : ILibraryScraper
                     if (ct.IsCancellationRequested) break;
                     if (string.IsNullOrEmpty(file.DownloadUrl)) continue;
 
-                    var variant = DetectVariant(file.Filename);
-                    var variantDir = variant != null
-                        ? Path.Combine(modelDir, variant)
-                        : modelDir;
-                    Directory.CreateDirectory(variantDir);
+                    var safeName = SanitizeFilename(file.Filename);
+                    var filePath = Path.Combine(modelDir, safeName);
+                    Directory.CreateDirectory(modelDir);
 
-                    var filePath = Path.Combine(variantDir, SanitizeFilename(file.Filename));
-
-                    // Skip if already downloaded
-                    if (File.Exists(filePath) && new FileInfo(filePath).Length == file.Size)
+                    // Skip if already downloaded (check size, or fuzzy search subdirs)
+                    var existingPath = FindExistingFile(modelDir, safeName, file.Size);
+                    if (existingPath != null)
                     {
                         downloadedFiles.Add(new DownloadedFile
                         {
-                            Filename = file.Filename,
-                            LocalPath = filePath,
-                            Size = file.Size,
-                            Variant = variant,
+                            Filename = file.Filename ?? safeName,
+                            LocalPath = existingPath,
+                            Size = new FileInfo(existingPath).Length,
+                            Variant = DetectVariant(file.Filename),
                             IsArchive = IsArchiveFile(file.Filename),
                         });
+                        filesSkipped++;
                         continue;
                     }
 
                     try
                     {
+                        context.Logger.LogInformation("[MMF] Downloading: {File} for {Model}", safeName, model.Name);
                         using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-                        if (!string.IsNullOrEmpty(bearerToken))
+                        // Use Bearer for MMF URLs, skip for CDN URLs
+                        if (!string.IsNullOrEmpty(bearerToken) && !IsCdnUrl(file.DownloadUrl))
                             dlClient.DefaultRequestHeaders.Authorization = 
                                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
                         dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+                        
                         var fileResponse = await dlClient.GetAsync(file.DownloadUrl, ct);
                         fileResponse.EnsureSuccessStatusCode();
                         await using var fs = File.Create(filePath);
                         await fileResponse.Content.CopyToAsync(fs, ct);
 
+                        var actualSize = new FileInfo(filePath).Length;
+                        var variant = DetectVariant(file.Filename);
                         downloadedFiles.Add(new DownloadedFile
                         {
-                            Filename = file.Filename,
+                            Filename = file.Filename ?? safeName,
                             LocalPath = filePath,
-                            Size = new FileInfo(filePath).Length,
+                            Size = actualSize,
                             Variant = variant,
                             IsArchive = IsArchiveFile(file.Filename),
                         });
+                        filesDownloaded++;
                     }
                     catch (Exception ex)
                     {
-                        context.Logger.LogWarning("Failed to download {File}: {Error}", file.Filename, ex.Message);
+                        context.Logger.LogWarning("[MMF] Failed to download {File}: {Error}", safeName, ex.Message);
+                        filesFailed++;
                     }
 
                     await Task.Delay(delayMs, ct);
                 }
             }
 
-            // Write metadata.json
-            // Extract ZIP archives
+            // ── Step 5: Extract ZIP archives + cleanup ──
             foreach (var dl in downloadedFiles.Where(f => f.IsArchive && File.Exists(f.LocalPath)).ToList())
             {
+                var ext = Path.GetExtension(dl.LocalPath).ToLowerInvariant();
+                var extractDir = Path.Combine(
+                    Path.GetDirectoryName(dl.LocalPath)!,
+                    Path.GetFileNameWithoutExtension(dl.LocalPath));
+
                 try
                 {
-                    var extractDir = Path.Combine(Path.GetDirectoryName(dl.LocalPath)!, 
-                        Path.GetFileNameWithoutExtension(dl.LocalPath));
-                    if (!Directory.Exists(extractDir))
+                    if (ext == ".zip")
                     {
-                        System.IO.Compression.ZipFile.ExtractToDirectory(dl.LocalPath, extractDir);
-                        context.Logger.LogDebug("[MMF] Extracted {File}", dl.Filename);
+                        if (Directory.Exists(extractDir) && 
+                            Directory.EnumerateFiles(extractDir, "*", SearchOption.AllDirectories).Any())
+                        {
+                            // Already extracted — check if archive has newer files
+                            bool needsUpdate = false;
+                            try
+                            {
+                                using var archive = ZipFile.OpenRead(dl.LocalPath);
+                                var newestLocal = Directory.EnumerateFiles(extractDir, "*", SearchOption.AllDirectories)
+                                    .Select(f => File.GetLastWriteTimeUtc(f)).Max();
+                                needsUpdate = archive.Entries.Any(e => e.Length > 0 && e.LastWriteTime.UtcDateTime > newestLocal);
+                            }
+                            catch { needsUpdate = true; }
+
+                            if (!needsUpdate)
+                            {
+                                context.Logger.LogDebug("[MMF] Already extracted, deleting ZIP: {File}", dl.Filename);
+                                try { File.Delete(dl.LocalPath); } catch { }
+                                continue;
+                            }
+                            context.Logger.LogInformation("[MMF] Re-extracting (newer files in archive): {File}", dl.Filename);
+                        }
+
+                        Directory.CreateDirectory(extractDir);
+                        ZipFile.ExtractToDirectory(dl.LocalPath, extractDir, overwriteFiles: true);
+                        context.Logger.LogInformation("[MMF] Extracted: {File}", dl.Filename);
+
+                        // Delete ZIP after successful extraction
+                        try { File.Delete(dl.LocalPath); context.Logger.LogDebug("[MMF] Deleted ZIP: {File}", dl.Filename); }
+                        catch (Exception delEx) { context.Logger.LogWarning("[MMF] Could not delete ZIP: {Error}", delEx.Message); }
+                    }
+                    else if (ext is ".rar" or ".7z")
+                    {
+                        context.Logger.LogWarning("[MMF] {Ext} not natively supported: {File} (manual extraction needed)", ext, dl.Filename);
                     }
                 }
                 catch (Exception ex)
@@ -280,10 +355,36 @@ public class MmfScraperPlugin : ILibraryScraper
                 }
             }
 
+            // Also scan for leftover ZIPs from previous interrupted syncs
+            try
+            {
+                foreach (var zip in Directory.EnumerateFiles(modelDir, "*.zip"))
+                {
+                    var extractTo = Path.Combine(modelDir, Path.GetFileNameWithoutExtension(zip));
+                    if (!Directory.Exists(extractTo) || !Directory.EnumerateFiles(extractTo, "*", SearchOption.AllDirectories).Any())
+                    {
+                        try
+                        {
+                            Directory.CreateDirectory(extractTo);
+                            ZipFile.ExtractToDirectory(zip, extractTo, overwriteFiles: true);
+                            File.Delete(zip);
+                            context.Logger.LogInformation("[MMF] Extracted leftover ZIP: {File}", Path.GetFileName(zip));
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+
+            // ── Step 6: Write metadata.json ──
             var metadata = BuildMetadata(model, details, downloadedFiles);
             var metadataPath = Path.Combine(modelDir, "metadata.json");
             var json = JsonSerializer.Serialize(metadata, JsonWriteOptions);
             await File.WriteAllTextAsync(metadataPath, json, ct);
+
+            if (filesDownloaded > 0)
+                context.Logger.LogInformation("[MMF] {Model}: {Downloaded} downloaded, {Skipped} skipped, {Failed} failed", 
+                    model.Name, filesDownloaded, filesSkipped, filesFailed);
 
             return ScrapeResult.Ok("metadata.json", downloadedFiles);
         }
@@ -629,6 +730,58 @@ public class MmfScraperPlugin : ILibraryScraper
         if (string.IsNullOrEmpty(name)) return "unknown";
         var invalid = Path.GetInvalidFileNameChars();
         return new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim();
+    }
+
+    /// <summary>Create a pre-configured HttpClient for MMF API calls with Bearer auth.</summary>
+    private static HttpClient CreateApiClient(string bearerToken)
+    {
+        var client = new HttpClient
+        {
+            BaseAddress = new Uri("https://www.myminifactory.com"),
+            Timeout = TimeSpan.FromSeconds(120),
+        };
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+        client.DefaultRequestHeaders.Accept.Add(
+            new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+        return client;
+    }
+
+    /// <summary>Check if a URL is a CDN URL (skip Bearer auth for CDN downloads).</summary>
+    private static bool IsCdnUrl(string url)
+    {
+        return url.Contains("cdn.myminifactory.com", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("dl.myminifactory.com", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("dl4.myminifactory.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Find an existing file by exact path or fuzzy search in subdirectories.</summary>
+    private static string? FindExistingFile(string modelDir, string safeName, long expectedSize)
+    {
+        // Exact match
+        var exactPath = Path.Combine(modelDir, safeName);
+        if (File.Exists(exactPath))
+        {
+            // If size is 0 (unknown), trust the file exists
+            if (expectedSize == 0 || new FileInfo(exactPath).Length == expectedSize)
+                return exactPath;
+        }
+
+        // Search subdirectories (variant folders, extracted archives)
+        if (!Directory.Exists(modelDir)) return null;
+        try
+        {
+            foreach (var found in Directory.EnumerateFiles(modelDir, safeName, SearchOption.AllDirectories))
+            {
+                if (expectedSize == 0 || new FileInfo(found).Length == expectedSize)
+                    return found;
+            }
+        }
+        catch { }
+
+        return null;
     }
 
     private static string GetCallbackUrl(PluginContext context)
