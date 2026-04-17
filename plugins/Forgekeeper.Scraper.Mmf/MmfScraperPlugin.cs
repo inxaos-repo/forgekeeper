@@ -361,7 +361,7 @@ public class MmfScraperPlugin : ILibraryScraper
             if (!string.IsNullOrEmpty(flareSolverrUrl))
             {
                 context.Logger.LogInformation("[MMF] Step 1: Login via FlareSolverr (CF bypass + session)...");
-                using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(180) };
+                using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(300) };
                 
                 // 1a: Create FlareSolverr session
                 var createResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
