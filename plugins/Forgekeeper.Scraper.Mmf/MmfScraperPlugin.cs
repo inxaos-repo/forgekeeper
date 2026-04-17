@@ -144,6 +144,10 @@ public class MmfScraperPlugin : ILibraryScraper
         var bearerToken = await context.TokenStore.GetTokenAsync("download_token", ct)
             ?? await context.TokenStore.GetTokenAsync("access_token", ct);
 
+        // FlareSolverr session cookies — used as fallback when Bearer returns 403
+        var sessionCookies = await context.TokenStore.GetTokenAsync("session_cookies", ct);
+        var sessionUA = await context.TokenStore.GetTokenAsync("session_useragent", ct);
+
         // Strip 'object-' prefix from external ID (manifest stores 'object-12345' but API wants '12345')
         var numericId = model.ExternalId?.StartsWith("object-") == true 
             ? model.ExternalId[7..] 
@@ -277,9 +281,32 @@ public class MmfScraperPlugin : ILibraryScraper
                             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
                         
                         var fileResponse = await dlClient.GetAsync(file.DownloadUrl, ct);
-                        fileResponse.EnsureSuccessStatusCode();
-                        await using var fs = File.Create(filePath);
-                        await fileResponse.Content.CopyToAsync(fs, ct);
+
+                        // 403 fallback: retry with FlareSolverr session cookies
+                        HttpClient? cookieDlClient = null;
+                        try
+                        {
+                            if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden
+                                && !string.IsNullOrEmpty(sessionCookies))
+                            {
+                                context.Logger.LogWarning(
+                                    "[MMF] 403 on Bearer download — retrying with session cookies for {File}", safeName);
+                                fileResponse.Dispose();
+                                cookieDlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                                cookieDlClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
+                                cookieDlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                                    sessionUA ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+                                fileResponse = await cookieDlClient.GetAsync(file.DownloadUrl, ct);
+                            }
+
+                            fileResponse.EnsureSuccessStatusCode();
+                            await using var fs = File.Create(filePath);
+                            await fileResponse.Content.CopyToAsync(fs, ct);
+                        }
+                        finally
+                        {
+                            cookieDlClient?.Dispose();
+                        }
 
                         var actualSize = new FileInfo(filePath).Length;
                         var variant = DetectVariant(file.Filename);
