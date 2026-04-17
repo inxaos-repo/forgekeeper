@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head><title>Connecting...</title></head>
+<body>
+  <p>Connecting your account...</p>
+  <script>
+    // OAuth implicit flow returns token in URL fragment (#access_token=xxx)
+    // Fragments aren't sent to the server, so we extract and POST them
+    const hash = window.location.hash.substring(1);
+    const params = new URLSearchParams(hash);
+    const slug = window.location.pathname.split('/')[2]; // /auth/{slug}/callback
+    
+    fetch(`/auth/${slug}/callback?${params.toString()}`, { method: 'GET' })
+      .then(r => r.json())
+      .then(data => {
+        document.body.innerHTML = data.authenticated
+          ? '<h2>✅ Connected!</h2><p>' + data.message + '</p><p>You can close this window.</p>'
+          : '<h2>❌ Failed</h2><p>' + data.message + '</p>';
+      })
+      .catch(err => {
+        document.body.innerHTML = '<h2>❌ Error</h2><p>' + err.message + '</p>';
+      });
+  </script>
+</body>
+</html>

@@ -240,6 +240,15 @@ public class PluginHostService : BackgroundService
         }
     }
 
+    /// <summary>Create a plugin context for external use (e.g., manifest upload).</summary>
+    public async Task<PluginContext> CreateContextAsync(string slug, CancellationToken ct)
+    {
+        if (!_plugins.TryGetValue(slug, out var loaded))
+            throw new InvalidOperationException($"Plugin '{slug}' not found");
+
+        return await BuildPluginContextAsync(slug, loaded.Scraper, ct);
+    }
+
     private async Task<PluginContext> BuildPluginContextAsync(string slug, ILibraryScraper scraper, CancellationToken ct)
     {
         var dbFactory = _services.GetRequiredService<IDbContextFactory<ForgeDbContext>>();

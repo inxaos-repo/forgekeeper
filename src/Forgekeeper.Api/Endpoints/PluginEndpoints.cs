@@ -146,22 +146,101 @@ public static class PluginEndpoints
             return Results.Ok(MapSyncStatus(status) ?? new PluginSyncStatusResponse());
         }).WithName("GetPluginSyncStatus");
 
-        // Auth callback route
+        // POST /api/v1/plugins/{slug}/manifest — upload a manifest file
+        group.MapPost("/{slug}/manifest", async (
+            string slug,
+            HttpRequest request,
+            PluginHostService pluginHost,
+            CancellationToken ct) =>
+        {
+            var plugin = pluginHost.GetPlugin(slug);
+            if (plugin is null) return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
+
+            Stream? manifestStream = null;
+
+            // Handle both multipart form upload and raw JSON body
+            if (request.HasFormContentType)
+            {
+                var form = await request.ReadFormAsync(ct);
+                var file = form.Files.GetFile("manifest");
+                if (file is null)
+                    return Results.BadRequest(new { message = "No manifest file uploaded" });
+                manifestStream = file.OpenReadStream();
+            }
+            else
+            {
+                manifestStream = request.Body;
+            }
+
+            try
+            {
+                var context = await pluginHost.CreateContextAsync(slug, ct);
+                var models = await plugin.FetchManifestAsync(context, manifestStream, ct);
+
+                return Results.Ok(new
+                {
+                    message = $"Manifest loaded: {models.Count} models found",
+                    modelCount = models.Count
+                });
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest(new { message = $"Failed to parse manifest: {ex.Message}" });
+            }
+        }).WithName("UploadPluginManifest")
+        .DisableAntiforgery();
+
+        // Auth callback route — handles both direct query params and fragment extraction
         app.MapGet("/auth/{slug}/callback", async (
             string slug,
             HttpContext httpContext,
             PluginHostService pluginHost,
             CancellationToken ct) =>
         {
-            var callbackParams = httpContext.Request.Query
-                .ToDictionary(q => q.Key, q => q.Value.ToString());
+            var query = httpContext.Request.Query;
 
-            var result = await pluginHost.HandleAuthCallbackAsync(slug, callbackParams, ct);
+            // If we have auth params (from JS fragment redirect), process them
+            if (query.ContainsKey("access_token") || query.ContainsKey("error"))
+            {
+                var callbackParams = query.ToDictionary(q => q.Key, q => q.Value.ToString());
+                var result = await pluginHost.HandleAuthCallbackAsync(slug, callbackParams, ct);
 
-            if (result.Authenticated)
-                return Results.Ok(new { message = result.Message, authenticated = true });
-            else
-                return Results.BadRequest(new { message = result.Message, authenticated = false });
+                if (result.Authenticated)
+                    return Results.Ok(new { message = result.Message, authenticated = true });
+                else
+                    return Results.BadRequest(new { message = result.Message, authenticated = false });
+            }
+
+            // No token params — serve the HTML page that extracts fragments
+            return Results.Content("""
+                <!DOCTYPE html>
+                <html>
+                <head><title>Connecting...</title>
+                <style>body { font-family: system-ui; max-width: 400px; margin: 80px auto; text-align: center; }</style>
+                </head>
+                <body>
+                <p>Connecting your account...</p>
+                <script>
+                    const hash = window.location.hash.substring(1);
+                    if (!hash) {
+                        document.body.innerHTML = '<h2>❌ No token received</h2><p>The authentication flow did not return a token.</p>';
+                    } else {
+                        const params = new URLSearchParams(hash);
+                        fetch(window.location.pathname + '?' + params.toString())
+                            .then(r => r.json())
+                            .then(data => {
+                                document.body.innerHTML = data.authenticated
+                                    ? '<h2>✅ Connected!</h2><p>' + data.message + '</p><p>You can close this window and return to Forgekeeper.</p>'
+                                    : '<h2>❌ Failed</h2><p>' + data.message + '</p>';
+                            })
+                            .catch(err => {
+                                document.body.innerHTML = '<h2>❌ Error</h2><p>' + err.message + '</p>';
+                            });
+                    }
+                </script>
+                </body>
+                </html>
+            """, "text/html");
         }).WithTags("Plugins").WithName("PluginAuthCallback");
     }
 
