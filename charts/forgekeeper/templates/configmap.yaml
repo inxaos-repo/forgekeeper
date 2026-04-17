@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "forgekeeper.fullname" . }}-config
+  labels:
+    {{- include "forgekeeper.labels" . | nindent 4 }}
+data:
+  TZ: {{ .Values.config.timezone | quote }}
+  ASPNETCORE_URLS: {{ .Values.config.aspnetcoreUrls | quote }}
+  Thumbnails__Size: {{ .Values.config.thumbnails.size | quote }}
+  Thumbnails__Format: {{ .Values.config.thumbnails.format | quote }}
+  Thumbnails__Renderer: {{ .Values.config.thumbnails.renderer | quote }}
+  Search__MinTrigramSimilarity: {{ .Values.config.search.minTrigramSimilarity | quote }}

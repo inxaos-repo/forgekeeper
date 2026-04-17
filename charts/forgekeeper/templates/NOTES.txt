@@ -1,0 +1,26 @@
+🔧 Forgekeeper — Plex for STL files
+
+1. Access the UI:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "forgekeeper.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "ClusterIP" .Values.service.type }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "forgekeeper.fullname" . }} 5000:{{ .Values.service.port }}
+  Then open: http://localhost:5000
+{{- end }}
+
+2. Trigger a library scan:
+  curl -X POST http://localhost:5000/api/scan
+
+3. Check status:
+  kubectl --namespace {{ .Release.Namespace }} get pods -l "{{ include "forgekeeper.selectorLabels" . | replace "\n" "," | replace ": " "=" }}"
+
+{{- if .Values.postgresql.enabled }}
+4. PostgreSQL (CNPG):
+  kubectl --namespace {{ .Release.Namespace }} get cluster {{ include "forgekeeper.pgcluster" . }}
+{{- end }}

@@ -1,0 +1,150 @@
+{{/*
+Library — NFS PV + PVC
+*/}}
+{{- if and .Values.persistence.library.enabled .Values.persistence.library.nfs.enabled (not .Values.persistence.library.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "forgekeeper.fullname" . }}-library
+  labels:
+    {{- include "forgekeeper.labels" . | nindent 4 }}
+    volume-name: {{ include "forgekeeper.fullname" . }}-library
+spec:
+  storageClassName: nfs-client
+  capacity:
+    storage: {{ .Values.persistence.library.size }}
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    path: {{ .Values.persistence.library.nfs.path | quote }}
+    server: {{ .Values.persistence.library.nfs.server }}
+  {{- with .Values.persistence.library.nfs.mountOptions }}
+  mountOptions:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "forgekeeper.fullname" . }}-library
+  labels:
+    {{- include "forgekeeper.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: {{ .Values.persistence.library.size }}
+  selector:
+    matchLabels:
+      volume-name: {{ include "forgekeeper.fullname" . }}-library
+{{- end }}
+{{/*
+Library — auto-provisioned PVC (no NFS, no existing claim)
+*/}}
+{{- if and .Values.persistence.library.enabled (not .Values.persistence.library.nfs.enabled) (not .Values.persistence.library.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "forgekeeper.fullname" . }}-library
+  labels:
+    {{- include "forgekeeper.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.library.accessMode }}
+  {{- if .Values.persistence.library.storageClass }}
+  storageClassName: {{ .Values.persistence.library.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.library.size }}
+{{- end }}
+---
+{{/*
+Data — NFS PV + PVC
+*/}}
+{{- if and .Values.persistence.data.enabled .Values.persistence.data.nfs.enabled (not .Values.persistence.data.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "forgekeeper.fullname" . }}-data
+  labels:
+    {{- include "forgekeeper.labels" . | nindent 4 }}
+    volume-name: {{ include "forgekeeper.fullname" . }}-data
+spec:
+  storageClassName: nfs-client
+  capacity:
+    storage: {{ .Values.persistence.data.size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    path: {{ .Values.persistence.data.nfs.path | quote }}
+    server: {{ .Values.persistence.data.nfs.server }}
+  {{- with .Values.persistence.data.nfs.mountOptions }}
+  mountOptions:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "forgekeeper.fullname" . }}-data
+  labels:
+    {{- include "forgekeeper.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: {{ .Values.persistence.data.size }}
+  selector:
+    matchLabels:
+      volume-name: {{ include "forgekeeper.fullname" . }}-data
+{{- end }}
+{{/*
+Data — auto-provisioned PVC
+*/}}
+{{- if and .Values.persistence.data.enabled (not .Values.persistence.data.nfs.enabled) (not .Values.persistence.data.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "forgekeeper.fullname" . }}-data
+  labels:
+    {{- include "forgekeeper.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.data.accessMode }}
+  {{- if .Values.persistence.data.storageClass }}
+  storageClassName: {{ .Values.persistence.data.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.data.size }}
+{{- end }}
+---
+{{/*
+Plugins — separate PVC (only when mountPath differs from data)
+*/}}
+{{- if and .Values.persistence.plugins.enabled (ne .Values.persistence.plugins.mountPath .Values.persistence.data.mountPath) (not .Values.persistence.plugins.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "forgekeeper.fullname" . }}-plugins
+  labels:
+    {{- include "forgekeeper.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.plugins.accessMode }}
+  {{- if .Values.persistence.plugins.storageClass }}
+  storageClassName: {{ .Values.persistence.plugins.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.plugins.size }}
+{{- end }}

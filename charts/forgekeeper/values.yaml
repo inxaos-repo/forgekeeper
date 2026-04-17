@@ -1,0 +1,124 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/inxaos-repo/forgekeeper
+  tag: main
+  pullPolicy: Always
+
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  port: 5000
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: forgekeeper.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    memory: 256Mi
+    cpu: 100m
+  limits:
+    memory: 1Gi
+
+persistence:
+  library:
+    enabled: true
+    mountPath: /library
+    # NFS direct mount (creates PV + PVC):
+    nfs:
+      enabled: false
+      server: ""
+      path: ""
+      mountOptions:
+        - nfsvers=4.1
+        - tcp
+        - intr
+        - hard
+        - noatime
+        - nodiratime
+    # Use an existing PVC:
+    existingClaim: ""
+    # Auto-provisioned PVC:
+    size: 50Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  data:
+    enabled: true
+    mountPath: /data
+    nfs:
+      enabled: false
+      server: ""
+      path: ""
+      mountOptions:
+        - nfsvers=4.1
+        - tcp
+        - intr
+        - hard
+        - noatime
+        - nodiratime
+    existingClaim: ""
+    size: 10Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+  plugins:
+    enabled: true
+    mountPath: /data/plugins
+    existingClaim: ""
+    size: 1Gi
+    storageClass: ""
+    accessMode: ReadWriteOnce
+
+postgresql:
+  # Use CNPG operator (must be installed separately)
+  enabled: true
+  instances: 1
+  storage:
+    size: 5Gi
+    storageClass: ""
+  # Or bring your own database:
+  external:
+    enabled: false
+    host: ""
+    port: 5432
+    database: forgekeeper
+    username: forgekeeper
+    password: ""
+
+config:
+  timezone: America/Los_Angeles
+  aspnetcoreUrls: "http://+:5000"
+  encryptionKey: "change-me"
+  thumbnails:
+    size: "256"
+    format: "webp"
+    enabled: true
+    renderer: "stl-thumb"
+  search:
+    minTrigramSimilarity: "0.3"
+  security:
+    apiKey: ""  # Empty = no auth required
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+dnsConfig:
+  options:
+    - name: ndots
+      value: "1"
