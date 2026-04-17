@@ -872,7 +872,9 @@ internal class MmfModelDetails
     [JsonPropertyName("images")]
     public List<MmfImage>? Images { get; set; }
 
-    [JsonPropertyName("files")]
+    // NOTE: 'files' is NOT deserialized from JSON — the API returns it as {total_count, items: [...]}
+    // which can't map to List<MmfFile>. We parse it manually from the raw JSON.
+    [JsonIgnore]
     public List<MmfFile>? Files { get; set; }
 
     [JsonPropertyName("tags")]
