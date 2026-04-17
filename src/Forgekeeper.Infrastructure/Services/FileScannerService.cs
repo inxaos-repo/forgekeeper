@@ -77,7 +77,9 @@ public class FileScannerService : IScannerService
         try
         {
             var basePaths = _config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
+            var scannedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+            // 1. Scan filesystem-discovered sources (basePath/sources/*/)
             foreach (var basePath in basePaths)
             {
                 var sourcesDir = Path.Combine(basePath, "sources");
@@ -90,8 +92,29 @@ public class FileScannerService : IScannerService
                 foreach (var sourceDir in Directory.GetDirectories(sourcesDir))
                 {
                     ct.ThrowIfCancellationRequested();
+                    scannedPaths.Add(Path.GetFullPath(sourceDir));
                     await ScanSourceDirectoryAsync(sourceDir, incremental, ct);
                 }
+            }
+
+            // 2. Scan database-defined sources (added via API/UI) that weren't already scanned
+            await using var scanDb = await _dbFactory.CreateDbContextAsync(ct);
+            var dbSources = await scanDb.Sources.Where(s => s.AutoScan).ToListAsync(ct);
+            foreach (var source in dbSources)
+            {
+                ct.ThrowIfCancellationRequested();
+                var fullPath = Path.GetFullPath(source.BasePath);
+                if (scannedPaths.Contains(fullPath))
+                    continue; // Already scanned from filesystem discovery
+
+                if (!Directory.Exists(source.BasePath))
+                {
+                    _logger.LogWarning("Source directory not found for '{Source}': {Path}", source.Name, source.BasePath);
+                    continue;
+                }
+
+                _logger.LogInformation("Scanning DB-defined source: {Source} at {Path}", source.Name, source.BasePath);
+                await ScanSourceDirectoryAsync(source.BasePath, incremental, ct);
             }
 
             lock (_lock)
