@@ -130,6 +130,23 @@ public class BulkUpdateResponse
 }
 
 /// <summary>
+/// Request to add/remove tags from multiple models at once.
+/// </summary>
+public class BulkTagsRequest
+{
+    public List<Guid> ModelIds { get; set; } = [];
+    public List<string> AddTags { get; set; } = [];
+    public List<string> RemoveTags { get; set; } = [];
+}
+
+public class BulkTagsResponse
+{
+    public int AffectedCount { get; set; }
+    public int TagsAdded { get; set; }
+    public int TagsRemoved { get; set; }
+}
+
+/// <summary>
 /// Request to add a relation between two models.
 /// </summary>
 public class AddRelationRequest

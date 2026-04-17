@@ -117,6 +117,16 @@ public class FileScannerService : IScannerService
                 await ScanSourceDirectoryAsync(source.BasePath, incremental, ct);
             }
 
+            // After scanning all sources, update creator model counts
+            await using var countDb = await _dbFactory.CreateDbContextAsync(ct);
+            var creators = await countDb.Creators.ToListAsync(ct);
+            foreach (var c in creators)
+            {
+                c.ModelCount = await countDb.Models.CountAsync(m => m.CreatorId == c.Id, ct);
+            }
+            await countDb.SaveChangesAsync(ct);
+            _logger.LogInformation("Updated model counts for {Count} creators", creators.Count);
+
             lock (_lock)
             {
                 _progress.IsRunning = false;

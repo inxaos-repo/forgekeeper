@@ -65,6 +65,11 @@ export function useApi() {
     return post('/models/bulk', data)
   }
 
+  /** Bulk add/remove tags on multiple models */
+  function bulkTagModels(data) {
+    return post('/models/bulk-tags', data)
+  }
+
   // ─── Related Models ────────────────────────────────────
   function addRelatedModel(modelId, relatedModelId, relation = 'related') {
     return post(`/models/${modelId}/related`, { relatedModelId, relation })
@@ -213,6 +218,7 @@ export function useApi() {
     updateModel,
     deleteModel,
     bulkUpdateModels,
+    bulkTagModels,
     // Related Models
     addRelatedModel,
     removeRelatedModel,

@@ -430,6 +430,84 @@ public static class ModelEndpoints
             });
         }).WithName("BulkUpdateModels");
 
+        // --- Bulk Tags (add + remove) ---
+
+        group.MapPost("/bulk-tags", async (
+            [FromBody] BulkTagsRequest request,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            if (request.ModelIds.Count == 0)
+                return Results.BadRequest(new { message = "No model IDs provided" });
+
+            if (request.ModelIds.Count > 500)
+                return Results.BadRequest(new { message = "Maximum 500 models per bulk operation" });
+
+            if (request.AddTags.Count == 0 && request.RemoveTags.Count == 0)
+                return Results.BadRequest(new { message = "No tags to add or remove" });
+
+            var models = await db.Models
+                .Include(m => m.Tags)
+                .Where(m => request.ModelIds.Contains(m.Id))
+                .ToListAsync(ct);
+
+            if (models.Count == 0)
+                return Results.NotFound(new { message = "No matching models found" });
+
+            var tagsAdded = 0;
+            var tagsRemoved = 0;
+
+            // Add tags
+            foreach (var tagName in request.AddTags.Select(t => t.ToLowerInvariant().Trim()).Distinct())
+            {
+                if (string.IsNullOrWhiteSpace(tagName)) continue;
+
+                var tag = await db.Tags.FirstOrDefaultAsync(t => t.Name == tagName, ct);
+                if (tag == null)
+                {
+                    tag = new Tag { Id = Guid.NewGuid(), Name = tagName };
+                    db.Tags.Add(tag);
+                }
+
+                foreach (var m in models)
+                {
+                    if (!m.Tags.Any(t => t.Name == tagName))
+                    {
+                        m.Tags.Add(tag);
+                        tagsAdded++;
+                    }
+                }
+            }
+
+            // Remove tags
+            foreach (var tagName in request.RemoveTags.Select(t => t.ToLowerInvariant().Trim()).Distinct())
+            {
+                if (string.IsNullOrWhiteSpace(tagName)) continue;
+
+                foreach (var m in models)
+                {
+                    var existingTag = m.Tags.FirstOrDefault(t => t.Name == tagName);
+                    if (existingTag != null)
+                    {
+                        m.Tags.Remove(existingTag);
+                        tagsRemoved++;
+                    }
+                }
+            }
+
+            foreach (var m in models)
+                m.UpdatedAt = DateTime.UtcNow;
+
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new BulkTagsResponse
+            {
+                AffectedCount = models.Count,
+                TagsAdded = tagsAdded,
+                TagsRemoved = tagsRemoved,
+            });
+        }).WithName("BulkTagModels");
+
         // --- Duplicates ---
 
         group.MapGet("/duplicates", async (

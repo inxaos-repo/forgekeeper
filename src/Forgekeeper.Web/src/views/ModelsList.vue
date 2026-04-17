@@ -99,21 +99,21 @@ async function executeBulkAction() {
   bulkProcessing.value = true
   try {
     const ids = [...selectedIds.value]
-    const payload = { modelIds: ids }
 
     if (bulkAction.value === 'tag' && bulkTag.value.trim()) {
-      payload.addTags = [bulkTag.value.trim().toLowerCase()]
+      await api.bulkTagModels({ modelIds: ids, addTags: [bulkTag.value.trim().toLowerCase()], removeTags: [] })
+    } else if (bulkAction.value === 'removeTag' && bulkTag.value.trim()) {
+      await api.bulkTagModels({ modelIds: ids, addTags: [], removeTags: [bulkTag.value.trim().toLowerCase()] })
     } else if (bulkAction.value === 'category' && bulkCategory.value) {
-      payload.category = bulkCategory.value
+      await api.bulkUpdateModels({ modelIds: ids, operation: 'categorize', value: bulkCategory.value })
     } else if (bulkAction.value === 'gameSystem' && bulkGameSystem.value) {
-      payload.gameSystem = bulkGameSystem.value
+      await api.bulkUpdateModels({ modelIds: ids, operation: 'setgamesystem', value: bulkGameSystem.value })
     } else if (bulkAction.value === 'rating' && bulkRating.value > 0) {
-      payload.rating = bulkRating.value
+      await api.bulkUpdateModels({ modelIds: ids, operation: 'setrating', value: String(bulkRating.value) })
     } else {
       return
     }
 
-    await api.bulkUpdateModels(payload)
     cancelBulk()
     await fetchModels()
   } catch {
@@ -298,6 +298,7 @@ onMounted(fetchModels)
       >
         <option value="">Choose action...</option>
         <option value="tag">Add Tag</option>
+        <option value="removeTag">Remove Tag</option>
         <option value="category">Set Category</option>
         <option value="gameSystem">Set Game System</option>
         <option value="rating">Set Rating</option>
@@ -305,7 +306,7 @@ onMounted(fetchModels)
 
       <!-- Tag input -->
       <input
-        v-if="bulkAction === 'tag'"
+        v-if="bulkAction === 'tag' || bulkAction === 'removeTag'"
         v-model="bulkTag"
         type="text"
         placeholder="Tag name..."
