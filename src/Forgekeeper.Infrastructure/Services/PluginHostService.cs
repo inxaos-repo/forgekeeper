@@ -139,13 +139,20 @@ public class PluginHostService : BackgroundService
                 Progress = progress,
             };
 
-            // Authenticate
+            // Authenticate — but don't abort if auth fails and we have fallback tokens
             var authResult = await loaded.Scraper.AuthenticateAsync(context, ct);
             if (!authResult.Authenticated)
             {
-                status.Error = $"Auth failed: {authResult.Message}";
-                _logger.LogWarning("[{Slug}] Authentication failed: {Msg}", slug, authResult.Message);
-                return;
+                _logger.LogWarning("[{Slug}] Primary authentication failed: {Msg}. Will try fallback tokens.", slug, authResult.Message);
+                // Check if we have any fallback tokens (e.g., download_token from MiniDownloader)
+                var fallbackToken = await context.TokenStore.GetTokenAsync("download_token", ct);
+                if (string.IsNullOrEmpty(fallbackToken))
+                {
+                    status.Error = $"Auth failed: {authResult.Message}";
+                    _logger.LogError("[{Slug}] No fallback tokens available. Authenticate via the Plugins page.", slug);
+                    return;
+                }
+                _logger.LogInformation("[{Slug}] Using fallback download token for sync", slug);
             }
 
             // Fetch manifest
