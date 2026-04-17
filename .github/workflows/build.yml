@@ -64,3 +64,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # - name: E2E Tests (Playwright)
+      #   if: github.event_name != 'pull_request'
+      #   run: |
+      #     cd tests/Forgekeeper.E2E
+      #     npm ci
+      #     npx playwright install chromium
+      #     FORGEKEEPER_URL=http://localhost:5000 npx playwright test
