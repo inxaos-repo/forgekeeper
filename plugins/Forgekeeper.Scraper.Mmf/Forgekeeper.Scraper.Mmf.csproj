@@ -14,4 +14,5 @@
     <ProjectReference Include="..\..\src\Forgekeeper.PluginSdk\Forgekeeper.PluginSdk.csproj" />
   </ItemGroup>
 
+  <!-- CacheBust: 1776455300 -->
 </Project>
