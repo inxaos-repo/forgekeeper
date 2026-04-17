@@ -88,8 +88,10 @@ COPY --from=plugins-build /app/plugins /app/plugins
 COPY --from=frontend-build /src/Forgekeeper.Api/wwwroot ./wwwroot/
 
 # Install Playwright Chromium using the plugin's DLL
-# The Microsoft.Playwright.dll includes the browser install command
+# Create a minimal runtimeconfig so dotnet exec can run the Playwright installer
 RUN if [ -f /app/plugins/Forgekeeper.Scraper.Mmf/Microsoft.Playwright.dll ]; then \
+      echo '{"runtimeOptions":{"tfm":"net9.0","framework":{"name":"Microsoft.NETCore.App","version":"9.0.0"}}}' \
+        > /app/plugins/Forgekeeper.Scraper.Mmf/Microsoft.Playwright.runtimeconfig.json && \
       dotnet exec /app/plugins/Forgekeeper.Scraper.Mmf/Microsoft.Playwright.dll install chromium; \
     fi
 
