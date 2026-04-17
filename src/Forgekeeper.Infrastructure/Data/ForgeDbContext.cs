@@ -143,7 +143,7 @@ public class ForgeDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasIndex(e => e.ModelId);
-            entity.HasIndex(e => e.FilePath).IsUnique();
+            entity.HasIndex(e => new { e.ModelId, e.FilePath }).IsUnique();
         });
 
         // Tag

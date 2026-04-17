@@ -339,9 +339,9 @@ public partial class Initial : Migration
             column: "model_id");
 
         migrationBuilder.CreateIndex(
-            name: "ix_variants_file_path",
+            name: "ix_variants_model_id_file_path",
             table: "variants",
-            column: "file_path",
+            columns: new[] { "model_id", "file_path" },
             unique: true);
 
         // Tags
