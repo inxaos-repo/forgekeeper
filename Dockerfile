@@ -88,6 +88,15 @@ COPY --from=plugins-build /app/plugins /app/plugins
 # vite.config.js outputs to ../../src/Forgekeeper.Api/wwwroot relative to /web
 COPY --from=frontend-build /src/Forgekeeper.Api/wwwroot ./wwwroot/
 
+# Install stl-thumb for 3D model thumbnail generation
+# Uses the official .deb package from GitHub releases (includes OpenGL software renderer)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends wget libegl1 libgl1 libxkbcommon0 && \
+    wget -q https://github.com/unlimitedbacon/stl-thumb/releases/download/v0.5.0/stl-thumb_0.5.0_amd64.deb -O /tmp/stl-thumb.deb && \
+    dpkg -i /tmp/stl-thumb.deb || apt-get install -f -y && \
+    rm -f /tmp/stl-thumb.deb && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Create directories for runtime data
 RUN mkdir -p /app/plugins /data
 
