@@ -28,6 +28,8 @@ RUN dotnet publish src/Forgekeeper.Api/Forgekeeper.Api.csproj -c Release -o /app
 FROM build AS plugins-build
 WORKDIR /src
 
+# Cache-bust: forces rebuild when plugin source changes
+ARG PLUGIN_CACHE_BUST=0
 COPY plugins/ plugins/
 RUN if [ -f plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj ]; then \
       dotnet publish plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj \
