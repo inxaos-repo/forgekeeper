@@ -33,17 +33,11 @@ public class MmfScraperPlugin : ILibraryScraper
             Key = "CLIENT_ID",
             Label = "OAuth Client ID",
             Type = PluginConfigFieldType.String,
-            Required = true,
-            HelpText = "Your MMF API application's client ID.",
+            Required = false,
+            DefaultValue = "downloader_v2",
+            HelpText = "MMF OAuth client ID. Default 'downloader_v2' works for most users.",
         },
-        new PluginConfigField
-        {
-            Key = "CLIENT_SECRET",
-            Label = "OAuth Client Secret",
-            Type = PluginConfigFieldType.Secret,
-            Required = true,
-            HelpText = "Your MMF API application's client secret.",
-        },
+        // CLIENT_SECRET not needed for OAuth implicit flow
         new PluginConfigField
         {
             Key = "DELAY_MS",
@@ -89,8 +83,8 @@ public class MmfScraperPlugin : ILibraryScraper
         }
 
         // Build OAuth authorization URL
-        if (!context.Config.TryGetValue("CLIENT_ID", out var clientId) || string.IsNullOrEmpty(clientId))
-            return AuthResult.Failed("CLIENT_ID not configured");
+        var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) && !string.IsNullOrEmpty(cid)
+            ? cid : "downloader_v2";
 
         // OAuth implicit flow — user visits this URL, gets redirected back with token
         var authUrl = $"{MmfAuthBase}/web/authorize" +
