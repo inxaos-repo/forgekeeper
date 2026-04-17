@@ -65,10 +65,28 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      # - name: E2E Tests (Playwright)
-      #   if: github.event_name != 'pull_request'
-      #   run: |
-      #     cd tests/Forgekeeper.E2E
-      #     npm ci
-      #     npx playwright install chromium
-      #     FORGEKEEPER_URL=http://localhost:5000 npx playwright test
+      - name: E2E Tests (Playwright)
+        if: github.event_name != 'pull_request'
+        run: |
+          # Start Forgekeeper + Postgres via docker compose
+          docker compose up -d postgres
+          sleep 5
+          
+          # Run the app from the just-built image
+          docker compose up -d forgekeeper
+          
+          # Wait for health check
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5000/health > /dev/null 2>&1; then
+              echo "Forgekeeper is healthy"
+              break
+            fi
+            echo "Waiting for Forgekeeper... ($i/30)"
+            sleep 2
+          done
+          
+          # Run E2E tests
+          docker compose --profile test run --rm e2e
+          
+          # Cleanup
+          docker compose --profile test down
