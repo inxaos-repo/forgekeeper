@@ -139,7 +139,9 @@ public class MmfScraperPlugin : ILibraryScraper
 
         var delayMs = GetDelayMs(context);
         
-        // Get saved session cookies from FlareSolverr login
+        // Get auth tokens — try download_token (from MiniDownloader) or access_token (from OAuth)
+        var bearerToken = await context.TokenStore.GetTokenAsync("download_token", ct)
+            ?? await context.TokenStore.GetTokenAsync("access_token", ct);
         var sessionCookies = await context.TokenStore.GetTokenAsync("session_cookies", ct);
         var sessionUA = await context.TokenStore.GetTokenAsync("session_useragent", ct);
 
@@ -151,33 +153,32 @@ public class MmfScraperPlugin : ILibraryScraper
 
         try
         {
-            // Fetch model details from v2 API using session cookies
+            // Fetch model details from v2 API using Bearer token (same as MiniDownloader)
             MmfModelDetails? details = null;
-            if (!string.IsNullOrEmpty(sessionCookies))
+            if (!string.IsNullOrEmpty(bearerToken))
             {
-                using var apiClient = new HttpClient();
-                apiClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
-                if (!string.IsNullOrEmpty(sessionUA))
-                    apiClient.DefaultRequestHeaders.Add("User-Agent", sessionUA);
+                using var apiClient = new HttpClient { BaseAddress = new Uri("https://www.myminifactory.com") };
+                apiClient.DefaultRequestHeaders.Authorization = 
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
+                apiClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
 
-                var response = await apiClient.GetAsync(
-                    $"{MmfApiBase}/objects/{model.ExternalId}", ct);
+                var response = await apiClient.GetAsync($"/api/v2/objects/{model.ExternalId}", ct);
 
                 if (response.IsSuccessStatusCode)
                 {
-                    details = await response.Content.ReadFromJsonAsync<MmfModelDetails>(
-                        JsonOptions, ct);
+                    details = await response.Content.ReadFromJsonAsync<MmfModelDetails>(JsonOptions, ct);
                 }
                 else
                 {
-                    context.Logger.LogDebug("[MMF] API returned {Status} for model {Id}", response.StatusCode, model.ExternalId);
+                    context.Logger.LogDebug("[MMF] API {Status} for model {Id} ({Name})", response.StatusCode, model.ExternalId, model.Name);
                 }
 
                 await Task.Delay(delayMs, ct);
             }
             else
             {
-                context.Logger.LogWarning("[MMF] No session cookies — skipping API details for {Model}", model.Name);
+                context.Logger.LogWarning("[MMF] No bearer token — skipping API details for {Model}", model.Name);
             }
 
             // Download files
@@ -213,11 +214,12 @@ public class MmfScraperPlugin : ILibraryScraper
 
                     try
                     {
-                        using var dlClient = new HttpClient();
-                        if (!string.IsNullOrEmpty(sessionCookies))
-                            dlClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
-                        if (!string.IsNullOrEmpty(sessionUA))
-                            dlClient.DefaultRequestHeaders.Add("User-Agent", sessionUA);
+                        using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                        if (!string.IsNullOrEmpty(bearerToken))
+                            dlClient.DefaultRequestHeaders.Authorization = 
+                                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
+                        dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
                         var fileResponse = await dlClient.GetAsync(file.DownloadUrl, ct);
                         fileResponse.EnsureSuccessStatusCode();
                         await using var fs = File.Create(filePath);
