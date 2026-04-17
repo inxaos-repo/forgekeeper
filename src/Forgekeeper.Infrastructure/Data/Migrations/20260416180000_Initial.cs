@@ -198,25 +198,48 @@ public partial class Initial : Migration
             name: "model_tags",
             columns: table => new
             {
-                ModelId = table.Column<Guid>(type: "uuid", nullable: false),
-                TagId = table.Column<Guid>(type: "uuid", nullable: false)
+                model_id = table.Column<Guid>(type: "uuid", nullable: false),
+                tag_id = table.Column<Guid>(type: "uuid", nullable: false)
             },
             constraints: table =>
             {
-                table.PrimaryKey("pk_model_tags", x => new { x.ModelId, x.TagId });
+                table.PrimaryKey("pk_model_tags", x => new { x.model_id, x.tag_id });
                 table.ForeignKey(
                     name: "fk_model_tags_models_model_id",
-                    column: x => x.ModelId,
+                    column: x => x.model_id,
                     principalTable: "models",
                     principalColumn: "id",
                     onDelete: ReferentialAction.Cascade);
                 table.ForeignKey(
                     name: "fk_model_tags_tags_tag_id",
-                    column: x => x.TagId,
+                    column: x => x.tag_id,
                     principalTable: "tags",
                     principalColumn: "id",
                     onDelete: ReferentialAction.Cascade);
             });
+
+        // Plugin configs table
+        migrationBuilder.CreateTable(
+            name: "plugin_configs",
+            columns: table => new
+            {
+                id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "gen_random_uuid()"),
+                plugin_slug = table.Column<string>(type: "character varying(100)", maxLength: 100, nullable: false),
+                key = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                value = table.Column<string>(type: "text", nullable: false),
+                is_encrypted = table.Column<bool>(type: "boolean", nullable: false),
+                updated_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("pk_plugin_configs", x => x.id);
+            });
+
+        migrationBuilder.CreateIndex(
+            name: "ix_plugin_configs_plugin_slug_key",
+            table: "plugin_configs",
+            columns: new[] { "plugin_slug", "key" },
+            unique: true);
 
         // Model relations table (WP18: self-referencing many-to-many)
         migrationBuilder.CreateTable(
@@ -332,7 +355,7 @@ public partial class Initial : Migration
         migrationBuilder.CreateIndex(
             name: "ix_model_tags_tag_id",
             table: "model_tags",
-            column: "TagId");
+            column: "tag_id");
 
         // Model relations
         migrationBuilder.CreateIndex(
@@ -370,6 +393,7 @@ public partial class Initial : Migration
     /// <inheritdoc />
     protected override void Down(MigrationBuilder migrationBuilder)
     {
+        migrationBuilder.DropTable(name: "plugin_configs");
         migrationBuilder.DropTable(name: "model_relations");
         migrationBuilder.DropTable(name: "model_tags");
         migrationBuilder.DropTable(name: "variants");

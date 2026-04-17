@@ -137,6 +137,41 @@ partial class ForgeDbContextModelSnapshot : ModelSnapshot
             b.ToTable("import_queue");
         });
 
+        modelBuilder.Entity("Forgekeeper.Core.Models.PluginConfig", b =>
+        {
+            b.Property<Guid>("Id")
+                .ValueGeneratedOnAdd()
+                .HasColumnType("uuid")
+                .HasDefaultValueSql("gen_random_uuid()");
+
+            b.Property<bool>("IsEncrypted")
+                .HasColumnType("boolean");
+
+            b.Property<string>("Key")
+                .IsRequired()
+                .HasMaxLength(200)
+                .HasColumnType("character varying(200)");
+
+            b.Property<string>("PluginSlug")
+                .IsRequired()
+                .HasMaxLength(100)
+                .HasColumnType("character varying(100)");
+
+            b.Property<DateTime>("UpdatedAt")
+                .HasColumnType("timestamp with time zone");
+
+            b.Property<string>("Value")
+                .IsRequired()
+                .HasColumnType("text");
+
+            b.HasKey("Id");
+
+            b.HasIndex("PluginSlug", "Key")
+                .IsUnique();
+
+            b.ToTable("plugin_configs");
+        });
+
         modelBuilder.Entity("Forgekeeper.Core.Models.Model3D", b =>
         {
             b.Property<Guid>("Id")
