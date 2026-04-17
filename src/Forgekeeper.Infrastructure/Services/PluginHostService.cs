@@ -329,6 +329,16 @@ internal class PluginLoadContext : AssemblyLoadContext
 
     protected override Assembly? Load(AssemblyName assemblyName)
     {
+        // Don't load shared assemblies from the plugin — use the host's version
+        // This ensures ILibraryScraper and other SDK types are shared between host and plugin
+        if (assemblyName.Name != null && (
+            assemblyName.Name.StartsWith("Forgekeeper.") ||
+            assemblyName.Name.StartsWith("Microsoft.Extensions.") ||
+            assemblyName.Name.StartsWith("System.")))
+        {
+            return null; // Fall back to default (host) context
+        }
+
         var path = _resolver.ResolveAssemblyToPath(assemblyName);
         return path != null ? LoadFromAssemblyPath(path) : null;
     }
