@@ -25,7 +25,16 @@ public class DbTokenStore : ITokenStore
         var tokenKey = $"__token__{key}";
         var entry = await db.PluginConfigs
             .FirstOrDefaultAsync(c => c.PluginSlug == _pluginSlug && c.Key == tokenKey, ct);
-        return entry?.Value;
+        if (entry?.Value == null) return null;
+        try
+        {
+            return SecretEncryption.Decrypt(entry.Value);
+        }
+        catch
+        {
+            // Fallback: return raw value if not encrypted (migration period)
+            return entry.Value;
+        }
     }
 
     public async Task SaveTokenAsync(string key, string value, CancellationToken ct = default)
@@ -42,7 +51,7 @@ public class DbTokenStore : ITokenStore
                 Id = Guid.NewGuid(),
                 PluginSlug = _pluginSlug,
                 Key = tokenKey,
-                Value = value,
+                Value = SecretEncryption.Encrypt(value),
                 IsEncrypted = true,
                 UpdatedAt = DateTime.UtcNow,
             };
@@ -50,7 +59,7 @@ public class DbTokenStore : ITokenStore
         }
         else
         {
-            entry.Value = value;
+            entry.Value = SecretEncryption.Encrypt(value);
             entry.UpdatedAt = DateTime.UtcNow;
         }
 

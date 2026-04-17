@@ -4,6 +4,7 @@ using Forgekeeper.Infrastructure.Services;
 using Forgekeeper.PluginSdk;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using SecretEncryption = Forgekeeper.Infrastructure.Services.SecretEncryption;
 
 namespace Forgekeeper.Api.Endpoints;
 
@@ -52,9 +53,11 @@ public static class PluginEndpoints
                 Required = f.Required,
                 HelpText = f.HelpText,
                 DefaultValue = f.DefaultValue,
-                // Mask secret values
+                // Mask secret values; decrypt encrypted entries for non-secret display
                 Value = stored.TryGetValue(f.Key, out var entry)
-                    ? (f.Type == PluginConfigFieldType.Secret ? "••••••••" : entry.Value)
+                    ? (f.Type == PluginConfigFieldType.Secret
+                        ? "••••••••"
+                        : (entry.IsEncrypted ? TryDecrypt(entry.Value) : entry.Value))
                     : f.DefaultValue,
                 IsSet = stored.ContainsKey(f.Key),
             }).ToList();
@@ -85,13 +88,14 @@ public static class PluginEndpoints
 
                 if (entry is null)
                 {
+                    var isSecret = field.Type == PluginConfigFieldType.Secret;
                     entry = new PluginConfig
                     {
                         Id = Guid.NewGuid(),
                         PluginSlug = slug,
                         Key = key,
-                        Value = value,
-                        IsEncrypted = field.Type == PluginConfigFieldType.Secret,
+                        Value = isSecret ? SecretEncryption.Encrypt(value) : value,
+                        IsEncrypted = isSecret,
                         UpdatedAt = DateTime.UtcNow,
                     };
                     db.PluginConfigs.Add(entry);
@@ -102,7 +106,9 @@ public static class PluginEndpoints
                     if (field.Type == PluginConfigFieldType.Secret && value == "••••••••")
                         continue;
 
-                    entry.Value = value;
+                    var isSecret = field.Type == PluginConfigFieldType.Secret;
+                    entry.Value = isSecret ? SecretEncryption.Encrypt(value) : value;
+                    entry.IsEncrypted = isSecret;
                     entry.UpdatedAt = DateTime.UtcNow;
                 }
             }
@@ -157,6 +163,12 @@ public static class PluginEndpoints
             else
                 return Results.BadRequest(new { message = result.Message, authenticated = false });
         }).WithTags("Plugins").WithName("PluginAuthCallback");
+    }
+
+    private static string TryDecrypt(string value)
+    {
+        try { return SecretEncryption.Decrypt(value); }
+        catch { return value; } // Fallback for unencrypted legacy values
     }
 
     private static PluginSyncStatusResponse? MapSyncStatus(PluginSyncStatus? status)

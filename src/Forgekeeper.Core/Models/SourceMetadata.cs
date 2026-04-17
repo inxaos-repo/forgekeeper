@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Forgekeeper.Core.Models;
@@ -73,6 +74,12 @@ public class SourceMetadata
 
     [JsonPropertyName("fileHashes")]
     public Dictionary<string, string>? FileHashes { get; set; } // localPath -> "sha256:hash"
+
+    /// <summary>
+    /// Preserves unknown/future JSON fields during deserialization so they survive round-trips.
+    /// </summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }
 
 public class MetadataCreator

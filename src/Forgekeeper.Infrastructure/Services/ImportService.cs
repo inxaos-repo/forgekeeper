@@ -112,10 +112,12 @@ public class ImportService : IImportService
         {
             var basePaths = _config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
             var basePath = basePaths[0];
-            var sourceSlug = !string.IsNullOrEmpty(request.SourceSlug)
+            var sourceSlug = SanitizePath(!string.IsNullOrEmpty(request.SourceSlug)
                 ? request.SourceSlug
-                : request.Source.ToString().ToLowerInvariant();
-            var targetDir = Path.Combine(basePath, "sources", sourceSlug, request.Creator, request.ModelName);
+                : request.Source.ToString().ToLowerInvariant());
+            var sanitizedCreator = SanitizePath(request.Creator);
+            var sanitizedModelName = SanitizePath(request.ModelName);
+            var targetDir = Path.Combine(basePath, "sources", sourceSlug, sanitizedCreator, sanitizedModelName);
 
             Directory.CreateDirectory(targetDir);
 
@@ -341,6 +343,15 @@ public class ImportService : IImportService
                 if (!entry.IsFile) continue;
 
                 var entryPath = Path.Combine(extractDir, entry.Name);
+
+                // ZIP Slip protection: ensure resolved path stays within extractDir
+                var fullPath = Path.GetFullPath(entryPath);
+                if (!fullPath.StartsWith(Path.GetFullPath(extractDir) + Path.DirectorySeparatorChar))
+                {
+                    _logger.LogWarning("Skipping ZIP entry with path traversal: {Entry}", entry.Name);
+                    continue;
+                }
+
                 var entryDir = Path.GetDirectoryName(entryPath);
                 if (entryDir != null) Directory.CreateDirectory(entryDir);
 
@@ -381,6 +392,15 @@ public class ImportService : IImportService
             ".gcode" => "gcode",
             _ => "unsupported"
         };
+    }
+
+    private static string SanitizePath(string input)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sanitized = string.Concat(input.Select(c => invalid.Contains(c) ? '_' : c));
+        // Prevent directory traversal
+        sanitized = sanitized.Replace("..", "__");
+        return sanitized.Trim().TrimStart('.');
     }
 
     private static ImportQueueItemDto MapToDto(ImportQueueItem item) => new()

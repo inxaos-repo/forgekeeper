@@ -177,6 +177,9 @@ public class FileScannerService : IScannerService
                 await ProcessModelDirectoryAsync(modelDir, incremental, ct);
             }
         }
+
+        // Reconcile: flag models whose files are missing from disk
+        await ReconcileSourceAsync(sourceDir, ct);
     }
 
     private async Task ProcessModelDirectoryAsync(string modelDir, bool incremental, CancellationToken ct)
@@ -214,9 +217,10 @@ public class FileScannerService : IScannerService
         var metadata = await _metadataService.ReadAsync(modelDir, ct);
 
         // Get or create creator
-        var creatorName = metadata?.Creator?.DisplayName
+        var creatorName = SanitizeMetadataValue(
+            metadata?.Creator?.DisplayName
             ?? metadata?.Creator?.Username
-            ?? parsed.CreatorName;
+            ?? parsed.CreatorName);
 
         var creator = await db.Creators.FirstOrDefaultAsync(
             c => c.Name == creatorName && c.Source == parsed.Source, ct);
@@ -261,7 +265,7 @@ public class FileScannerService : IScannerService
         }
 
         // Update model from metadata or parsed info
-        model.Name = metadata?.Name ?? parsed.ModelName;
+        model.Name = SanitizeMetadataValue(metadata?.Name ?? parsed.ModelName);
         model.SourceId = metadata?.ExternalId ?? parsed.SourceId;
         model.SourceUrl = metadata?.ExternalUrl;
         model.Description = metadata?.Description;
@@ -470,5 +474,66 @@ public class FileScannerService : IScannerService
     private void UpdateStatus(string status)
     {
         lock (_lock) _progress.Status = status;
+    }
+
+    /// <summary>
+    /// Sanitize metadata values to prevent directory traversal or invalid path characters
+    /// being stored in the database from disk metadata.
+    /// </summary>
+    private static string SanitizeMetadataValue(string input)
+    {
+        if (string.IsNullOrEmpty(input)) return input;
+        // Remove directory traversal patterns
+        var sanitized = input.Replace("..", "__");
+        // Remove control characters
+        sanitized = new string(sanitized.Where(c => !char.IsControl(c)).ToArray());
+        return sanitized.Trim();
+    }
+
+    /// <summary>
+    /// Reconcile DB records against filesystem — flag models whose files have all gone missing.
+    /// Called after scanning a source directory to detect removed models.
+    /// </summary>
+    private async Task ReconcileSourceAsync(string sourceDir, CancellationToken ct)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var sourceName = Path.GetFileName(sourceDir);
+
+        // Get all models whose BasePath is under this source directory
+        var models = await db.Models
+            .Include(m => m.Variants)
+            .Where(m => m.BasePath.StartsWith(sourceDir))
+            .ToListAsync(ct);
+
+        foreach (var model in models)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // Check if the model directory itself still exists
+            if (!Directory.Exists(model.BasePath))
+            {
+                _logger.LogWarning(
+                    "Model directory missing for {ModelName} (ID: {ModelId}): {BasePath}",
+                    model.Name, model.Id, model.BasePath);
+                continue;
+            }
+
+            // Check if ALL variant files are gone
+            if (model.Variants.Count > 0)
+            {
+                var allMissing = model.Variants.All(v =>
+                {
+                    var fullPath = Path.Combine(model.BasePath, v.FilePath);
+                    return !File.Exists(fullPath);
+                });
+
+                if (allMissing)
+                {
+                    _logger.LogWarning(
+                        "All variant files missing for model {ModelName} (ID: {ModelId}, {Count} variants)",
+                        model.Name, model.Id, model.Variants.Count);
+                }
+            }
+        }
     }
 }
