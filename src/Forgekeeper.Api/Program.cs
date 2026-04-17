@@ -20,10 +20,12 @@ builder.Host.UseSerilog((context, config) =>
 
 // Database
 builder.Services.AddDbContextFactory<ForgeDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("ForgeDb")));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("ForgeDb"))
+        .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)));
 
 builder.Services.AddDbContext<ForgeDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("ForgeDb")));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("ForgeDb"))
+        .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)));
 
 // Repositories
 builder.Services.AddScoped<IModelRepository, ModelRepository>();
