@@ -64,7 +64,7 @@ jobs:
           push: true
           no-cache: true
           build-args: |
-            PLUGIN_CACHE_BUST=${{ github.sha }}
+            CACHE_DATE=${{ github.event.head_commit.timestamp }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
