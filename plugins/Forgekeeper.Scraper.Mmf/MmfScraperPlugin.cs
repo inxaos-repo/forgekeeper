@@ -24,10 +24,26 @@ public class MmfScraperPlugin : ILibraryScraper
     public string SourceName => "MyMiniFactory";
     public string Description => "Scrapes your MyMiniFactory purchased/backed library, downloads model files, and generates metadata.json sidecar files.";
     public string Version => "1.0.0";
-    public bool RequiresBrowserAuth => true;
+    public bool RequiresBrowserAuth => false;
 
     public IReadOnlyList<PluginConfigField> ConfigSchema =>
     [
+        new PluginConfigField
+        {
+            Key = "MMF_USERNAME",
+            Label = "MyMiniFactory Email",
+            Type = PluginConfigFieldType.String,
+            Required = true,
+            HelpText = "Your MyMiniFactory login email address.",
+        },
+        new PluginConfigField
+        {
+            Key = "MMF_PASSWORD",
+            Label = "MyMiniFactory Password",
+            Type = PluginConfigFieldType.Secret,
+            Required = true,
+            HelpText = "Your MyMiniFactory password. Stored encrypted.",
+        },
         new PluginConfigField
         {
             Key = "CLIENT_ID",
@@ -58,41 +74,17 @@ public class MmfScraperPlugin : ILibraryScraper
         },
     ];
 
-    public async Task<AuthResult> AuthenticateAsync(PluginContext context, CancellationToken ct = default)
+    public Task<AuthResult> AuthenticateAsync(PluginContext context, CancellationToken ct = default)
     {
-        // Check for existing access token
-        var accessToken = await context.TokenStore.GetTokenAsync("access_token", ct);
-        if (!string.IsNullOrEmpty(accessToken))
+        var username = context.Config.TryGetValue("MMF_USERNAME", out var u) ? u : null;
+        var password = context.Config.TryGetValue("MMF_PASSWORD", out var p) ? p : null;
+
+        if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
         {
-            // Verify the token is still valid
-            try
-            {
-                context.HttpClient.DefaultRequestHeaders.Authorization =
-                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-                var response = await context.HttpClient.GetAsync($"{MmfApiBase}/users/me", ct);
-                if (response.IsSuccessStatusCode)
-                {
-                    context.Logger.LogInformation("Authenticated with existing token");
-                    return AuthResult.Success("Authenticated with stored token");
-                }
-            }
-            catch
-            {
-                // Token invalid, proceed to re-auth
-            }
+            return Task.FromResult(AuthResult.Success("Credentials configured — ready to sync"));
         }
 
-        // Build OAuth authorization URL
-        var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) && !string.IsNullOrEmpty(cid)
-            ? cid : "downloader_v2";
-
-        // OAuth implicit flow — user visits this URL, gets redirected back with token
-        var authUrl = $"{MmfAuthBase}/web/authorize" +
-                      $"?client_id={Uri.EscapeDataString(clientId)}" +
-                      $"&redirect_uri={Uri.EscapeDataString(GetCallbackUrl(context))}" +
-                      "&response_type=token";
-
-        return AuthResult.NeedsBrowser(authUrl, "Visit the authorization URL to connect your MyMiniFactory account.");
+        return Task.FromResult(AuthResult.Failed("MMF_USERNAME and MMF_PASSWORD must be configured in the plugin settings"));
     }
 
     public async Task<AuthResult> HandleAuthCallbackAsync(PluginContext context, IDictionary<string, string> callbackParams, CancellationToken ct = default)
@@ -122,32 +114,14 @@ public class MmfScraperPlugin : ILibraryScraper
             CurrentItem = "Loading library manifest...",
         });
 
-        // The data-library API requires browser cookies and can't be called with API tokens alone.
-        // Users upload their manifest JSON (exported from the MMF data library page).
+        // If user uploaded a manifest JSON, use it directly
         if (uploadedManifest is not null)
         {
             return await ParseUploadedManifestAsync(uploadedManifest, ct);
         }
 
-        // Try Playwright browser flow with access token
-        var accessToken = await context.TokenStore.GetTokenAsync("access_token", ct);
-        if (!string.IsNullOrEmpty(accessToken))
-        {
-            var result = await FetchLibraryViaBrowserAsync(context, accessToken, ct);
-            if (result.Count > 0) return result;
-            context.Logger.LogWarning("OAuth token didn't work for library access, trying download token...");
-        }
-
-        // Fallback: try the download token (from MiniDownloader)
-        var downloadToken = await context.TokenStore.GetTokenAsync("download_token", ct);
-        if (!string.IsNullOrEmpty(downloadToken))
-        {
-            var result = await FetchLibraryViaBrowserAsync(context, downloadToken, ct);
-            if (result.Count > 0) return result;
-        }
-
-        context.Logger.LogWarning("No working token for library access — authenticate via the Plugins page");
-        return [];
+        // Try Playwright browser login with username/password
+        return await FetchLibraryViaBrowserAsync(context, ct);
     }
 
     public async Task<ScrapeResult> ScrapeModelAsync(PluginContext context, ScrapedModel model, CancellationToken ct = default)
@@ -354,16 +328,26 @@ public class MmfScraperPlugin : ILibraryScraper
         return models;
     }
 
-    private async Task<IReadOnlyList<ScrapedModel>> FetchLibraryViaBrowserAsync(PluginContext context, string accessToken, CancellationToken ct)
+    private async Task<IReadOnlyList<ScrapedModel>> FetchLibraryViaBrowserAsync(PluginContext context, CancellationToken ct)
     {
-        context.Logger.LogInformation("[Browser] Fetching library manifest from MyMiniFactory via Playwright...");
+        // Get credentials from config
+        var username = context.Config.TryGetValue("MMF_USERNAME", out var u) ? u : null;
+        var password = context.Config.TryGetValue("MMF_PASSWORD", out var p) ? p : null;
+
+        if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+        {
+            context.Logger.LogWarning("MMF_USERNAME and MMF_PASSWORD not configured — cannot fetch library");
+            return [];
+        }
+
+        context.Logger.LogInformation("[Browser] Logging into MyMiniFactory via Playwright...");
 
         try
         {
             using var playwright = await Playwright.CreateAsync();
             await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
-                Headless = true
+                Headless = true,
             });
             var browserContext = await browser.NewContextAsync(new BrowserNewContextOptions
             {
@@ -372,21 +356,26 @@ public class MmfScraperPlugin : ILibraryScraper
 
             var page = await browserContext.NewPageAsync();
 
-            // Establish session cookies by hitting the API with the access token
-            context.Logger.LogInformation("[Browser] Establishing session with MyMiniFactory...");
-            await page.GotoAsync($"https://www.myminifactory.com/api/v2/user?access_token={accessToken}", new PageGotoOptions
+            // Navigate to login page
+            context.Logger.LogInformation("[Browser] Navigating to MMF login page...");
+            await page.GotoAsync("https://www.myminifactory.com/login", new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.NetworkIdle,
                 Timeout = 30000
             });
 
-            // Navigate to library page to fully establish the session
-            context.Logger.LogInformation("[Browser] Navigating to library page...");
-            await page.GotoAsync("https://www.myminifactory.com/my/collections", new PageGotoOptions
-            {
-                WaitUntil = WaitUntilState.NetworkIdle,
-                Timeout = 60000
-            });
+            // Fill in credentials and submit
+            context.Logger.LogInformation("[Browser] Entering credentials...");
+            await page.FillAsync("input[name='email'], input[type='email'], #email", username);
+            await page.FillAsync("input[name='password'], input[type='password'], #password", password);
+
+            // Click login button
+            await page.ClickAsync("button[type='submit'], input[type='submit'], .login-button, button:has-text('Log in'), button:has-text('Sign in')");
+
+            // Wait for navigation after login
+            await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new PageWaitForLoadStateOptions { Timeout = 30000 });
+
+            context.Logger.LogInformation("[Browser] Login complete, fetching library...");
 
             context.Progress.Report(new ScrapeProgress
             {
@@ -394,8 +383,7 @@ public class MmfScraperPlugin : ILibraryScraper
                 CurrentItem = "Fetching library via browser session...",
             });
 
-            // Fetch the data-library API using established session cookies
-            context.Logger.LogInformation("[Browser] Fetching object library...");
+            // Now fetch the data-library endpoint with session cookies
             var jsonResult = await page.EvaluateAsync<string>(@"
                 async () => {
                     const resp = await fetch('/api/data-library/objectPreviews', {
@@ -413,16 +401,16 @@ public class MmfScraperPlugin : ILibraryScraper
                 return [];
             }
 
-            // Parse the response — same format as the uploaded manifest
+            // Parse the manifest
             using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(jsonResult));
             var models = await ParseUploadedManifestAsync(stream, ct);
 
-            context.Logger.LogInformation("[Browser] Library manifest: {Count} objects fetched", models.Count);
+            context.Logger.LogInformation("[Browser] Library manifest: {Count} models found", models.Count);
             return models;
         }
         catch (Exception ex)
         {
-            context.Logger.LogError(ex, "[Browser] Error fetching library via Playwright");
+            context.Logger.LogError(ex, "[Browser] Error during Playwright login flow");
             return [];
         }
     }
