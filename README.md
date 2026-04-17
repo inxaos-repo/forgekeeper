@@ -56,18 +56,23 @@ A self-hosted digital asset manager for massive 3D printing collections, built f
 
 ```bash
 # Clone the repo
-git clone https://github.com/forgekeeper/forgekeeper.git
+git clone https://github.com/inxaos-repo/forgekeeper.git
 cd forgekeeper
 
-# Point to your collection (edit docker-compose.yml volumes section)
-# Default mounts ./sample-data to /mnt/3dprinting
+# Configure your library path
+cp .env.example .env
+# Edit .env and set LIBRARY_PATH to your STL collection directory
+# Your library should have the structure: {creator}/{model}/files...
 
 # Start
 docker compose up -d
 
-# Access
-# API: http://localhost:8080
-# Frontend: http://localhost:5173 (dev) or served by API (production)
+# Access the web UI
+open http://localhost:5000
+
+# The scanner runs automatically on startup.
+# Add sources from the UI (Sources tab) or place them in:
+# {LIBRARY_PATH}/sources/{source-name}/  (e.g. sources/mmf/)
 ```
 
 ### Run for Development

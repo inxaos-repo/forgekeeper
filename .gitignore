@@ -39,3 +39,6 @@ sample-data/
 *.tmp
 src/Forgekeeper.Api/wwwroot/
 core.*
+sample-library/*
+!sample-library/sources/
+plugins/*
