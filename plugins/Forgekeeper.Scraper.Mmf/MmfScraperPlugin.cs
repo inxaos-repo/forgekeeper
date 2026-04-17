@@ -358,7 +358,7 @@ public class MmfScraperPlugin : ILibraryScraper
 
             // Navigate to login page
             context.Logger.LogInformation("[Browser] Navigating to MMF login page...");
-            await page.GotoAsync("https://www.myminifactory.com/login", new PageGotoOptions
+            await page.GotoAsync("https://auth.myminifactory.com/web/login?client_id=downloader_v2", new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.NetworkIdle,
                 Timeout = 30000
@@ -366,16 +366,25 @@ public class MmfScraperPlugin : ILibraryScraper
 
             // Fill in credentials and submit
             context.Logger.LogInformation("[Browser] Entering credentials...");
-            await page.FillAsync("input[name='email'], input[type='email'], #email", username);
-            await page.FillAsync("input[name='password'], input[type='password'], #password", password);
+            await page.FillAsync("#inputEmail", username);
+            await page.FillAsync("#inputPassword", password);
 
             // Click login button
-            await page.ClickAsync("button[type='submit'], input[type='submit'], .login-button, button:has-text('Log in'), button:has-text('Sign in')");
+            await page.ClickAsync("#inputSubmit");
 
             // Wait for navigation after login
             await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new PageWaitForLoadStateOptions { Timeout = 30000 });
 
-            context.Logger.LogInformation("[Browser] Login complete, fetching library...");
+            context.Logger.LogInformation("[Browser] Login complete, navigating to library...");
+
+            // Navigate to main site to establish www cookies from auth session
+            await page.GotoAsync("https://www.myminifactory.com/my/collections", new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.NetworkIdle,
+                Timeout = 60000
+            });
+
+            context.Logger.LogInformation("[Browser] Session established, fetching library data...");
 
             context.Progress.Report(new ScrapeProgress
             {
@@ -386,7 +395,7 @@ public class MmfScraperPlugin : ILibraryScraper
             // Now fetch the data-library endpoint with session cookies
             var jsonResult = await page.EvaluateAsync<string>(@"
                 async () => {
-                    const resp = await fetch('/api/data-library/objectPreviews', {
+                    const resp = await fetch('https://www.myminifactory.com/api/data-library/objectPreviews', {
                         credentials: 'include'
                     });
                     if (!resp.ok) return JSON.stringify({ error: resp.status });
