@@ -177,22 +177,19 @@ public class MmfScraperPlugin : ILibraryScraper
                         context.Logger.LogWarning("[MMF] Got HTML response for model {Id} — CF block?", model.ExternalId);
                         return ScrapeResult.Failure($"HTML response for {model.Name} (possible CF block)");
                     }
-                    details = JsonSerializer.Deserialize<MmfModelDetails>(objJson, JsonOptions);
-
-                    // Extract archive_download_url (fallback for models without individual files)
+                    // Parse everything manually — MMF API types are wildly inconsistent
                     using var objDoc = JsonDocument.Parse(objJson);
-                    if (objDoc.RootElement.TryGetProperty("archive_download_url", out var archUrl))
+                    var root = objDoc.RootElement;
+                    details = ParseModelDetails(root);
+
+                    if (root.TryGetProperty("archive_download_url", out var archUrl) && archUrl.ValueKind == JsonValueKind.String)
                         archiveDownloadUrl = archUrl.GetString();
 
-                    // Try inline files from /objects response first
-                    if (objDoc.RootElement.TryGetProperty("files", out var filesNode))
+                    // Try inline files
+                    if (root.TryGetProperty("files", out var filesNode) && filesNode.ValueKind == JsonValueKind.Object)
                     {
-                        using var inlineDoc = JsonDocument.Parse(filesNode.GetRawText());
-                        if (inlineDoc.RootElement.TryGetProperty("items", out var inlineItems) 
-                            && inlineItems.ValueKind == JsonValueKind.Array)
-                        {
-                            details!.Files = inlineItems.Deserialize<List<MmfFile>>(JsonOptions) ?? [];
-                        }
+                        if (filesNode.TryGetProperty("items", out var inlineItems) && inlineItems.ValueKind == JsonValueKind.Array)
+                            details.Files = ParseFiles(inlineItems);
                     }
                 }
                 else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -219,7 +216,7 @@ public class MmfScraperPlugin : ILibraryScraper
                             if (filesDoc.RootElement.TryGetProperty("items", out var fileItems)
                                 && fileItems.ValueKind == JsonValueKind.Array)
                             {
-                                details.Files = fileItems.Deserialize<List<MmfFile>>(JsonOptions) ?? [];
+                                details.Files = ParseFiles(fileItems);
                             }
                         }
                     }
@@ -735,6 +732,102 @@ public class MmfScraperPlugin : ILibraryScraper
         if (string.IsNullOrEmpty(name)) return "unknown";
         var invalid = Path.GetInvalidFileNameChars();
         return new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim();
+    }
+
+    /// <summary>Parse model details from raw JSON (avoids typed deserialization issues with MMF's inconsistent API).</summary>
+    private static MmfModelDetails ParseModelDetails(JsonElement root)
+    {
+        var details = new MmfModelDetails
+        {
+            Id = root.TryGetProperty("id", out var id) ? id.GetInt64() : 0,
+            Name = root.TryGetProperty("name", out var name) ? name.GetString() : null,
+            Url = root.TryGetProperty("url", out var url) ? url.GetString() : null,
+            Description = root.TryGetProperty("description", out var desc) ? desc.GetString() : null,
+            Type = root.TryGetProperty("type", out var type) ? type.GetString() : null,
+        };
+
+        if (root.TryGetProperty("created_at", out var ca) && ca.ValueKind == JsonValueKind.String
+            && DateTime.TryParse(ca.GetString(), out var cdt)) details.CreatedAt = cdt;
+        if (root.TryGetProperty("updated_at", out var ua) && ua.ValueKind == JsonValueKind.String
+            && DateTime.TryParse(ua.GetString(), out var udt)) details.UpdatedAt = udt;
+        if (root.TryGetProperty("published_at", out var pa) && pa.ValueKind == JsonValueKind.String
+            && DateTime.TryParse(pa.GetString(), out var pdt)) details.PublishedAt = pdt;
+
+        if (root.TryGetProperty("designer", out var designer) && designer.ValueKind == JsonValueKind.Object)
+        {
+            details.Designer = new MmfDesigner
+            {
+                Id = designer.TryGetProperty("id", out var did) && did.ValueKind == JsonValueKind.Number ? did.GetInt64() : null,
+                Name = designer.TryGetProperty("name", out var dn) ? dn.GetString() : null,
+                Username = designer.TryGetProperty("username", out var du) ? du.GetString() : null,
+                ProfileUrl = designer.TryGetProperty("profile_url", out var dp) ? dp.GetString() : null,
+            };
+        }
+
+        // Tags — can be strings OR objects with {name}
+        if (root.TryGetProperty("tags", out var tags) && tags.ValueKind == JsonValueKind.Array)
+        {
+            details.Tags = [];
+            foreach (var tag in tags.EnumerateArray())
+            {
+                string? tagName = tag.ValueKind == JsonValueKind.String
+                    ? tag.GetString()
+                    : tag.TryGetProperty("name", out var tn) ? tn.GetString() : null;
+                if (tagName != null)
+                    details.Tags.Add(new MmfTag { Name = tagName });
+            }
+        }
+
+        // Images — original/url can be string or object
+        if (root.TryGetProperty("images", out var images) && images.ValueKind == JsonValueKind.Array)
+        {
+            details.Images = [];
+            foreach (var img in images.EnumerateArray())
+            {
+                var mmfImg = new MmfImage();
+                if (img.TryGetProperty("url", out var iurl))
+                    mmfImg.Url = iurl.ValueKind == JsonValueKind.String ? iurl.GetString() : null;
+                if (img.TryGetProperty("original", out var orig))
+                {
+                    if (orig.ValueKind == JsonValueKind.Object)
+                        mmfImg.Original = new MmfImageVariant { Url = orig.TryGetProperty("url", out var ou) ? ou.GetString() : null };
+                    else if (orig.ValueKind == JsonValueKind.String)
+                        mmfImg.Original = new MmfImageVariant { Url = orig.GetString() };
+                }
+                if (img.TryGetProperty("standard", out var std) && std.ValueKind == JsonValueKind.Object)
+                    mmfImg.Standard = new MmfImageVariant { Url = std.TryGetProperty("url", out var su) ? su.GetString() : null };
+                if (img.TryGetProperty("thumbnail", out var thumb) && thumb.ValueKind == JsonValueKind.Object)
+                    mmfImg.Thumbnail = new MmfImageVariant { Url = thumb.TryGetProperty("url", out var tu) ? tu.GetString() : null };
+                details.Images.Add(mmfImg);
+            }
+        }
+
+        return details;
+    }
+
+    /// <summary>Parse files from a JSON array (handles null/missing size, etc.).</summary>
+    private static List<MmfFile> ParseFiles(JsonElement itemsArray)
+    {
+        var files = new List<MmfFile>();
+        foreach (var f in itemsArray.EnumerateArray())
+        {
+            var filename = f.TryGetProperty("filename", out var fn) ? fn.GetString() : null;
+            var downloadUrl = f.TryGetProperty("download_url", out var du) ? du.GetString() : null;
+            long size = 0;
+            if (f.TryGetProperty("size", out var sz))
+            {
+                if (sz.ValueKind == JsonValueKind.Number) size = sz.GetInt64();
+                else if (sz.ValueKind == JsonValueKind.String) long.TryParse(sz.GetString(), out size);
+            }
+            files.Add(new MmfFile
+            {
+                Id = f.TryGetProperty("id", out var fid) && fid.ValueKind == JsonValueKind.Number ? fid.GetInt64() : 0,
+                Filename = filename,
+                Size = size,
+                DownloadUrl = downloadUrl,
+            });
+        }
+        return files;
     }
 
     /// <summary>Create a pre-configured HttpClient for MMF API calls with Bearer auth.</summary>
