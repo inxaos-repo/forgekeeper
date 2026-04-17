@@ -144,6 +144,11 @@ public class MmfScraperPlugin : ILibraryScraper
         var bearerToken = await context.TokenStore.GetTokenAsync("download_token", ct)
             ?? await context.TokenStore.GetTokenAsync("access_token", ct);
 
+        // Strip 'object-' prefix from external ID (manifest stores 'object-12345' but API wants '12345')
+        var numericId = model.ExternalId?.StartsWith("object-") == true 
+            ? model.ExternalId[7..] 
+            : model.ExternalId;
+
         context.Progress.Report(new ScrapeProgress
         {
             Status = "downloading",
@@ -162,7 +167,7 @@ public class MmfScraperPlugin : ILibraryScraper
             {
                 using var apiClient = CreateApiClient(bearerToken);
 
-                var response = await apiClient.GetAsync($"/api/v2/objects/{model.ExternalId}", ct);
+                var response = await apiClient.GetAsync($"/api/v2/objects/{numericId}", ct);
                 if (response.IsSuccessStatusCode)
                 {
                     var objJson = await response.Content.ReadAsStringAsync(ct);
@@ -204,7 +209,7 @@ public class MmfScraperPlugin : ILibraryScraper
                 // ── Step 2: Fetch file download URLs (if inline was empty) ──
                 if (details != null && (details.Files == null || details.Files.Count == 0))
                 {
-                    var filesResponse = await apiClient.GetAsync($"/api/v2/objects/{model.ExternalId}/files?per_page=100", ct);
+                    var filesResponse = await apiClient.GetAsync($"/api/v2/objects/{numericId}/files?per_page=100", ct);
                     if (filesResponse.IsSuccessStatusCode)
                     {
                         var filesJson = await filesResponse.Content.ReadAsStringAsync(ct);
