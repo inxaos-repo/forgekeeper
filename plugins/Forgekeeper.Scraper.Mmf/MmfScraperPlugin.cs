@@ -403,10 +403,16 @@ public class MmfScraperPlugin : ILibraryScraper
                 // 1c: POST login credentials
                 var postData = $"_csrf_token={Uri.EscapeDataString(csrfToken)}&_username={Uri.EscapeDataString(username)}&_password={Uri.EscapeDataString(password)}&_remember_me=on&_submit=";
                 var loginResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
-                    new StringContent(JsonSerializer.Serialize(new { cmd = "request.post", url = "https://www.myminifactory.com/login_check", session = fsSession, postData = postData, maxTimeout = 30000 }), System.Text.Encoding.UTF8, "application/json"), ct);
-                var loginJson = JsonDocument.Parse(await loginResp.Content.ReadAsStringAsync(ct));
-                var loginSolution = loginJson.RootElement.GetProperty("solution");
-                var redirectUrl = loginSolution.GetProperty("url").GetString() ?? "";
+                    new StringContent(JsonSerializer.Serialize(new { cmd = "request.post", url = "https://www.myminifactory.com/login_check", session = fsSession, postData = postData, maxTimeout = 90000 }), System.Text.Encoding.UTF8, "application/json"), ct);
+                var loginBody = await loginResp.Content.ReadAsStringAsync(ct);
+                context.Logger.LogInformation("[MMF] Login POST response: {Body}", loginBody.Length > 300 ? loginBody[..300] : loginBody);
+                var loginJson = JsonDocument.Parse(loginBody);
+                if (!loginJson.RootElement.TryGetProperty("solution", out var loginSolution))
+                {
+                    context.Logger.LogError("[MMF] FlareSolverr login POST failed: {Body}", loginBody[..Math.Min(500, loginBody.Length)]);
+                    return [];
+                }
+                var redirectUrl = loginSolution.TryGetProperty("url", out var urlProp) ? urlProp.GetString() ?? "" : "";
                 
                 // Extract user agent
                 if (loginSolution.TryGetProperty("userAgent", out var uaProp))
@@ -442,83 +448,26 @@ public class MmfScraperPlugin : ILibraryScraper
                 }
             }
 
-            // Step 2: Login via Playwright on auth subdomain
-            context.Logger.LogInformation("[MMF] Step 2: Logging in via Playwright...");
-            using var playwright = await Playwright.CreateAsync();
-            await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-            {
-                Headless = true,
-                Args = new[]
-                {
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--window-size=1920,1080",
-                },
-            });
-
-            var browserContext = await browser.NewContextAsync(new BrowserNewContextOptions
-            {
-                UserAgent = solvedUserAgent
-                    ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                ViewportSize = new ViewportSize { Width = 1920, Height = 1080 },
-            });
-
-            // Inject CF cookies into browser context
-            if (cfCookies.Count > 0)
-            {
-                await browserContext.AddCookiesAsync(cfCookies);
-                context.Logger.LogInformation("[MMF] Injected {Count} CF cookies into browser", cfCookies.Count);
-            }
-
-            var page = await browserContext.NewPageAsync();
-            await page.AddInitScriptAsync(@"
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                window.chrome = { runtime: {} };
-            ");
-
-            // Skip auth subdomain login — FlareSolverr already handled login on www
-            context.Logger.LogInformation("[MMF] Step 3: Navigating to data-library with session cookies...");
+            // Step 2: Fetch data-library using HttpClient with FlareSolverr cookies
+            // No Playwright needed — FlareSolverr already solved CF and logged in
+            context.Logger.LogInformation("[MMF] Step 2: Fetching data-library with session cookies via HttpClient...");
 
             context.Progress.Report(new ScrapeProgress
             {
                 Status = "fetching_manifest",
-                CurrentItem = "Fetching library via FlareSolverr + browser session...",
+                CurrentItem = "Fetching library data with session cookies...",
             });
 
-            // Try navigating to the data-library API directly
-            var response = await page.GotoAsync("https://www.myminifactory.com/api/data-library/objectPreviews", new PageGotoOptions
-            {
-                WaitUntil = WaitUntilState.NetworkIdle,
-                Timeout = 60000
-            });
+            // Build cookie header from FlareSolverr cookies
+            var cookieHeader = string.Join("; ", cfCookies.Select(c => $"{c.Name}={c.Value}"));
+            
+            using var libraryClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+            libraryClient.DefaultRequestHeaders.Add("Cookie", cookieHeader);
+            libraryClient.DefaultRequestHeaders.Add("User-Agent", solvedUserAgent ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
 
-            string jsonResult;
-            if (response != null && response.Ok)
-            {
-                jsonResult = await response.TextAsync();
-                context.Logger.LogInformation("[MMF] Direct navigation succeeded!");
-            }
-            else
-            {
-                context.Logger.LogWarning("[MMF] Direct navigation returned {Status}, trying fetch()...", response?.Status);
-                // Fallback: navigate to main site first, then fetch
-                await page.GotoAsync("https://www.myminifactory.com/my/collections", new PageGotoOptions
-                {
-                    WaitUntil = WaitUntilState.NetworkIdle,
-                    Timeout = 60000
-                });
-
-                jsonResult = await page.EvaluateAsync<string>(@"
-                    async () => {
-                        const resp = await fetch('/api/data-library/objectPreviews', { credentials: 'include' });
-                        if (!resp.ok) return JSON.stringify({ error: resp.status });
-                        const data = await resp.json();
-                        return JSON.stringify(data);
-                    }
-                ");
-            }
+            var libraryResponse = await libraryClient.GetAsync("https://www.myminifactory.com/api/data-library/objectPreviews", ct);
+            var jsonResult = await libraryResponse.Content.ReadAsStringAsync(ct);
+            context.Logger.LogInformation("[MMF] Data-library response: status={Status}, length={Len}", libraryResponse.StatusCode, jsonResult.Length);
 
             if (string.IsNullOrEmpty(jsonResult) || jsonResult.Contains("\"error\""))
             {
