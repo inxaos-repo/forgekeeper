@@ -96,7 +96,10 @@ public class PluginHostService : BackgroundService
         if (status.IsRunning)
             throw new InvalidOperationException($"Sync for '{slug}' is already running");
 
-        await Task.Run(() => RunSyncAsync(slug, ct), ct);
+        // Use a long-lived token (not the HTTP request's CT which times out with nginx)
+        // The sync runs in the background and can take minutes for FlareSolverr CF solve + login
+        var syncCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        _ = Task.Run(() => RunSyncAsync(slug, syncCts.Token));
     }
 
     /// <summary>Handle an auth callback routed from the web server.</summary>
