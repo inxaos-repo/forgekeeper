@@ -80,9 +80,9 @@ public class ModelRepository : IModelRepository
             TotalFiles = await _db.Variants.CountAsync(ct),
             TotalSizeBytes = await _db.Models.SumAsync(m => m.TotalSizeBytes, ct),
             PrintedCount = await _db.Models.CountAsync(m =>
-                m.PrintHistory != null && m.PrintHistory.Any(p => p.Result == "success"), ct),
+                m.PrintHistory != null && m.PrintHistory.Count > 0, ct),
             UnprintedCount = await _db.Models.CountAsync(m =>
-                m.PrintHistory == null || !m.PrintHistory.Any(p => p.Result == "success"), ct),
+                m.PrintHistory == null || m.PrintHistory.Count == 0, ct),
         };
 
         stats.ModelsBySource = await _db.Models

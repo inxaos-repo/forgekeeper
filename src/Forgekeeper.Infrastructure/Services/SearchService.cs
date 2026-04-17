@@ -63,9 +63,9 @@ public class SearchService : ISearchService
         {
             // Printed is computed from PrintHistory; filter via JSONB query
             if (request.Printed.Value)
-                query = query.Where(m => m.PrintHistory != null && m.PrintHistory.Any(p => p.Result == "success"));
+                query = query.Where(m => m.PrintHistory != null && m.PrintHistory.Count > 0);
             else
-                query = query.Where(m => m.PrintHistory == null || !m.PrintHistory.Any(p => p.Result == "success"));
+                query = query.Where(m => m.PrintHistory == null || m.PrintHistory.Count == 0);
         }
 
         if (request.MinRating.HasValue)

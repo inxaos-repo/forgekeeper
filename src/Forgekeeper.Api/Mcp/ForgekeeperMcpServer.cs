@@ -402,7 +402,7 @@ public class ForgekeeperMcpServer
         var totalVariants = await db.Variants.CountAsync(ct);
         var totalSize = await db.Models.SumAsync(m => m.TotalSizeBytes, ct);
         var printedCount = await db.Models
-            .Where(m => m.PrintHistory != null && m.PrintHistory.Any(p => p.Result == "success"))
+            .Where(m => m.PrintHistory != null && m.PrintHistory.Count > 0)
             .CountAsync(ct);
 
         var bySource = await db.Models
@@ -489,7 +489,7 @@ public class ForgekeeperMcpServer
 
         var printed = await db.Models
             .Include(m => m.Creator)
-            .Where(m => m.PrintHistory != null && m.PrintHistory.Any())
+            .Where(m => m.PrintHistory != null && m.PrintHistory.Count > 0)
             .OrderByDescending(m => m.UpdatedAt)
             .Take(limit)
             .Select(m => new
