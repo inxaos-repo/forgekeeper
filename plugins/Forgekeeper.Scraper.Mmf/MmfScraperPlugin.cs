@@ -372,7 +372,7 @@ public class MmfScraperPlugin : ILibraryScraper
         try
         {
             // Step 1: Get CF cookies via FlareSolverr
-            var cfCookies = new List<Cookie>();
+            var cfCookies = new List<(string Name, string Value)>();
             string? solvedUserAgent = null;
 
             if (!string.IsNullOrEmpty(flareSolverrUrl))
@@ -440,13 +440,10 @@ public class MmfScraperPlugin : ILibraryScraper
                 {
                     foreach (var cookie in cookiesArray.EnumerateArray())
                     {
-                        cfCookies.Add(new Cookie
-                        {
-                            Name = cookie.GetProperty("name").GetString() ?? "",
-                            Value = cookie.GetProperty("value").GetString() ?? "",
-                            Domain = cookie.TryGetProperty("domain", out var d) ? d.GetString() ?? ".myminifactory.com" : ".myminifactory.com",
-                            Path = cookie.TryGetProperty("path", out var pa) ? pa.GetString() ?? "/" : "/",
-                        });
+                        cfCookies.Add((
+                            Name: cookie.GetProperty("name").GetString() ?? "",
+                            Value: cookie.GetProperty("value").GetString() ?? ""
+                        ));
                     }
                 }
 
