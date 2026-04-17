@@ -127,8 +127,10 @@ async function executeBulkAction() {
 async function fetchModels() {
   try {
     const params = {
-      q: searchQuery.value || undefined,
+      query: searchQuery.value || undefined,
       ...filters,
+      tags: filters.tag || undefined,
+      tag: undefined,
       sortBy: sortBy.value,
       sortDescending: sortDir.value === 'desc' ? true : undefined,
       page: page.value,

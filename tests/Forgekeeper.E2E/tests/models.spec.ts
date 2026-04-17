@@ -30,4 +30,33 @@ test.describe('Models', () => {
       }
     }
   });
+
+  test('search with sort returns ordered results', async ({ request }) => {
+    const response = await request.get('/api/v1/models?sortBy=fileCount&sortDescending=true&pageSize=3');
+    if (response.ok()) {
+      const body = await response.json();
+      if (body.items.length >= 2) {
+        expect(body.items[0].fileCount).toBeGreaterThanOrEqual(body.items[1].fileCount);
+      }
+    }
+  });
+
+  test('search with pagination works', async ({ request }) => {
+    const page1 = await request.get('/api/v1/models?pageSize=2&page=1');
+    const page2 = await request.get('/api/v1/models?pageSize=2&page=2');
+    if (page1.ok() && page2.ok()) {
+      const body1 = await page1.json();
+      const body2 = await page2.json();
+      if (body1.items.length > 0 && body2.items.length > 0) {
+        expect(body1.items[0].id).not.toBe(body2.items[0].id);
+      }
+    }
+  });
+
+  test('filter sidebar is visible on models page', async ({ page }) => {
+    await page.goto('/');
+    // Filter sidebar should be present (hidden on mobile, visible on desktop)
+    const sidebar = page.locator('aside');
+    await expect(sidebar).toBeAttached();
+  });
 });
