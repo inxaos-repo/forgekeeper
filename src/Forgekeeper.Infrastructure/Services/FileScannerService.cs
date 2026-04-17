@@ -168,13 +168,15 @@ public class FileScannerService : IScannerService
                     {
                         foreach (var subModelDir in subDirs)
                         {
-                            await ProcessModelDirectoryAsync(subModelDir, incremental, ct);
+                            try { await ProcessModelDirectoryAsync(subModelDir, incremental, ct); }
+                            catch (Exception ex) { _logger.LogError(ex, "Failed to process model: {Path}", subModelDir); }
                         }
                         continue;
                     }
                 }
 
-                await ProcessModelDirectoryAsync(modelDir, incremental, ct);
+                try { await ProcessModelDirectoryAsync(modelDir, incremental, ct); }
+                catch (Exception ex) { _logger.LogError(ex, "Failed to process model: {Path}", modelDir); }
             }
         }
 
@@ -337,13 +339,17 @@ public class FileScannerService : IScannerService
         {
             foreach (var tagName in metadata.Tags.Select(t => t.ToLowerInvariant().Trim()).Distinct())
             {
-                var tag = await db.Tags.FirstOrDefaultAsync(t => t.Name == tagName, ct);
+                // Check DB first, then check locally-tracked entities to avoid duplicate inserts
+                var tag = await db.Tags.FirstOrDefaultAsync(t => t.Name == tagName, ct)
+                    ?? db.Tags.Local.FirstOrDefault(t => t.Name == tagName);
                 if (tag == null)
                 {
                     tag = new Tag { Id = Guid.NewGuid(), Name = tagName };
                     db.Tags.Add(tag);
+                    await db.SaveChangesAsync(ct); // Flush to avoid duplicate on next model
                 }
-                model.Tags.Add(tag);
+                if (!model.Tags.Contains(tag))
+                    model.Tags.Add(tag);
             }
         }
 
