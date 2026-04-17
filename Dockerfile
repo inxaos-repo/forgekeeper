@@ -54,16 +54,7 @@ RUN if [ -f node_modules/.bin/vite ]; then \
       echo '<html><body><h1>Forgekeeper</h1></body></html>' > dist/index.html; \
     fi
 
-# --- Stage 4: Install Playwright Chromium ---
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS playwright-install
-RUN dotnet new console -n temp && cd temp && \
-    dotnet add package Microsoft.Playwright --version 1.52.0 && \
-    dotnet build && \
-    ./bin/Debug/net9.0/temp install chromium && \
-    rm -rf /temp
-# Chromium ends up in /root/.cache/ms-playwright/
-
-# --- Stage 5: Runtime image ---
+# --- Stage 4: Runtime image ---
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
@@ -87,9 +78,6 @@ RUN apt-get update && \
     # Cleanup
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Copy Playwright Chromium from the install stage
-COPY --from=playwright-install /root/.cache/ms-playwright /root/.cache/ms-playwright
-
 # Copy published application
 COPY --from=build /app/publish .
 
@@ -98,6 +86,12 @@ COPY --from=plugins-build /app/plugins /app/plugins
 
 # Copy frontend build output
 COPY --from=frontend-build /src/Forgekeeper.Api/wwwroot ./wwwroot/
+
+# Install Playwright Chromium using the plugin's DLL
+# The Microsoft.Playwright.dll includes the browser install command
+RUN if [ -f /app/plugins/Forgekeeper.Scraper.Mmf/Microsoft.Playwright.dll ]; then \
+      dotnet exec /app/plugins/Forgekeeper.Scraper.Mmf/Microsoft.Playwright.dll install chromium; \
+    fi
 
 # Create directories for runtime data
 RUN mkdir -p /app/plugins /data
