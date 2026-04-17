@@ -366,15 +366,29 @@ public class MmfScraperPlugin : ILibraryScraper
                 // 1a: Create FlareSolverr session
                 var createResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
                     new StringContent(JsonSerializer.Serialize(new { cmd = "sessions.create" }), System.Text.Encoding.UTF8, "application/json"), ct);
-                var createJson = JsonDocument.Parse(await createResp.Content.ReadAsStringAsync(ct));
-                var fsSession = createJson.RootElement.GetProperty("session").GetString();
+                var createBody = await createResp.Content.ReadAsStringAsync(ct);
+                context.Logger.LogInformation("[MMF] FlareSolverr create response: {Body}", createBody.Length > 200 ? createBody[..200] : createBody);
+                var createJson = JsonDocument.Parse(createBody);
+                if (!createJson.RootElement.TryGetProperty("session", out var sessionProp))
+                {
+                    context.Logger.LogError("[MMF] FlareSolverr failed to create session: {Body}", createBody[..Math.Min(500, createBody.Length)]);
+                    return [];
+                }
+                var fsSession = sessionProp.GetString();
                 context.Logger.LogInformation("[MMF] FlareSolverr session: {Session}", fsSession);
 
                 // 1b: Get login page (solves CF + gets CSRF)
                 var loginPageResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
                     new StringContent(JsonSerializer.Serialize(new { cmd = "request.get", url = "https://www.myminifactory.com/login", session = fsSession, maxTimeout = 60000 }), System.Text.Encoding.UTF8, "application/json"), ct);
-                var loginPageJson = JsonDocument.Parse(await loginPageResp.Content.ReadAsStringAsync(ct));
-                var loginHtml = loginPageJson.RootElement.GetProperty("solution").GetProperty("response").GetString() ?? "";
+                var loginPageBody = await loginPageResp.Content.ReadAsStringAsync(ct);
+                context.Logger.LogInformation("[MMF] Login page response length: {Len}", loginPageBody.Length);
+                var loginPageJson = JsonDocument.Parse(loginPageBody);
+                if (!loginPageJson.RootElement.TryGetProperty("solution", out var loginSol))
+                {
+                    context.Logger.LogError("[MMF] FlareSolverr login page failed: {Body}", loginPageBody[..Math.Min(500, loginPageBody.Length)]);
+                    return [];
+                }
+                var loginHtml = loginSol.GetProperty("response").GetString() ?? "";
                 
                 // Extract CSRF token
                 var csrfMatch = System.Text.RegularExpressions.Regex.Match(loginHtml, @"name=""_csrf_token""\s*value=""([^""]+)""");
