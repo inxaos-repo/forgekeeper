@@ -58,6 +58,12 @@ public class ModelRepository : IModelRepository
     {
         model.UpdatedAt = DateTime.UtcNow;
         _db.Models.Update(model);
+        // Explicitly mark JSONB properties as modified (EF Core doesn't auto-detect JSONB changes)
+        var entry = _db.Entry(model);
+        entry.Property(m => m.PrintHistory).IsModified = true;
+        entry.Property(m => m.Components).IsModified = true;
+        entry.Property(m => m.Extra).IsModified = true;
+        entry.Property(m => m.PrintSettings).IsModified = true;
         await _db.SaveChangesAsync(ct);
     }
 

@@ -18,14 +18,19 @@ builder.Host.UseSerilog((context, config) =>
     config.ReadFrom.Configuration(context.Configuration)
         .WriteTo.Console());
 
-// Database
+// Database — configure NpgsqlDataSource with dynamic JSON support for JSONB columns
+var connectionString = builder.Configuration.GetConnectionString("ForgeDb");
+var npgsqlDataSource = new Npgsql.NpgsqlDataSourceBuilder(connectionString)
+    .EnableDynamicJson()
+    .Build();
+
 builder.Services.AddDbContextFactory<ForgeDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("ForgeDb"))
+    options.UseNpgsql(npgsqlDataSource)
         .UseSnakeCaseNamingConvention()
         .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)));
 
 builder.Services.AddDbContext<ForgeDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("ForgeDb"))
+    options.UseNpgsql(npgsqlDataSource)
         .UseSnakeCaseNamingConvention()
         .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)));
 
