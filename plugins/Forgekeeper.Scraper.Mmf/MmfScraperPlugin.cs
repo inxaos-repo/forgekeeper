@@ -689,7 +689,7 @@ public class MmfScraperPlugin : ILibraryScraper
         {
             metadata["images"] = details.Images.Select(i => new Dictionary<string, object?>
             {
-                ["url"] = i.Url ?? i.Original,
+                ["url"] = i.Url ?? i.Original?.Url ?? i.Standard?.Url ?? i.Thumbnail?.Url,
                 ["type"] = "gallery",
             }).ToList();
         }
@@ -900,7 +900,28 @@ internal class MmfImage
     public string? Url { get; set; }
 
     [JsonPropertyName("original")]
-    public string? Original { get; set; }
+    public MmfImageVariant? Original { get; set; }
+
+    [JsonPropertyName("tiny")]
+    public MmfImageVariant? Tiny { get; set; }
+
+    [JsonPropertyName("thumbnail")]
+    public MmfImageVariant? Thumbnail { get; set; }
+
+    [JsonPropertyName("standard")]
+    public MmfImageVariant? Standard { get; set; }
+}
+
+internal class MmfImageVariant
+{
+    [JsonPropertyName("url")]
+    public string? Url { get; set; }
+
+    [JsonPropertyName("width")]
+    public int? Width { get; set; }
+
+    [JsonPropertyName("height")]
+    public int? Height { get; set; }
 }
 
 internal class MmfFile
