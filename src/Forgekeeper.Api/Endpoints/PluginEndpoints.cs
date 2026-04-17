@@ -135,8 +135,10 @@ public static class PluginEndpoints
         }).WithName("TriggerPluginSync");
 
         // GET /api/v1/plugins/{slug}/auth — initiate authentication flow
+        // ?force=true to re-authenticate even if token exists
         group.MapGet("/{slug}/auth", async (
             string slug,
+            [FromQuery] bool force,
             PluginHostService pluginHost,
             CancellationToken ct) =>
         {
@@ -144,10 +146,18 @@ public static class PluginEndpoints
             if (plugin is null) return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
 
             var context = await pluginHost.CreateContextAsync(slug, ct);
+
+            // If force=true, clear existing token so AuthenticateAsync generates a new auth URL
+            if (force)
+            {
+                await context.TokenStore.DeleteTokenAsync("access_token", ct);
+            }
+
             var result = await plugin.AuthenticateAsync(context, ct);
 
-            if (result.Authenticated)
-                return Results.Ok(new { authenticated = true, message = result.Message });
+            // Always include the auth URL if available (for re-auth)
+            if (result.Authenticated && !force)
+                return Results.Ok(new { authenticated = true, message = result.Message, authUrl = result.AuthUrl });
 
             if (!string.IsNullOrEmpty(result.AuthUrl))
                 return Results.Ok(new { authenticated = false, authUrl = result.AuthUrl, message = result.Message });

@@ -135,15 +135,25 @@ public class MmfScraperPlugin : ILibraryScraper
             return await ParseUploadedManifestAsync(uploadedManifest, ct);
         }
 
-        // Try Playwright browser flow if we have an access token
+        // Try Playwright browser flow with access token
         var accessToken = await context.TokenStore.GetTokenAsync("access_token", ct);
-        if (string.IsNullOrEmpty(accessToken))
+        if (!string.IsNullOrEmpty(accessToken))
         {
-            context.Logger.LogWarning("No access token and no uploaded manifest — cannot fetch library");
-            return [];
+            var result = await FetchLibraryViaBrowserAsync(context, accessToken, ct);
+            if (result.Count > 0) return result;
+            context.Logger.LogWarning("OAuth token didn't work for library access, trying download token...");
         }
 
-        return await FetchLibraryViaBrowserAsync(context, accessToken, ct);
+        // Fallback: try the download token (from MiniDownloader)
+        var downloadToken = await context.TokenStore.GetTokenAsync("download_token", ct);
+        if (!string.IsNullOrEmpty(downloadToken))
+        {
+            var result = await FetchLibraryViaBrowserAsync(context, downloadToken, ct);
+            if (result.Count > 0) return result;
+        }
+
+        context.Logger.LogWarning("No working token for library access — authenticate via the Plugins page");
+        return [];
     }
 
     public async Task<ScrapeResult> ScrapeModelAsync(PluginContext context, ScrapedModel model, CancellationToken ct = default)

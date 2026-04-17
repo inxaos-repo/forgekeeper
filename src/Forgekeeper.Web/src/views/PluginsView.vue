@@ -164,15 +164,15 @@ function stopStatusPoll() {
   }
 }
 
-async function authenticate(plugin) {
+async function authenticate(plugin, force = false) {
   const slug = plugin.slug || plugin.sourceSlug
   try {
     // Call the auth endpoint to get the OAuth URL
-    const res = await fetch(`/api/v1/plugins/${slug}/auth`)
+    const res = await fetch(`/api/v1/plugins/${slug}/auth${force ? '?force=true' : ''}`)
     const data = await res.json()
     
-    if (data.authenticated) {
-      // Already authenticated
+    if (data.authenticated && !force && !data.authUrl) {
+      // Already authenticated and no re-auth requested
       await fetchPlugins()
       return
     }
