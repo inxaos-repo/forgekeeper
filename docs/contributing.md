@@ -233,3 +233,38 @@ Each source (MMF, Thangs, etc.) gets its own directory tree. This means:
 - Shared `PluginContext` provides everything the plugin needs
 - No inter-process communication overhead
 - Plugins can use the host's HttpClient, logger, and token store
+
+## EF Core Migrations
+
+Migrations are managed via `dotnet-ef` in the forgekeeper-dev Docker container:
+
+```bash
+# Enter the dev container
+docker exec -it forgekeeper-dev bash
+
+# Add dotnet-ef to PATH
+export PATH="$PATH:/root/.dotnet/tools"
+cd /src
+
+# List existing migrations
+dotnet ef migrations list \
+  --project src/Forgekeeper.Infrastructure \
+  --startup-project src/Forgekeeper.Api
+
+# Create a new migration
+dotnet ef migrations add YourMigrationName \
+  --project src/Forgekeeper.Infrastructure \
+  --startup-project src/Forgekeeper.Api \
+  --output-dir Data/Migrations
+
+# Remove the last migration (if not yet applied)
+dotnet ef migrations remove --force \
+  --project src/Forgekeeper.Infrastructure \
+  --startup-project src/Forgekeeper.Api
+```
+
+**Notes:**
+- A `DesignTimeDbContextFactory` is provided for design-time migration generation (no running DB needed)
+- The factory uses `UseSnakeCaseNamingConvention()` to match production column naming
+- Migrations are applied automatically on app startup via `db.Database.MigrateAsync()`
+- The `--force` flag on remove is needed when the dev container can't reach the database
