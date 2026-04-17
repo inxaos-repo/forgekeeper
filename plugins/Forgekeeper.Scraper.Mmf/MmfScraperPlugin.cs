@@ -360,30 +360,46 @@ public class MmfScraperPlugin : ILibraryScraper
 
             if (!string.IsNullOrEmpty(flareSolverrUrl))
             {
-                context.Logger.LogInformation("[MMF] Step 1: Getting CF clearance via FlareSolverr...");
-                using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(90) };
-                var fsResponse = await httpClient.PostAsync(
-                    $"{flareSolverrUrl}/v1",
-                    new StringContent(
-                        JsonSerializer.Serialize(new
-                        {
-                            cmd = "request.get",
-                            url = "https://www.myminifactory.com",
-                            maxTimeout = 60000
-                        }),
-                        System.Text.Encoding.UTF8,
-                        "application/json"),
-                    ct);
+                context.Logger.LogInformation("[MMF] Step 1: Login via FlareSolverr (CF bypass + session)...");
+                using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(180) };
+                
+                // 1a: Create FlareSolverr session
+                var createResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
+                    new StringContent(JsonSerializer.Serialize(new { cmd = "sessions.create" }), System.Text.Encoding.UTF8, "application/json"), ct);
+                var createJson = JsonDocument.Parse(await createResp.Content.ReadAsStringAsync(ct));
+                var fsSession = createJson.RootElement.GetProperty("session").GetString();
+                context.Logger.LogInformation("[MMF] FlareSolverr session: {Session}", fsSession);
 
-                var fsJson = await fsResponse.Content.ReadAsStringAsync(ct);
-                using var fsDoc = JsonDocument.Parse(fsJson);
-                var solution = fsDoc.RootElement.GetProperty("solution");
+                // 1b: Get login page (solves CF + gets CSRF)
+                var loginPageResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
+                    new StringContent(JsonSerializer.Serialize(new { cmd = "request.get", url = "https://www.myminifactory.com/login", session = fsSession, maxTimeout = 60000 }), System.Text.Encoding.UTF8, "application/json"), ct);
+                var loginPageJson = JsonDocument.Parse(await loginPageResp.Content.ReadAsStringAsync(ct));
+                var loginHtml = loginPageJson.RootElement.GetProperty("solution").GetProperty("response").GetString() ?? "";
+                
+                // Extract CSRF token
+                var csrfMatch = System.Text.RegularExpressions.Regex.Match(loginHtml, @"name=""_csrf_token""\s*value=""([^""]+)""");
+                if (!csrfMatch.Success)
+                {
+                    context.Logger.LogError("[MMF] Could not find CSRF token on login page");
+                    return [];
+                }
+                var csrfToken = csrfMatch.Groups[1].Value;
+                context.Logger.LogInformation("[MMF] Got CSRF token");
 
-                // Extract user agent before the JsonDocument is disposed
-                if (solution.TryGetProperty("userAgent", out var uaProp))
+                // 1c: POST login credentials
+                var postData = $"_csrf_token={Uri.EscapeDataString(csrfToken)}&_username={Uri.EscapeDataString(username)}&_password={Uri.EscapeDataString(password)}&_remember_me=on&_submit=";
+                var loginResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
+                    new StringContent(JsonSerializer.Serialize(new { cmd = "request.post", url = "https://www.myminifactory.com/login_check", session = fsSession, postData = postData, maxTimeout = 30000 }), System.Text.Encoding.UTF8, "application/json"), ct);
+                var loginJson = JsonDocument.Parse(await loginResp.Content.ReadAsStringAsync(ct));
+                var loginSolution = loginJson.RootElement.GetProperty("solution");
+                var redirectUrl = loginSolution.GetProperty("url").GetString() ?? "";
+                
+                // Extract user agent
+                if (loginSolution.TryGetProperty("userAgent", out var uaProp))
                     solvedUserAgent = uaProp.GetString();
 
-                if (solution.TryGetProperty("cookies", out var cookiesArray))
+                // Extract ALL cookies (CF + session + REMEMBERME)
+                if (loginSolution.TryGetProperty("cookies", out var cookiesArray))
                 {
                     foreach (var cookie in cookiesArray.EnumerateArray())
                     {
@@ -397,7 +413,19 @@ public class MmfScraperPlugin : ILibraryScraper
                     }
                 }
 
-                context.Logger.LogInformation("[MMF] Got {Count} CF cookies (userAgent: {UA})", cfCookies.Count, solvedUserAgent ?? "default");
+                var hasRememberMe = cfCookies.Any(c => c.Name == "REMEMBERME");
+                context.Logger.LogInformation("[MMF] Login {Result}: {Url}, cookies={Count}, REMEMBERME={HasRM}", 
+                    hasRememberMe ? "SUCCESS" : "FAILED", redirectUrl, cfCookies.Count, hasRememberMe);
+                
+                // Cleanup FlareSolverr session
+                try { await httpClient.PostAsync($"{flareSolverrUrl}/v1",
+                    new StringContent(JsonSerializer.Serialize(new { cmd = "sessions.destroy", session = fsSession }), System.Text.Encoding.UTF8, "application/json"), ct); } catch {}
+                
+                if (!hasRememberMe)
+                {
+                    context.Logger.LogError("[MMF] Login did not produce REMEMBERME cookie — check credentials");
+                    return [];
+                }
             }
 
             // Step 2: Login via Playwright on auth subdomain
@@ -436,22 +464,8 @@ public class MmfScraperPlugin : ILibraryScraper
                 window.chrome = { runtime: {} };
             ");
 
-            // Login on auth subdomain (no CF protection)
-            await page.GotoAsync("https://auth.myminifactory.com/web/login?client_id=downloader_v2", new PageGotoOptions
-            {
-                WaitUntil = WaitUntilState.NetworkIdle,
-                Timeout = 30000
-            });
-
-            await page.FillAsync("#inputEmail", username);
-            await page.FillAsync("#inputPassword", password);
-            await page.ClickAsync("#inputSubmit");
-            await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new PageWaitForLoadStateOptions { Timeout = 30000 });
-
-            context.Logger.LogInformation("[MMF] Login complete");
-
-            // Step 3: Navigate to data-library with both CF + session cookies
-            context.Logger.LogInformation("[MMF] Step 3: Navigating to data-library...");
+            // Skip auth subdomain login — FlareSolverr already handled login on www
+            context.Logger.LogInformation("[MMF] Step 3: Navigating to data-library with session cookies...");
 
             context.Progress.Report(new ScrapeProgress
             {
