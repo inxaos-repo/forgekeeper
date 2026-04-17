@@ -60,24 +60,15 @@ RUN if [ -f node_modules/.bin/vite ]; then \
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
-# Install all system dependencies in one layer:
-# - stl-thumb deps (OpenGL, EGL)
-# - Playwright/Chromium deps (GTK, NSS, ALSA, etc.)
+# Install stl-thumb + system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     wget ca-certificates \
-    # stl-thumb dependencies
-    libegl1 libgl1 libxkbcommon0 \
-    # Playwright/Chromium dependencies
-    fonts-liberation libasound2 libatk1.0-0 libatk-bridge2.0-0 \
-    libcups2 libdbus-1-3 libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 \
-    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 xdg-utils \
-    libxshmfence1 libxss1 libxtst6 && \
-    # Install stl-thumb
+    libegl1 libgl1 libxkbcommon0 && \
+    # Install stl-thumb for 3D model thumbnail generation
     wget -q https://github.com/unlimitedbacon/stl-thumb/releases/download/v0.5.0/stl-thumb_0.5.0_amd64.deb -O /tmp/stl-thumb.deb && \
     dpkg -i /tmp/stl-thumb.deb || apt-get install -f -y && \
     rm -f /tmp/stl-thumb.deb && \
-    # Cleanup
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy published application
@@ -88,14 +79,6 @@ COPY --from=plugins-build /app/plugins /app/plugins
 
 # Copy frontend build output
 COPY --from=frontend-build /src/Forgekeeper.Api/wwwroot ./wwwroot/
-
-# Install Playwright Chromium using the plugin's DLL
-# Create a minimal runtimeconfig so dotnet exec can run the Playwright installer
-RUN if [ -f /app/plugins/Forgekeeper.Scraper.Mmf/Microsoft.Playwright.dll ]; then \
-      echo '{"runtimeOptions":{"tfm":"net9.0","framework":{"name":"Microsoft.NETCore.App","version":"9.0.0"}}}' \
-        > /app/plugins/Forgekeeper.Scraper.Mmf/Microsoft.Playwright.runtimeconfig.json && \
-      dotnet exec /app/plugins/Forgekeeper.Scraper.Mmf/Microsoft.Playwright.dll install chromium; \
-    fi
 
 # Create directories for runtime data
 RUN mkdir -p /app/plugins /data
@@ -108,8 +91,7 @@ ENV ASPNETCORE_URLS=http://+:5000 \
     Thumbnails__Enabled=true \
     Thumbnails__Renderer=stl-thumb \
     Thumbnails__Size=256 \
-    Thumbnails__Format=webp \
-    PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+    Thumbnails__Format=webp
 
 EXPOSE 5000
 

@@ -3,7 +3,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Forgekeeper.PluginSdk;
 using Microsoft.Extensions.Logging;
-using Microsoft.Playwright;
 
 namespace Forgekeeper.Scraper.Mmf;
 
