@@ -345,16 +345,38 @@ public class MmfScraperPlugin : ILibraryScraper
         try
         {
             using var playwright = await Playwright.CreateAsync();
+            // Launch with stealth options to bypass Cloudflare detection
             await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
                 Headless = true,
+                Args = new[]
+                {
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-accelerated-2d-canvas",
+                    "--disable-gpu",
+                    "--window-size=1920,1080",
+                },
             });
             var browserContext = await browser.NewContextAsync(new BrowserNewContextOptions
             {
-                UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                ViewportSize = new ViewportSize { Width = 1920, Height = 1080 },
+                Locale = "en-US",
+                TimezoneId = "America/Los_Angeles",
             });
 
+            // Remove webdriver flag to avoid Cloudflare detection
             var page = await browserContext.NewPageAsync();
+            await page.AddInitScriptAsync(@"
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                window.chrome = { runtime: {} };
+            ");
 
             // Navigate to login page
             context.Logger.LogInformation("[Browser] Navigating to MMF login page...");
