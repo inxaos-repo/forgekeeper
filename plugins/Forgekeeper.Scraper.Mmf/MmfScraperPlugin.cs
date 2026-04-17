@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Forgekeeper.PluginSdk;
 using Microsoft.Extensions.Logging;
+using Microsoft.Playwright;
 
 namespace Forgekeeper.Scraper.Mmf;
 
@@ -51,6 +52,15 @@ public class MmfScraperPlugin : ILibraryScraper
             Required = false,
             DefaultValue = "1000",
             HelpText = "Delay between API requests to avoid rate limiting.",
+        },
+        new PluginConfigField
+        {
+            Key = "CALLBACK_URL",
+            Label = "OAuth Callback URL",
+            Type = PluginConfigFieldType.Url,
+            Required = false,
+            DefaultValue = "https://forgekeeper.k8s.inxaos.com/auth/mmf/callback",
+            HelpText = "The URL MMF redirects to after OAuth authorization. Must match your MMF app's registered redirect URI.",
         },
     ];
 
@@ -125,7 +135,7 @@ public class MmfScraperPlugin : ILibraryScraper
             return await ParseUploadedManifestAsync(uploadedManifest, ct);
         }
 
-        // Try to fetch via API if we have a token (works for purchased items)
+        // Try Playwright browser flow if we have an access token
         var accessToken = await context.TokenStore.GetTokenAsync("access_token", ct);
         if (string.IsNullOrEmpty(accessToken))
         {
@@ -133,7 +143,7 @@ public class MmfScraperPlugin : ILibraryScraper
             return [];
         }
 
-        return await FetchLibraryViaApiAsync(context, accessToken, ct);
+        return await FetchLibraryViaBrowserAsync(context, accessToken, ct);
     }
 
     public async Task<ScrapeResult> ScrapeModelAsync(PluginContext context, ScrapedModel model, CancellationToken ct = default)
@@ -244,20 +254,51 @@ public class MmfScraperPlugin : ILibraryScraper
     public string? GetAdminPageHtml(PluginContext context)
     {
         return """
-            <div class="plugin-admin">
+            <div class="plugin-admin" style="font-family: system-ui; max-width: 600px;">
                 <h3>MyMiniFactory Plugin</h3>
-                <p>To import your MMF library:</p>
-                <ol>
-                    <li>Go to <a href="https://www.myminifactory.com/my-library" target="_blank">My Library</a> on MMF</li>
-                    <li>Open browser DevTools → Network tab</li>
-                    <li>Look for the <code>data-library</code> API call</li>
-                    <li>Copy the response JSON</li>
-                    <li>Upload it here as your manifest</li>
-                </ol>
-                <form method="POST" enctype="multipart/form-data" action="/api/v1/plugins/mmf/manifest">
-                    <input type="file" name="manifest" accept=".json" />
-                    <button type="submit">Upload Manifest</button>
+                <p>To import your MMF library, run this script in your browser console while logged into MyMiniFactory:</p>
+                <pre style="background: #1a1a2e; color: #0f0; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; margin: 12px 0;">fetch('/api/data-library/objectPreviews').then(r =&gt; r.json()).then(d =&gt; { copy(JSON.stringify(d)); console.log('Copied ' + d.length + ' objects!'); });</pre>
+                <p>Then paste the JSON below and click Upload:</p>
+                <form id="manifestForm" style="margin-top: 12px;">
+                    <textarea id="manifestJson" rows="6" style="width: 100%; font-family: monospace; font-size: 12px; background: #111; color: #ddd; border: 1px solid #333; border-radius: 6px; padding: 8px;" placeholder="Paste your library JSON here..."></textarea>
+                    <br/>
+                    <p style="margin: 8px 0; color: #888;">Or upload a .json file:</p>
+                    <input type="file" id="manifestFile" accept=".json" style="margin-bottom: 8px;" />
+                    <br/>
+                    <button type="submit" style="background: #f59e0b; color: #000; border: none; padding: 8px 24px; border-radius: 6px; cursor: pointer; font-weight: bold;">Upload Manifest</button>
+                    <span id="manifestStatus" style="margin-left: 12px;"></span>
                 </form>
+                <script>
+                document.getElementById('manifestForm').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const status = document.getElementById('manifestStatus');
+                    status.textContent = 'Uploading...';
+                    let body;
+                    const jsonText = document.getElementById('manifestJson').value.trim();
+                    const file = document.getElementById('manifestFile').files[0];
+                    if (jsonText) {
+                        body = jsonText;
+                    } else if (file) {
+                        body = await file.text();
+                    } else {
+                        status.textContent = 'Please paste JSON or select a file.';
+                        return;
+                    }
+                    try {
+                        const res = await fetch('/api/v1/plugins/mmf/manifest', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: body
+                        });
+                        const data = await res.json();
+                        status.textContent = data.message || 'Done!';
+                        status.style.color = res.ok ? '#4ade80' : '#f87171';
+                    } catch (err) {
+                        status.textContent = 'Error: ' + err.message;
+                        status.style.color = '#f87171';
+                    }
+                });
+                </script>
             </div>
             """;
     }
@@ -309,61 +350,77 @@ public class MmfScraperPlugin : ILibraryScraper
         return models;
     }
 
-    private async Task<IReadOnlyList<ScrapedModel>> FetchLibraryViaApiAsync(PluginContext context, string accessToken, CancellationToken ct)
+    private async Task<IReadOnlyList<ScrapedModel>> FetchLibraryViaBrowserAsync(PluginContext context, string accessToken, CancellationToken ct)
     {
-        var models = new List<ScrapedModel>();
-        var delayMs = GetDelayMs(context);
-        int page = 1;
-        bool hasMore = true;
+        context.Logger.LogInformation("[Browser] Fetching library manifest from MyMiniFactory via Playwright...");
 
-        context.HttpClient.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-
-        while (hasMore && !ct.IsCancellationRequested)
+        try
         {
-            try
+            using var playwright = await Playwright.CreateAsync();
+            await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
-                var response = await context.HttpClient.GetAsync(
-                    $"{MmfApiBase}/users/me/objects?page={page}&per_page=50", ct);
+                Headless = true
+            });
+            var browserContext = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            });
 
-                if (!response.IsSuccessStatusCode) break;
+            var page = await browserContext.NewPageAsync();
 
-                var result = await response.Content.ReadFromJsonAsync<MmfApiListResponse>(JsonOptions, ct);
-                if (result?.Items is null || result.Items.Count == 0) break;
+            // Establish session cookies by hitting the API with the access token
+            context.Logger.LogInformation("[Browser] Establishing session with MyMiniFactory...");
+            await page.GotoAsync($"https://www.myminifactory.com/api/v2/user?access_token={accessToken}", new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.NetworkIdle,
+                Timeout = 30000
+            });
 
-                foreach (var item in result.Items)
-                {
-                    models.Add(new ScrapedModel
-                    {
-                        ExternalId = item.Id.ToString(),
-                        Name = item.Name ?? $"Model {item.Id}",
-                        CreatorName = item.Designer?.Name,
-                        CreatorId = item.Designer?.Id?.ToString(),
-                        UpdatedAt = item.UpdatedAt,
-                        Type = item.Type,
+            // Navigate to library page to fully establish the session
+            context.Logger.LogInformation("[Browser] Navigating to library page...");
+            await page.GotoAsync("https://www.myminifactory.com/my/collections", new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.NetworkIdle,
+                Timeout = 60000
+            });
+
+            context.Progress.Report(new ScrapeProgress
+            {
+                Status = "fetching_manifest",
+                CurrentItem = "Fetching library via browser session...",
+            });
+
+            // Fetch the data-library API using established session cookies
+            context.Logger.LogInformation("[Browser] Fetching object library...");
+            var jsonResult = await page.EvaluateAsync<string>(@"
+                async () => {
+                    const resp = await fetch('/api/data-library/objectPreviews', {
+                        credentials: 'include'
                     });
+                    if (!resp.ok) return JSON.stringify({ error: resp.status });
+                    const data = await resp.json();
+                    return JSON.stringify(data);
                 }
+            ");
 
-                context.Progress.Report(new ScrapeProgress
-                {
-                    Status = "fetching_manifest",
-                    Current = models.Count,
-                    Total = result.TotalCount,
-                    CurrentItem = $"Fetched page {page}...",
-                });
-
-                hasMore = models.Count < result.TotalCount;
-                page++;
-                await Task.Delay(delayMs, ct);
-            }
-            catch (Exception ex)
+            if (string.IsNullOrEmpty(jsonResult) || jsonResult.Contains("\"error\""))
             {
-                context.Logger.LogWarning("Error fetching library page {Page}: {Error}", page, ex.Message);
-                break;
+                context.Logger.LogError("[Browser] Failed to fetch library: {Result}", jsonResult);
+                return [];
             }
-        }
 
-        return models;
+            // Parse the response — same format as the uploaded manifest
+            using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(jsonResult));
+            var models = await ParseUploadedManifestAsync(stream, ct);
+
+            context.Logger.LogInformation("[Browser] Library manifest: {Count} objects fetched", models.Count);
+            return models;
+        }
+        catch (Exception ex)
+        {
+            context.Logger.LogError(ex, "[Browser] Error fetching library via Playwright");
+            return [];
+        }
     }
 
     private static Dictionary<string, object?> BuildMetadata(ScrapedModel model, MmfModelDetails? details, List<DownloadedFile> files)

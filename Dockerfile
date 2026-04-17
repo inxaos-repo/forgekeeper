@@ -97,6 +97,20 @@ RUN apt-get update && \
     rm -f /tmp/stl-thumb.deb && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Install Playwright Chromium for browser-based authentication flows (MMF data-library)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates fonts-liberation libasound2 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdbus-1-3 libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 \
+    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 xdg-utils \
+    libxshmfence1 libxss1 libxtst6 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Playwright CLI and Chromium browser
+RUN dotnet tool install --global Microsoft.Playwright.CLI && \
+    /root/.dotnet/tools/playwright install --with-deps chromium
+ENV PATH="$PATH:/root/.dotnet/tools"
+
 # Create directories for runtime data
 RUN mkdir -p /app/plugins /data
 
