@@ -190,10 +190,25 @@ See `appsettings.json` for all options:
 - Thumbnail settings
 - Search parameters
 
+## Documentation
+
+Comprehensive documentation is available in the [`docs/`](docs/) directory:
+
+| Page | Description |
+|------|-------------|
+| [Documentation Home](docs/index.md) | Overview and quick links |
+| [Getting Started](docs/getting-started.md) | Installation and first run |
+| [Architecture](docs/architecture.md) | System design and data model |
+| [API Reference](docs/api-reference.md) | Complete REST API documentation |
+| [Configuration](docs/configuration.md) | Environment variables and settings |
+| [Plugin Development](docs/plugin-development.md) | Building scraper plugins |
+| [Deployment](docs/deployment.md) | Docker, Kubernetes, NFS, CNPG |
+| [Contributing](docs/contributing.md) | Dev setup, testing, code style |
+
 ## License
 
 MIT
 
 ## Contributing
 
-Pull requests welcome. See [SPEC.md](SPEC.md) for the full architecture documentation.
+Pull requests welcome. See the [Contributing Guide](docs/contributing.md) and [SPEC.md](SPEC.md) for details.
