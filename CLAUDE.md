@@ -157,6 +157,50 @@ docker compose --profile test run --rm e2e
 | `SavedTemplate` | `saved_templates` | Named templates for filename parsing/reorganization |
 | `ModelRelation` | `model_relations` | Related models (many-to-many self-join) |
 
+## Current Production Deployment
+
+**Live instance:** Private homelab (not publicly accessible)
+
+| Metric | Value |
+|--------|-------|
+| Models indexed | 8,800+ (8,826 at last count) |
+| Creators | 173 |
+| File variants | 200,931 |
+| Library size | 3.6 TB on ZFS over NFS |
+| Thumbnails generated | ~1,400 (worker ongoing) |
+| Tests | 330+ (xUnit + Playwright E2E) |
+| API endpoints | 70+ |
+| Vue components | 13 components, 8 views |
+
+### Infrastructure
+- **Database:** CNPG PostgreSQL 16 cluster on Kubernetes (Longhorn storage)
+- **Storage:** NFS mount from ZFS pool (4 × SATA in RAIDZ1)
+- **Container:** GHCR image (~800MB, includes Chromium for Playwright fallback)
+- **Deployment:** Flux GitOps, `imagePullPolicy: Always` for mutable `main` tag
+- **Monitoring:** Prometheus + Grafana (12-panel dashboard)
+- **CI/CD:** GitHub Actions → build → test → Docker push → E2E
+
+### MMF Plugin Production Notes
+- **FlareSolverr** required for Cloudflare bypass (deployed as separate k8s service)
+- **7,230 models** in the user's MMF library (manifest from data-library API)
+- **4,816 models** were initially "unknown" creator — caused by `object-` prefix bug (now fixed)
+- **Sync takes ~37 hours** for a full 7,230-model pass with downloads
+- **Bearer token** stored in plugin_configs as `__token__download_token`
+- **Session cookies** stored as `__token__session_cookies` (from FlareSolverr login)
+
+### Known Scale Limits
+- **Current ceiling:** ~500K models (after batching/pagination fixes)
+- **Bottleneck at 500K+:** pg_trgm GIN index size, NFS directory enumeration
+- **Bottleneck at 2M+:** Need Elasticsearch/Meilisearch, object storage, table partitioning
+- **Scanner batch size:** 50 entities per SaveChangesAsync (Postgres parameter limit)
+- **Sync timeout:** None (runs until complete or cancelled)
+- **HttpClient download timeout:** 30 minutes per file
+
+### Theme
+- **Anvil theme** (current): warm charcoal `#1c1c1c` + amber `#f59e0b`
+- CSS variables in `src/Forgekeeper.Web/src/style.css` under `@theme`
+- STL viewer mesh color: `#c8b8a8` (warm clay/stone)
+
 ## API Overview (70+ endpoints)
 See `docs/api-reference.md` for the full list. Key groups:
 - `/api/v1/models` — CRUD, search, bulk ops, rename, reorganize, parse-filename, duplicates
