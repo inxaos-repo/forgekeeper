@@ -155,6 +155,11 @@ export function useApi() {
     return post('/import/process')
   }
 
+  /** Alias for processUnsorted — scan all configured watch directories */
+  function processAllImports() {
+    return post('/import/process')
+  }
+
   function getImportQueue(params = {}) {
     const qs = buildQuery(params)
     return get(`/import/queue${qs}`)
@@ -171,6 +176,40 @@ export function useApi() {
   /** Alias for rejectImport — dismiss an import queue item */
   function dismissImport(itemId) {
     return del(`/import/queue/${itemId}`)
+  }
+
+  /**
+   * Bulk confirm multiple import queue items.
+   * Fires individual confirm calls (no bulk endpoint yet).
+   * Returns array of settled results.
+   */
+  async function bulkConfirmImports(ids, dataFn = () => ({})) {
+    const results = []
+    for (const id of ids) {
+      try {
+        await post(`/import/queue/${id}/confirm`, dataFn(id))
+        results.push({ id, ok: true })
+      } catch (e) {
+        results.push({ id, ok: false, error: e.message })
+      }
+    }
+    return results
+  }
+
+  /**
+   * GET /import/watch-directories
+   * Returns { watchDirectories, unsortedDirectories, autoImportEnabled, intervalMinutes, lastScanAt }
+   */
+  function getWatchDirectories() {
+    return get('/import/watch-directories')
+  }
+
+  /**
+   * POST /import/scan-directory
+   * Triggers an on-demand scan of a specific path.
+   */
+  function scanDirectory(path) {
+    return post('/import/scan-directory', { path })
   }
 
   // ─── Sources ───────────────────────────────────────────
@@ -300,10 +339,14 @@ export function useApi() {
     getScanStatus,
     // Import
     processUnsorted,
+    processAllImports,
     getImportQueue,
     confirmImport,
     rejectImport,
     dismissImport,
+    bulkConfirmImports,
+    getWatchDirectories,
+    scanDirectory,
     // Sources
     getSources,
     getSource,

@@ -7,7 +7,7 @@ The simplest way to run Forgekeeper in production.
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/inxaos-repo/forgekeeper.git
+git clone https://github.com/your-org/forgekeeper.git
 cd forgekeeper
 cp .env.example .env
 ```
@@ -44,7 +44,7 @@ docker compose logs -f forgekeeper
 ```yaml
 services:
   forgekeeper:
-    image: ghcr.io/inxaos-repo/forgekeeper:main
+    image: ghcr.io/your-org/forgekeeper:main
     restart: unless-stopped
     ports:
       - "5000:5000"
@@ -176,7 +176,7 @@ spec:
     spec:
       containers:
         - name: forgekeeper
-          image: ghcr.io/inxaos-repo/forgekeeper:main
+          image: ghcr.io/your-org/forgekeeper:main
           imagePullPolicy: Always  # REQUIRED for mutable tags like :main or :latest
           ports:
             - containerPort: 5000
@@ -211,7 +211,7 @@ spec:
       volumes:
         - name: models
           nfs:
-            server: 192.168.2.10
+            server: your-nfs-server-ip
             path: /pool/3dprinting
         - name: plugins
           persistentVolumeClaim:
@@ -243,8 +243,8 @@ exportfs -a
 volumes:
   - name: models
     nfs:
-      server: 192.168.2.10      # NFS server IP
-      path: /pool/3dprinting     # Export path
+      server: your-nfs-server-ip      # NFS server IP
+      path: /pool/3dprinting             # Export path
 ```
 
 Or use a PersistentVolume/PersistentVolumeClaim for more flexibility:
@@ -260,7 +260,7 @@ spec:
   accessModes:
     - ReadWriteMany
   nfs:
-    server: 192.168.2.10
+    server: your-nfs-server-ip
     path: /pool/3dprinting
 ---
 apiVersion: v1
@@ -484,7 +484,7 @@ spec:
 
 ### Flux GitOps Deployment
 
-Forgekeeper is deployed via Flux CD using a HelmRelease in the `inxaos-flux` repository. To update:
+Forgekeeper is deployed via Flux CD using a HelmRelease in your Flux GitOps repository. To update:
 
 1. Push a new image tag to GHCR via GitHub Actions CI
 2. Flux detects the new image (or update the HelmRelease values)

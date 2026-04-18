@@ -2,14 +2,14 @@
 
 > **Status:** Planning  
 > **Version:** 1.0 draft  
-> **Author:** Bob the Skull  
+> **Author:** Forgekeeper Contributors  
 > **Last Updated:** 2026-04-18
 
 ---
 
 ## Overview
 
-Forgekeeper's plugin system allows third-party developers (and Damon) to add scrapers for new library sources without modifying the core application. This document defines how plugins are packaged, distributed, discovered, installed, updated, and secured — from the first MMF scraper to a future community ecosystem.
+Forgekeeper's plugin system allows third-party developers to add scrapers for new library sources without modifying the core application. This document defines how plugins are packaged, distributed, discovered, installed, updated, and secured — from the first MMF scraper to a future community ecosystem.
 
 The design draws lessons from:
 - **Grafana** — plugin catalog + CLI install, version-pinned downloads
@@ -50,11 +50,11 @@ Every plugin must include a `manifest.json` at its root. See `plugins/manifest.s
   "min_sdk_version": "1.0.0",
   "max_sdk_version": "1.x",
   "min_forgekeeper_version": "1.0.0",
-  "author": "Damon Prater",
-  "email": "damon@example.com",
+  "author": "Plugin Author",
+  "email": "author@example.com",
   "description": "Scrapes library data from My Manga Forum (MMF).",
-  "homepage": "https://github.com/inxaos/Forgekeeper.Scraper.Mmf",
-  "source_url": "https://github.com/inxaos/Forgekeeper.Scraper.Mmf",
+  "homepage": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
+  "source_url": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
   "license": "MIT",
   "tags": ["manga", "scraper", "mmf"],
   "entry_assembly": "Forgekeeper.Scraper.Mmf.dll"

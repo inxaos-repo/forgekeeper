@@ -3,12 +3,16 @@
   Logo, page links, global search, mobile hamburger menu
 -->
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
+import { useApi } from '../composables/useApi.js'
 
 const router = useRouter()
+const api = useApi()
 const globalSearch = ref('')
 const mobileMenuOpen = ref(false)
+const importPendingCount = ref(0)
+let importPollTimer = null
 
 function onGlobalSearch() {
   if (globalSearch.value.trim()) {
@@ -17,14 +21,39 @@ function onGlobalSearch() {
   }
 }
 
+async function pollImportCount() {
+  try {
+    const result = await api.getImportQueue({ status: 'AwaitingReview' })
+    const items = result?.items || result || []
+    // Count only pending/awaiting-review items
+    importPendingCount.value = Array.isArray(items)
+      ? items.filter(i => {
+          const s = (i.status || '').toLowerCase()
+          return s !== 'autosorted' && s !== 'confirmed' && s !== 'failed'
+        }).length
+      : (result?.totalCount ?? 0)
+  } catch {
+    // Silently ignore — nav badge is non-critical
+  }
+}
+
 const navLinks = [
   { to: '/', label: 'Models', name: 'Models' },
   { to: '/creators', label: 'Creators', name: 'Creators' },
-  { to: '/import', label: 'Import', name: 'Import' },
+  { to: '/import', label: 'Import', name: 'Import', badge: true },
   { to: '/stats', label: 'Stats', name: 'Stats' },
   { to: '/plugins', label: 'Plugins', name: 'Plugins' },
   { to: '/sources', label: 'Sources', name: 'Sources' },
 ]
+
+onMounted(() => {
+  pollImportCount()
+  importPollTimer = setInterval(pollImportCount, 60_000)  // refresh every 60s
+})
+
+onBeforeUnmount(() => {
+  clearInterval(importPollTimer)
+})
 </script>
 
 <template>
@@ -43,11 +72,17 @@ const navLinks = [
               v-for="link in navLinks"
               :key="link.to"
               :to="link.to"
-              class="px-3 py-2 rounded-md text-sm font-medium text-forge-text-muted hover:text-forge-text hover:bg-forge-card transition-colors"
+              class="relative px-3 py-2 rounded-md text-sm font-medium text-forge-text-muted hover:text-forge-text hover:bg-forge-card transition-colors"
               active-class="!bg-forge-card !text-forge-accent"
               :exact="link.to === '/'"
             >
               {{ link.label }}
+              <span
+                v-if="link.badge && importPendingCount > 0"
+                class="absolute -top-0.5 -right-1 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center bg-forge-accent text-forge-bg text-[10px] font-bold rounded-full px-0.5"
+              >
+                {{ importPendingCount > 99 ? '99+' : importPendingCount }}
+              </span>
             </RouterLink>
           </div>
         </div>
@@ -96,12 +131,18 @@ const navLinks = [
           v-for="link in navLinks"
           :key="link.to"
           :to="link.to"
-          class="block px-3 py-2 rounded-md text-sm font-medium text-forge-text-muted hover:text-forge-text hover:bg-forge-card"
+          class="relative block px-3 py-2 rounded-md text-sm font-medium text-forge-text-muted hover:text-forge-text hover:bg-forge-card"
           active-class="!bg-forge-card !text-forge-accent"
           :exact="link.to === '/'"
           @click="mobileMenuOpen = false"
         >
           {{ link.label }}
+          <span
+            v-if="link.badge && importPendingCount > 0"
+            class="ml-1.5 inline-flex items-center justify-center min-w-[1.2rem] h-5 bg-forge-accent text-forge-bg text-[10px] font-bold rounded-full px-1"
+          >
+            {{ importPendingCount > 99 ? '99+' : importPendingCount }}
+          </span>
         </RouterLink>
       </div>
     </div>

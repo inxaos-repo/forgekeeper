@@ -2,7 +2,7 @@
 
 **Forgekeeper** is a self-hosted digital asset manager for massive 3D printing collections — "Plex for STL files." Built for hobbyists who accumulate files from multiple sources (MyMiniFactory, Thangs, Patreon, Cults3D, Thingiverse) and need to actually find things.
 
-**Live at:** `https://forgekeeper.k8s.inxaos.com` — 4,010 models, 160 creators, 200,931 file variants.
+Once deployed, access your instance at `http://localhost:5000` (or your configured hostname).
 
 ## Key Features
 
@@ -40,7 +40,7 @@
 ## Quick Start
 
 ```bash
-git clone https://github.com/inxaos-repo/forgekeeper.git
+git clone https://github.com/your-org/forgekeeper.git
 cd forgekeeper
 cp .env.example .env   # Edit LIBRARY_PATH and FORGEKEEPER_ENCRYPTION_KEY
 docker compose up -d
@@ -51,6 +51,6 @@ docker compose up -d
 
 ## Links
 
-- [GitHub Repository](https://github.com/inxaos-repo/forgekeeper)
+- [GitHub Repository](https://github.com/your-org/forgekeeper)
 - [Full Specification](../SPEC.md)
 - [License](../LICENSE) (MIT)

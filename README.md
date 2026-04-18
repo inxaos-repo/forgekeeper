@@ -2,8 +2,6 @@
 
 A self-hosted digital asset manager for massive 3D printing collections. **Plex for STL files** — built for hobbyists who accumulate files from multiple sources and need to actually find things.
 
-**Live at:** `https://forgekeeper.k8s.inxaos.com`
-
 ## Current Status
 
 | Metric | Value |
@@ -97,7 +95,7 @@ A self-hosted digital asset manager for massive 3D printing collections. **Plex 
 
 ```bash
 # Clone the repo
-git clone https://github.com/inxaos-repo/forgekeeper.git
+git clone https://github.com/your-org/forgekeeper.git
 cd forgekeeper
 
 # Configure your library path

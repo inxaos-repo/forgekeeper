@@ -11,7 +11,7 @@
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/inxaos-repo/forgekeeper.git
+git clone https://github.com/your-org/forgekeeper.git
 cd forgekeeper
 ```
 
