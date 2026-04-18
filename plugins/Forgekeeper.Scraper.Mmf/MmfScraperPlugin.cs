@@ -720,7 +720,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     }
 
     /// <summary>Remove old version directories (e.g., "Model v1" when "Model v2" exists).</summary>
-    private static void CleanupOldVersions(string extractDir, ILogger logger)
+    internal static void CleanupOldVersions(string extractDir, ILogger logger)
     {
         try
         {
@@ -1019,17 +1019,18 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         return metadata;
     }
 
-    private static string? DetectVariant(string? filename)
+    internal static string? DetectVariant(string? filename)
     {
         if (string.IsNullOrEmpty(filename)) return null;
         var lower = filename.ToLowerInvariant();
 
-        if (lower.Contains("supported") && !lower.Contains("unsupported"))
-            return "supported";
-        if (lower.Contains("unsupported") || lower.Contains("no_support") || lower.Contains("nosupport"))
-            return "unsupported";
+        // Order matters: check presupported BEFORE supported (presupported contains "supported")
         if (lower.Contains("presupported") || lower.Contains("pre-supported") || lower.Contains("pre_supported"))
             return "presupported";
+        if (lower.Contains("unsupported") || lower.Contains("no_support") || lower.Contains("nosupport"))
+            return "unsupported";
+        if (lower.Contains("supported"))
+            return "supported";
         if (lower.Contains("lychee") || lower.Contains(".lys"))
             return "lychee";
         if (lower.Contains("chitubox") || lower.Contains(".ctb"))
@@ -1038,7 +1039,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         return null;
     }
 
-    private static bool IsArchiveFile(string? filename)
+    internal static bool IsArchiveFile(string? filename)
     {
         if (string.IsNullOrEmpty(filename)) return false;
         var ext = Path.GetExtension(filename).ToLowerInvariant();
@@ -1052,7 +1053,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         return 1000;
     }
 
-    private static string SanitizeFilename(string? name)
+    internal static string SanitizeFilename(string? name)
     {
         if (string.IsNullOrEmpty(name)) return "unknown";
         var invalid = Path.GetInvalidFileNameChars();
@@ -1060,7 +1061,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     }
 
     /// <summary>Parse model details from raw JSON (avoids typed deserialization issues with MMF's inconsistent API).</summary>
-    private static MmfModelDetails ParseModelDetails(JsonElement root)
+    internal static MmfModelDetails ParseModelDetails(JsonElement root)
     {
         var details = new MmfModelDetails
         {
@@ -1131,7 +1132,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     }
 
     /// <summary>Parse files from a JSON array (handles null/missing size, etc.).</summary>
-    private static List<MmfFile> ParseFiles(JsonElement itemsArray)
+    internal static List<MmfFile> ParseFiles(JsonElement itemsArray)
     {
         var files = new List<MmfFile>();
         foreach (var f in itemsArray.EnumerateArray())
@@ -1173,7 +1174,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     }
 
     /// <summary>Check if a URL is a CDN URL (skip Bearer auth for CDN downloads).</summary>
-    private static bool IsCdnUrl(string url)
+    internal static bool IsCdnUrl(string url)
     {
         return url.Contains("cdn.myminifactory.com", StringComparison.OrdinalIgnoreCase)
             || url.Contains("dl.myminifactory.com", StringComparison.OrdinalIgnoreCase)
@@ -1181,7 +1182,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     }
 
     /// <summary>Find an existing file by exact path or fuzzy search in subdirectories.</summary>
-    private static string? FindExistingFile(string modelDir, string safeName, long expectedSize)
+    internal static string? FindExistingFile(string modelDir, string safeName, long expectedSize)
     {
         // Exact match
         var exactPath = Path.Combine(modelDir, safeName);

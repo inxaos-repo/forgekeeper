@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -18,6 +19,7 @@
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.4" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.4" />
+    <ProjectReference Include="../../plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -25,6 +27,7 @@
     <ProjectReference Include="..\..\src\Forgekeeper.Infrastructure\Forgekeeper.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Forgekeeper.Api\Forgekeeper.Api.csproj" />
     <ProjectReference Include="..\..\src\Forgekeeper.PluginSdk\Forgekeeper.PluginSdk.csproj" />
+    <ProjectReference Include="../../plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj" />
   </ItemGroup>
 
 </Project>
