@@ -8,6 +8,29 @@ Authentication is optional — if `Security:ApiKey` is configured, include it vi
 
 ---
 
+## System
+
+### `GET /version` — Version Info
+
+Returns build version, .NET runtime version, and build timestamp. Always unauthenticated (not gated by API key).
+
+**Response:**
+
+```json
+{
+  "name": "Forgekeeper",
+  "version": "1.0.0",
+  "buildTime": "2026-04-15T18:00:00Z",
+  "dotNetVersion": "9.0.4"
+}
+```
+
+```bash
+curl http://localhost:5000/version
+```
+
+---
+
 ## Models
 
 ### `GET /api/v1/models` — Search Models
@@ -736,11 +759,35 @@ Returns files present on disk in source directories that are not tracked in the 
 
 ## Import
 
-### `POST /api/v1/import/scan` — Scan Unsorted Directory
+### `POST /api/v1/import/scan` — Scan Arbitrary Path
 
-Scans the `unsorted/` directory and reports what files are present (non-destructive preview).
+Scans any provided directory path for model folders with rich auto-detection. Non-destructive preview — does not create any database records.
 
-**Response:** `200 OK` with list of files found.
+**Request Body:**
+
+```json
+{
+  "path": "/mnt/3dprinting/unsorted",
+  "maxDepth": 3,
+  "recursive": true
+}
+```
+
+**Response:** `200 OK` with list of detected model entries.
+
+```json
+[
+  {
+    "folderPath": "/mnt/3dprinting/unsorted/some_creator/dragon_model",
+    "detectedModelName": "Dragon Model",
+    "detectedCreatorName": "Some Creator",
+    "alreadyInLibrary": false,
+    "existingModelId": null,
+    "files": ["dragon_body.stl", "dragon_wings.stl"],
+    "hasMetadataJson": false
+  }
+]
+```
 
 ---
 
@@ -806,6 +853,131 @@ Remove an item from the import queue without importing.
 
 ---
 
+### `GET /api/v1/import/watch-directories` — List Watch Directories
+
+Returns the configured watch directories and auto-import settings.
+
+**Response:**
+
+```json
+{
+  "watchDirectories": ["/mnt/3dprinting/downloads", "/mnt/3dprinting/inbox"],
+  "unsortedDirectories": ["/mnt/3dprinting/unsorted"],
+  "autoImportEnabled": false,
+  "intervalMinutes": 30
+}
+```
+
+Configuration keys: `Import:WatchDirectories`, `Import:AutoImportEnabled`, `Import:IntervalMinutes`.
+
+---
+
+### `POST /api/v1/import/scan-directory` — Process Specific Directory
+
+Triggers import processing for a specific directory path.
+
+**Request Body:**
+
+```json
+{
+  "path": "/mnt/3dprinting/downloads/new-models"
+}
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "processed": 12,
+  "items": [
+    {
+      "id": "...",
+      "originalPath": "/mnt/3dprinting/downloads/new-models/dragon",
+      "detectedModelName": "Dragon Miniature",
+      "status": "AwaitingReview"
+    }
+  ]
+}
+```
+
+---
+
+## Files
+
+### `GET /api/v1/files/browse` — Server-Side File Browser
+
+Browse the server’s filesystem for directory and file selection (used in the import flow by `FileBrowser.vue`).
+
+**Security:** Path traversal protected — only paths within `Storage:BasePaths` plus `/mnt`, `/library`, and `/data` are accessible.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `path` | string | Directory path to browse (e.g., `/mnt/3dprinting`) |
+
+**Response:**
+
+```json
+{
+  "currentPath": "/mnt/3dprinting",
+  "entries": [
+    {
+      "name": "sources",
+      "type": "directory",
+      "size": null,
+      "modified": "2026-04-01T00:00:00Z",
+      "itemCount": 42
+    },
+    {
+      "name": "unsorted",
+      "type": "directory",
+      "size": null,
+      "modified": "2026-04-14T12:00:00Z",
+      "itemCount": 8
+    }
+  ],
+  "breadcrumbs": [
+    { "name": "mnt", "path": "/mnt" },
+    { "name": "3dprinting", "path": "/mnt/3dprinting" }
+  ]
+}
+```
+
+---
+
+## Export / Backup
+
+### `GET /api/v1/export` — Export Full Library
+
+Dumps the entire library as a JSON attachment download. Includes creators, models (with tags, variants, and relations), tags, sources, recent sync runs, and non-secret plugin configs. Secrets are excluded.
+
+**Response:** `200 OK` with `Content-Disposition: attachment; filename="forgekeeper-export-YYYYMMDD-HHmmss.json"`
+
+```bash
+curl -O -J http://localhost:5000/api/v1/export
+```
+
+---
+
+### `POST /api/v1/import/restore` — Restore from Export
+
+Restores a library from a previously exported JSON file. Upserts creators, tags, models (matched by `SourceId+Source` or `BasePath`), and variants. Skips encrypted secrets.
+
+**Request Body:** JSON export file (same format as `GET /api/v1/export` output).
+
+**Response:** `200 OK`
+
+```json
+{
+  "created": 312,
+  "updated": 145,
+  "skipped": 23
+}
+```
+
+---
+
 ## Stats
 
 ### `GET /api/v1/stats` — Collection Statistics
@@ -856,10 +1028,17 @@ Returns all creators sorted by model count with total sizes.
   {
     "slug": "mmf",
     "name": "MyMiniFactory",
-    "description": "Scrapes MyMiniFactory user library",
+    "description": "Scrapes 3D printing model library data from MyMiniFactory (MMF).",
     "version": "1.0.0",
+    "author": "Plugin Author",
     "requiresBrowserAuth": true,
     "loadedAt": "2026-04-15T18:00:00Z",
+    "source": "builtin",
+    "manifestValid": true,
+    "manifestErrors": [],
+    "manifestWarnings": [],
+    "sdkCompatLevel": "Compatible",
+    "sdkCompatReason": "Plugin SDK 1.0.0 matches host SDK 1.0.0",
     "syncStatus": {
       "isRunning": false,
       "lastSyncAt": "2026-04-14T12:00:00Z",
@@ -872,6 +1051,18 @@ Returns all creators sorted by model count with total sizes.
 ]
 ```
 
+**New fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `author` | string? | Plugin author from manifest |
+| `manifestValid` | bool? | Whether `manifest.json` passed validation (`null` = no manifest) |
+| `manifestErrors` | string[]? | Validation errors |
+| `manifestWarnings` | string[]? | Validation warnings |
+| `sdkCompatLevel` | string? | `Compatible`, `MinorMismatch`, `MajorMismatch`, `Unknown` |
+| `sdkCompatReason` | string? | Human-readable explanation of SDK compatibility |
+| `source` | string | Plugin origin: `builtin`, `registry`, `github`, `manual` |
+
 ---
 
 ### `GET /api/v1/plugins/{slug}/progress` — SSE Sync Progress Stream
@@ -882,18 +1073,31 @@ Server-Sent Events stream that pushes real-time sync progress updates. Connect w
 curl -N http://localhost:5000/api/v1/plugins/mmf/progress
 ```
 
-Each event is a JSON `ScrapeProgress` object:
+The stream uses **named SSE events**:
 
-```json
-{
-  "status": "downloading",
-  "current": 247,
-  "total": 500,
-  "currentItem": "Dragon Bust by SculptorX"
-}
+**`event: progress`** — emitted during sync:
+
+```
+event: progress
+data: {"status":"running","scraped":247,"total":500,"failed":3,"currentItem":"Dragon Bust by SculptorX"}
 ```
 
-Status values: `authenticating`, `fetching_manifest`, `downloading`, `complete`, `error`
+**`event: complete`** — emitted when sync finishes:
+
+```
+event: complete
+data: {"scraped":498,"total":500,"failed":2}
+```
+
+| Field | Description |
+|-------|-------------|
+| `status` | `running` during sync; set by the sync wrapper |
+| `scraped` | Number of models successfully scraped so far |
+| `total` | Total models expected in this sync |
+| `failed` | Number of models that failed to scrape |
+| `currentItem` | Display name of the item currently being processed |
+
+Status values from plugin: `authenticating`, `fetching_manifest`, `running`, `complete`, `error`
 
 ---
 
@@ -942,9 +1146,29 @@ Returns the plugin's configuration schema with current values (secrets are maske
 
 ---
 
+### `GET /api/v1/plugins/{slug}/auth` — Get Plugin Auth Status / Trigger Auth Flow
+
+Returns the current authentication status for the plugin, or triggers a new auth flow if needed.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `force` | bool | Clear stored token and force a fresh authentication flow (default: `false`) |
+
+**Response:** `200 OK` with auth status or redirect URL for browser-based auth.
+
+---
+
 ### `POST /api/v1/plugins/{slug}/sync` — Trigger Plugin Sync
 
 Start a sync operation for the specified plugin.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `resume` | bool | Resume the last incomplete sync from its saved index (default: `false`) |
 
 **Response:** `202 Accepted`
 
@@ -969,9 +1193,10 @@ Start a sync operation for the specified plugin.
   "failedModels": 1,
   "error": null,
   "currentProgress": {
-    "status": "downloading",
-    "current": 250,
+    "status": "running",
+    "scraped": 250,
     "total": 500,
+    "failed": 1,
     "currentItem": "Dragon Bust by SculptorX"
   }
 }
@@ -996,6 +1221,81 @@ Accepts both `multipart/form-data` (field name: `manifest`) and raw JSON body.
 
 ---
 
+### `GET /api/v1/plugins/history` — All Sync Run History
+
+Returns sync run history across all plugins, ordered by `startedAt` descending.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | int | Max records to return (default: `50`) |
+
+**Response:** `200 OK` with list of `SyncRun` records.
+
+---
+
+### `GET /api/v1/plugins/{slug}/history` — Per-Plugin Sync History
+
+Returns sync run history for a specific plugin.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | int | Max records to return (default: `20`) |
+
+**Response:** `200 OK` with list of `SyncRun` records for the given slug.
+
+---
+
+### `POST /api/v1/plugins/reload` — Hot-Reload All Plugins
+
+Unloads and reloads all plugins without restarting the service. Requires `Forgekeeper__HotReloadEnabled=true`; returns `501 Not Implemented` if disabled (the default).
+
+**Response:** `200 OK` with reload summary, or `501 Not Implemented` if hot-reload is disabled.
+
+---
+
+### `POST /api/v1/plugins/{slug}/reload` — Hot-Reload Single Plugin
+
+Unloads and reloads a single plugin. Same `HotReloadEnabled` gate as the bulk reload.
+
+**Response:** `200 OK` with reload result, or `501 Not Implemented` if hot-reload is disabled.
+
+---
+
+### `GET /api/v1/plugins/{slug}/diagnostics` — Plugin Diagnostics
+
+Returns full diagnostic information for a loaded plugin.
+
+**Response:**
+
+```json
+{
+  "slug": "mmf",
+  "loadedAt": "2026-04-15T18:00:00Z",
+  "source": "builtin",
+  "sourceDirectory": "/app/plugins/mmf",
+  "assemblyName": "Forgekeeper.Scraper.Mmf",
+  "dllPath": "/app/plugins/mmf/Forgekeeper.Scraper.Mmf.dll",
+  "manifest": { ... },
+  "validation": {
+    "isValid": true,
+    "errors": [],
+    "warnings": []
+  },
+  "sdkCompat": {
+    "level": "Compatible",
+    "reason": "Plugin SDK 1.0.0 matches host SDK 1.0.0"
+  }
+}
+```
+
+**404 Not Found** if slug is not recognized.
+
+---
+
 ## Variants
 
 ### `GET /api/v1/variants/{id}/download` — Download Variant File
@@ -1008,10 +1308,6 @@ Returns the WebP thumbnail image for a specific variant.
 
 ---
 
-## MCP (Model Context Protocol)
-
----
-
 ## Prometheus Metrics
 
 ### `GET /metrics` — Prometheus Metrics
@@ -1019,12 +1315,34 @@ Returns the WebP thumbnail image for a specific variant.
 Returns metrics in Prometheus text format. Useful for Grafana dashboards and alerting.
 
 Metrics include:
-- `forgekeeper_models_total` — total model count
-- `forgekeeper_creators_total` — total creator count
-- `forgekeeper_files_total` — total variant file count
-- `forgekeeper_thumbnails_total` — total generated thumbnails
-- `forgekeeper_scan_running` — 1 if a scan is active
-- Per-plugin sync metrics (last run, model count, error count)
+
+**Library**
+
+| Metric | Description |
+|--------|-------------|
+| `forgekeeper_models_total{source="mmf"}` | Total model count per source. **Note:** currently only `mmf` and `manual` sources are exported; other sources (Thangs, Cults3D, Patreon) are not included. |
+| `forgekeeper_creators_total` | Total creator count |
+| `forgekeeper_files_total` | Total variant file count |
+| `forgekeeper_thumbnails_total` | Total generated thumbnails |
+| `forgekeeper_library_size_bytes` | Total library size in bytes |
+| `forgekeeper_printed_total` | Models with at least one successful print |
+
+**Scanner / Sync**
+
+| Metric | Description |
+|--------|-------------|
+| `forgekeeper_sync_running{plugin="mmf"}` | `1` if a sync is currently active for the given plugin (replaces the old `forgekeeper_scan_running`) |
+| `forgekeeper_sync_scraped_total{plugin="mmf"}` | Models successfully scraped in current/last sync |
+| `forgekeeper_sync_failed_total{plugin="mmf"}` | Models that failed in current/last sync |
+| `forgekeeper_sync_total_models{plugin="mmf"}` | Total models in current sync manifest |
+
+**Plugins**
+
+| Metric | Description |
+|--------|-------------|
+| `forgekeeper_plugins_loaded{slug="mmf"}` | `1` if the plugin is loaded, `0` otherwise |
+| `forgekeeper_plugins_manifest_valid{slug="mmf"}` | `1` = valid manifest, `0` = invalid, `-1` = no manifest |
+| `forgekeeper_plugins_sdk_compatible{slug="mmf"}` | `1` = compatible, `0` = incompatible, `-1` = unknown |
 
 ```bash
 curl http://localhost:5000/metrics
