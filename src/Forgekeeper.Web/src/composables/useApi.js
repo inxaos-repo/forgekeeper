@@ -228,6 +228,17 @@ export function useApi() {
     return get(`/plugins/${encodeURIComponent(slug)}/admin`)
   }
 
+  // ─── Files / Directory Browser ─────────────────────────
+  /**
+   * Browse server-side filesystem.
+   * Returns { currentPath, entries, breadcrumbs }.
+   * Allowed roots are /mnt, /library, /data, and Storage:BasePaths.
+   */
+  function browseFiles(path) {
+    const qs = path ? `?path=${encodeURIComponent(path)}` : ''
+    return get(`/files/browse${qs}`)
+  }
+
   return {
     loading,
     error,
@@ -288,6 +299,8 @@ export function useApi() {
     updatePluginConfig,
     triggerPluginSync,
     getPluginAdminHtml,
+    // Files
+    browseFiles,
   }
 }
 

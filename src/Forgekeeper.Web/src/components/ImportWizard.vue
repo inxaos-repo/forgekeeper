@@ -7,6 +7,7 @@
 -->
 <script setup>
 import { ref, computed, watch } from 'vue'
+import FileBrowser from './FileBrowser.vue'
 
 const emit = defineEmits(['close'])
 
@@ -18,6 +19,7 @@ const scanError = ref(null)
 // Step 1
 const folderPath = ref('')
 const recursive = ref(true)
+const showFileBrowser = ref(false)  // controls the FileBrowser modal
 
 // Step 2
 const scanResults = ref([])   // raw models from /api/v1/import/scan
@@ -300,13 +302,23 @@ async function doImport() {
           <div class="space-y-4">
             <div>
               <label class="block text-sm font-medium text-forge-text mb-1">Folder Path</label>
-              <input
-                v-model="folderPath"
-                type="text"
-                placeholder="/mnt/storage/unsorted/new-bundle"
-                class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-2 text-sm text-forge-text placeholder:text-forge-text-muted focus:outline-none focus:border-forge-accent"
-                @keydown.enter="runScan"
-              />
+              <div class="flex gap-2">
+                <input
+                  v-model="folderPath"
+                  type="text"
+                  placeholder="/mnt/storage/unsorted/new-bundle"
+                  class="flex-1 bg-forge-bg border border-forge-border rounded-lg px-3 py-2 text-sm text-forge-text placeholder:text-forge-text-muted focus:outline-none focus:border-forge-accent"
+                  @keydown.enter="runScan"
+                />
+                <button
+                  @click="showFileBrowser = true"
+                  class="px-3 py-2 rounded-lg text-sm font-medium bg-forge-bg border border-forge-border text-forge-text hover:bg-forge-card hover:border-forge-accent transition-colors shrink-0"
+                  title="Browse server filesystem"
+                >
+                  📁 Browse…
+                </button>
+              </div>
+              <p class="text-xs text-forge-text-muted mt-1">Type a path directly or click Browse to explore the server's filesystem.</p>
             </div>
 
             <label class="flex items-center gap-2 cursor-pointer select-none">
@@ -758,4 +770,13 @@ async function doImport() {
 
     </div>
   </div>
+
+  <!-- File Browser modal (teleported above the wizard) -->
+  <FileBrowser
+    v-if="showFileBrowser"
+    mode="directory"
+    :initial-path="folderPath || undefined"
+    @select="(p) => { folderPath = p; showFileBrowser = false }"
+    @cancel="showFileBrowser = false"
+  />
 </template>
