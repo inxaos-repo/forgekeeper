@@ -118,13 +118,17 @@ public class FileScannerService : IScannerService
                 await ScanSourceDirectoryAsync(source.BasePath, incremental, ct);
             }
 
-            // After scanning all sources, update creator model counts
+            // Update creator model counts with a single GROUP BY — not N separate COUNT queries.
+            // N+1 pattern here would fire 5,000+ queries at 5K creators.
             await using var countDb = await _dbFactory.CreateDbContextAsync(ct);
+            var counts = await countDb.Models
+                .GroupBy(m => m.CreatorId)
+                .Select(g => new { CreatorId = g.Key, Count = g.Count() })
+                .ToListAsync(ct);
+            var countLookup = counts.ToDictionary(x => x.CreatorId, x => x.Count);
             var creators = await countDb.Creators.ToListAsync(ct);
             foreach (var c in creators)
-            {
-                c.ModelCount = await countDb.Models.CountAsync(m => m.CreatorId == c.Id, ct);
-            }
+                c.ModelCount = countLookup.GetValueOrDefault(c.Id, 0);
             await countDb.SaveChangesAsync(ct);
             _logger.LogInformation("Updated model counts for {Count} creators", creators.Count);
 
@@ -163,9 +167,12 @@ public class FileScannerService : IScannerService
         var sourceName = Path.GetFileName(sourceDir);
         _logger.LogInformation("Scanning source: {Source}", sourceName);
 
-        // Ensure Source entity exists in DB for this source directory
-        await using var sourceDb = await _dbFactory.CreateDbContextAsync(ct);
-        var sourceEntity = await sourceDb.Sources.FirstOrDefaultAsync(s => s.Slug == sourceName, ct);
+        // One DbContext for the ENTIRE source scan — not one per model.
+        // Batch-save every SaveBatchSize models to reduce DB round trips.
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+
+        // Ensure Source entity exists
+        var sourceEntity = await db.Sources.FirstOrDefaultAsync(s => s.Slug == sourceName, ct);
         if (sourceEntity == null)
         {
             sourceEntity = new Source
@@ -177,11 +184,24 @@ public class FileScannerService : IScannerService
                 AdapterType = "GenericSourceAdapter",
                 AutoScan = true,
             };
-            sourceDb.Sources.Add(sourceEntity);
-            await sourceDb.SaveChangesAsync(ct);
+            db.Sources.Add(sourceEntity);
+            await db.SaveChangesAsync(ct);
         }
 
         UpdateStatus($"scanning {sourceName}");
+
+        const int SaveBatchSize = 100;
+        int pendingChanges = 0;
+
+        async Task FlushBatchAsync()
+        {
+            if (pendingChanges == 0) return;
+            await db.SaveChangesAsync(ct);
+            db.ChangeTracker.Clear();
+            pendingChanges = 0;
+            // Re-attach source entity after clearing the tracker
+            sourceEntity = await db.Sources.FirstOrDefaultAsync(s => s.Slug == sourceName, ct) ?? sourceEntity;
+        }
 
         // Walk creator directories
         foreach (var creatorDir in SafeGetDirectories(sourceDir))
@@ -202,37 +222,64 @@ public class FileScannerService : IScannerService
                     {
                         foreach (var subModelDir in subDirs)
                         {
-                            try { await ProcessModelDirectoryAsync(subModelDir, incremental, ct); }
+                            ct.ThrowIfCancellationRequested();
+                            try
+                            {
+                                bool changed = await ProcessModelDirectoryAsync(subModelDir, incremental, db, sourceEntity, ct);
+                                if (changed) pendingChanges++;
+                            }
                             catch (Exception ex) { _logger.LogError(ex, "Failed to process model: {Path}", subModelDir); }
+
+                            if (pendingChanges >= SaveBatchSize)
+                                await FlushBatchAsync();
                         }
                         continue;
                     }
                 }
 
-                try { await ProcessModelDirectoryAsync(modelDir, incremental, ct); }
+                try
+                {
+                    bool changed = await ProcessModelDirectoryAsync(modelDir, incremental, db, sourceEntity, ct);
+                    if (changed) pendingChanges++;
+                }
                 catch (Exception ex) { _logger.LogError(ex, "Failed to process model: {Path}", modelDir); }
+
+                if (pendingChanges >= SaveBatchSize)
+                    await FlushBatchAsync();
             }
         }
 
-        // Reconcile: flag models whose files are missing from disk
-        await ReconcileSourceAsync(sourceDir, ct);
+        // Flush any remaining changes
+        await FlushBatchAsync();
+
+        // Reconcile: flag models whose directories are missing from disk
+        await ReconcileSourceAsync(sourceDir, db, ct);
     }
 
-    private async Task ProcessModelDirectoryAsync(string modelDir, bool incremental, CancellationToken ct)
+    /// <summary>
+    /// Process a single model directory. Uses the caller-supplied shared DbContext;
+    /// does NOT call SaveChangesAsync — the caller batches saves every SaveBatchSize models.
+    /// Returns true if any tracked changes were made.
+    /// </summary>
+    private async Task<bool> ProcessModelDirectoryAsync(
+        string modelDir,
+        bool incremental,
+        ForgeDbContext db,
+        Source? sourceEntity,
+        CancellationToken ct)
     {
-        await using var db = await _dbFactory.CreateDbContextAsync(ct);
-
-        // Check if already scanned (incremental mode)
+        // Check if already scanned (incremental mode) — AsNoTracking since we may not continue
         if (incremental)
         {
             var scanState = await db.ScanStates
+                .AsNoTracking()
                 .FirstOrDefaultAsync(s => s.DirectoryPath == modelDir, ct);
 
             if (scanState != null)
             {
                 var lastWrite = Directory.GetLastWriteTimeUtc(modelDir);
                 if (lastWrite <= scanState.LastModifiedAt)
-                    return; // No changes
+                    return false; // No changes
             }
         }
 
@@ -241,11 +288,11 @@ public class FileScannerService : IScannerService
         if (adapter == null)
         {
             _logger.LogDebug("No adapter for: {Path}", modelDir);
-            return;
+            return false;
         }
 
         var parsed = adapter.ParseModelDirectory(modelDir);
-        if (parsed == null) return;
+        if (parsed == null) return false;
 
         lock (_lock) _progress.DirectoriesScanned++;
 
@@ -259,7 +306,9 @@ public class FileScannerService : IScannerService
             ?? parsed.CreatorName);
 
         var creator = await db.Creators.FirstOrDefaultAsync(
-            c => c.Name == creatorName && c.Source == parsed.Source, ct);
+            c => c.Name == creatorName && c.Source == parsed.Source, ct)
+            // Also check the local cache for creators added in this batch (not yet saved)
+            ?? db.Creators.Local.FirstOrDefault(c => c.Name == creatorName && c.Source == parsed.Source);
 
         if (creator == null)
         {
@@ -273,7 +322,7 @@ public class FileScannerService : IScannerService
                 AvatarUrl = metadata?.Creator?.AvatarUrl,
             };
             db.Creators.Add(creator);
-            await db.SaveChangesAsync(ct);
+            // No SaveChanges here — EF Core resolves FK ordering automatically on batch save
         }
 
         // Get or create model
@@ -293,10 +342,9 @@ public class FileScannerService : IScannerService
                 Source = parsed.Source,
             };
 
-            // Link to Source entity by adapter's slug
-            var linkedSource = await db.Sources.FirstOrDefaultAsync(s => s.Slug == parsed.SourceSlug, ct);
-            if (linkedSource != null)
-                model.SourceEntityId = linkedSource.Id;
+            // Use passed-in source entity (already loaded at source-scan level)
+            if (sourceEntity != null)
+                model.SourceEntityId = sourceEntity.Id;
             db.Models.Add(model);
         }
 
@@ -373,14 +421,14 @@ public class FileScannerService : IScannerService
         {
             foreach (var tagName in metadata.Tags.Select(t => t.ToLowerInvariant().Trim()).Distinct())
             {
-                // Check DB first, then check locally-tracked entities to avoid duplicate inserts
+                // Check DB first, then local cache (unsaved tags from earlier in this batch)
                 var tag = await db.Tags.FirstOrDefaultAsync(t => t.Name == tagName, ct)
                     ?? db.Tags.Local.FirstOrDefault(t => t.Name == tagName);
                 if (tag == null)
                 {
                     tag = new Tag { Id = Guid.NewGuid(), Name = tagName };
                     db.Tags.Add(tag);
-                    await db.SaveChangesAsync(ct); // Flush to avoid duplicate on next model
+                    // No per-tag flush — db.Tags.Local prevents duplicate inserts within this batch
                 }
                 if (!model.Tags.Contains(tag))
                     model.Tags.Add(tag);
@@ -400,8 +448,8 @@ public class FileScannerService : IScannerService
             }
         }
 
-        // Update creator model count
-        creator.ModelCount = await db.Models.CountAsync(m => m.CreatorId == creator.Id, ct) + (isNew ? 1 : 0);
+        // Note: creator.ModelCount is NOT updated here — the post-scan GROUP BY in ScanAsync
+        // handles all creator counts in a single query after all models are processed.
 
         // Update scan state
         var state = await db.ScanStates.FirstOrDefaultAsync(s => s.DirectoryPath == modelDir, ct);
@@ -414,7 +462,7 @@ public class FileScannerService : IScannerService
         state.LastModifiedAt = Directory.GetLastWriteTimeUtc(modelDir);
         state.FileCount = model.FileCount;
 
-        await db.SaveChangesAsync(ct);
+        // No SaveChangesAsync here — caller batches saves every SaveBatchSize models.
 
         lock (_lock)
         {
@@ -423,6 +471,8 @@ public class FileScannerService : IScannerService
             if (isNew) _progress.NewModels++;
             else _progress.UpdatedModels++;
         }
+
+        return true; // Changes staged in the shared DbContext
     }
 
     private static List<(string FullPath, string RelativePath, string FileName)> ScanModelFiles(string modelDir)
@@ -574,14 +624,15 @@ public class FileScannerService : IScannerService
 
                         if (!trackedSet.Contains(modelDir))
                         {
-                            var size = GetDirectorySize(modelDir);
                             var lastModified = Directory.GetLastWriteTimeUtc(modelDir);
                             report.Items.Add(new UntrackedItem
                             {
                                 Path = modelDir,
                                 Source = slug,
                                 IsDirectory = true,
-                                SizeBytes = size,
+                                // Skip recursive directory size scan — too expensive on NFS at scale.
+                                // Use ?computeSize=true in a future endpoint if needed.
+                                SizeBytes = 0,
                                 LastModified = lastModified,
                             });
                         }
@@ -606,48 +657,28 @@ public class FileScannerService : IScannerService
     }
 
     /// <summary>
-    /// Reconcile DB records against filesystem — flag models whose files have all gone missing.
-    /// Called after scanning a source directory to detect removed models.
+    /// Reconcile DB records against filesystem — log models whose directory has gone missing.
+    /// Uses the caller's shared DbContext (read-only; no writes, no SaveChanges).
+    /// Does NOT load Variants — only checks Directory.Exists on the model path.
     /// </summary>
-    private async Task ReconcileSourceAsync(string sourceDir, CancellationToken ct)
+    private async Task ReconcileSourceAsync(string sourceDir, ForgeDbContext db, CancellationToken ct)
     {
-        await using var db = await _dbFactory.CreateDbContextAsync(ct);
-        var sourceName = Path.GetFileName(sourceDir);
-
-        // Get all models whose BasePath is under this source directory
+        // Project only the fields we need — don't load Variants at all
         var models = await db.Models
-            .Include(m => m.Variants)
             .Where(m => m.BasePath.StartsWith(sourceDir))
+            .AsNoTracking()
+            .Select(m => new { m.Id, m.Name, m.BasePath })
             .ToListAsync(ct);
 
         foreach (var model in models)
         {
             ct.ThrowIfCancellationRequested();
 
-            // Check if the model directory itself still exists
             if (!Directory.Exists(model.BasePath))
             {
                 _logger.LogWarning(
                     "Model directory missing for {ModelName} (ID: {ModelId}): {BasePath}",
                     model.Name, model.Id, model.BasePath);
-                continue;
-            }
-
-            // Check if ALL variant files are gone
-            if (model.Variants.Count > 0)
-            {
-                var allMissing = model.Variants.All(v =>
-                {
-                    var fullPath = Path.Combine(model.BasePath, v.FilePath);
-                    return !File.Exists(fullPath);
-                });
-
-                if (allMissing)
-                {
-                    _logger.LogWarning(
-                        "All variant files missing for model {ModelName} (ID: {ModelId}, {Count} variants)",
-                        model.Name, model.Id, model.Variants.Count);
-                }
             }
         }
     }

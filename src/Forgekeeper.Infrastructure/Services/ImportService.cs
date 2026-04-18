@@ -103,16 +103,22 @@ public class ImportService : IImportService
         return results;
     }
 
-    public async Task<List<ImportQueueItemDto>> GetQueueAsync(ImportStatus? status = null, CancellationToken ct = default)
+    public async Task<(List<ImportQueueItemDto> Items, int TotalCount)> GetQueueAsync(
+        ImportStatus? status = null, int page = 1, int pageSize = 100, CancellationToken ct = default)
     {
         var query = _db.ImportQueue.AsQueryable();
         if (status.HasValue)
             query = query.Where(q => q.Status == status.Value);
 
-        return await query
-            .OrderByDescending(q => q.CreatedAt)
+        var orderedQuery = query.OrderByDescending(q => q.CreatedAt);
+        var totalCount = await orderedQuery.CountAsync(ct);
+        var items = await orderedQuery
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .Select(q => MapToDto(q))
             .ToListAsync(ct);
+
+        return (items, totalCount);
     }
 
     public async Task ConfirmImportAsync(Guid queueItemId, ImportConfirmRequest request, CancellationToken ct = default)

@@ -33,6 +33,18 @@ public class CreatorRepository : ICreatorRepository
             .ToListAsync(ct);
     }
 
+    public async Task<(List<Creator> Items, int TotalCount)> GetPagedAsync(
+        int page, int pageSize, CancellationToken ct = default)
+    {
+        var query = _db.Creators.OrderBy(c => c.Name);
+        var totalCount = await query.CountAsync(ct);
+        var items = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct);
+        return (items, totalCount);
+    }
+
     public async Task<Creator> AddAsync(Creator creator, CancellationToken ct = default)
     {
         _db.Creators.Add(creator);

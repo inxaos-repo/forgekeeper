@@ -1014,6 +1014,14 @@ public static class ModelEndpoints
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
+            // Require explicit ModelIds — loading the entire models table into memory is unsafe at scale.
+            // Use /reorganize/preview + search/parse-filename to build the selection first.
+            if (request.ModelIds == null || request.ModelIds.Count == 0)
+                return Results.BadRequest(new { message = "ModelIds is required. Use reorganize/preview or search to select models first. Max 500 per request." });
+
+            if (request.ModelIds.Count > 500)
+                return Results.BadRequest(new { message = "Maximum 500 models per reorganize operation." });
+
             var logger = loggerFactory.CreateLogger("ModelEndpoints.Reorganize");
             var basePaths = config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
             var basePath = basePaths[0];
@@ -1021,7 +1029,7 @@ public static class ModelEndpoints
             var models = await db.Models
                 .Include(m => m.Creator)
                 .Include(m => m.SourceEntity)
-                .Where(m => request.ModelIds == null || request.ModelIds.Contains(m.Id))
+                .Where(m => request.ModelIds.Contains(m.Id))
                 .ToListAsync(ct);
 
             int moved = 0, failed = 0, skipped = 0;
@@ -1121,13 +1129,20 @@ public static class ModelEndpoints
             if (string.IsNullOrWhiteSpace(request.Template))
                 return Results.BadRequest(new { message = "Template is required" });
 
+            // Require explicit ModelIds — applying to the full library unbounded is unsafe at scale.
+            // Use parse-filename/preview first to build the selection.
+            if (request.ModelIds == null || request.ModelIds.Count == 0)
+                return Results.BadRequest(new { message = "ModelIds is required. Use parse-filename/preview to select models first. Max 500 per request." });
+
+            if (request.ModelIds.Count > 500)
+                return Results.BadRequest(new { message = "Maximum 500 models per parse-filename/apply operation." });
+
             var parser = new FilenameTemplateParser();
 
-            var query = db.Models.Include(m => m.Creator).AsQueryable();
-            if (request.ModelIds != null && request.ModelIds.Count > 0)
-                query = query.Where(m => request.ModelIds.Contains(m.Id));
-
-            var models = await query.ToListAsync(ct);
+            var models = await db.Models
+                .Include(m => m.Creator)
+                .Where(m => request.ModelIds.Contains(m.Id))
+                .ToListAsync(ct);
 
             int updated = 0, skipped = 0, failed = 0;
 

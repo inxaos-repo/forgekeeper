@@ -147,6 +147,9 @@ public class ForgeDbContext : DbContext
 
             entity.HasIndex(e => e.ModelId);
             entity.HasIndex(e => new { e.ModelId, e.FilePath }).IsUnique();
+
+            // Partial index for deduplication queries on FileHash — avoids full table scan on duplicates check
+            entity.HasIndex(e => e.FileHash).HasFilter("file_hash IS NOT NULL");
         });
 
         // Tag

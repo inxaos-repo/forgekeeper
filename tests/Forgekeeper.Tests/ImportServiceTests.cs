@@ -69,10 +69,11 @@ public class ImportServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // Act
-        var result = await _importService.GetQueueAsync();
+        var (items, totalCount) = await _importService.GetQueueAsync();
 
         // Assert
-        Assert.Equal(3, result.Count);
+        Assert.Equal(3, items.Count);
+        Assert.Equal(3, totalCount);
     }
 
     [Fact]
@@ -97,11 +98,11 @@ public class ImportServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // Act
-        var result = await _importService.GetQueueAsync(ImportStatus.Pending);
+        var (items, _) = await _importService.GetQueueAsync(ImportStatus.Pending);
 
         // Assert
-        Assert.Single(result);
-        Assert.Equal(ImportStatus.Pending, result[0].Status);
+        Assert.Single(items);
+        Assert.Equal(ImportStatus.Pending, items[0].Status);
     }
 
     [Fact]
@@ -240,11 +241,11 @@ public class ImportServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // Act
-        var result = await _importService.GetQueueAsync();
+        var (items, _) = await _importService.GetQueueAsync();
 
         // Assert
-        Assert.Equal(2, result.Count);
-        Assert.True(result[0].CreatedAt >= result[1].CreatedAt);
+        Assert.Equal(2, items.Count);
+        Assert.True(items[0].CreatedAt >= items[1].CreatedAt);
     }
 
     public void Dispose()

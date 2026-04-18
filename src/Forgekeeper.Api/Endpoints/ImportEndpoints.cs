@@ -28,11 +28,21 @@ public static class ImportEndpoints
 
         group.MapGet("/queue", async (
             [FromQuery] ImportStatus? status,
+            [FromQuery] int? page,
+            [FromQuery] int? pageSize,
             IImportService importService,
             CancellationToken ct) =>
         {
-            var items = await importService.GetQueueAsync(status, ct);
-            return Results.Ok(items);
+            var p  = Math.Max(1, page     ?? 1);
+            var ps = Math.Clamp(pageSize ?? 100, 1, 500);
+            var (items, totalCount) = await importService.GetQueueAsync(status, p, ps, ct);
+            return Results.Ok(new
+            {
+                items,
+                totalCount,
+                page = p,
+                pageSize = ps,
+            });
         }).WithName("GetImportQueue");
 
         group.MapPost("/queue/{id:guid}/confirm", async (

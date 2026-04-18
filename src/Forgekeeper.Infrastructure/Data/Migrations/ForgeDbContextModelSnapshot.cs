@@ -643,6 +643,10 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_variants_model_id_file_path");
 
+                    b.HasIndex("FileHash")
+                        .HasDatabaseName("ix_variants_file_hash")
+                        .HasFilter("file_hash IS NOT NULL");
+
                     b.ToTable("variants", (string)null);
                 });
 

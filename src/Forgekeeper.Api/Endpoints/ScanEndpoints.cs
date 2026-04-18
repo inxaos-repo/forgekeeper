@@ -54,25 +54,19 @@ public static class ScanEndpoints
             var totalFiles = await db.Variants.CountAsync(ct);
             var zeroFileModels = await db.Models.CountAsync(m => m.FileCount == 0, ct);
             var unknownCreatorModels = await db.Models
-                .Include(m => m.Creator)
                 .CountAsync(m => m.Creator.Name == "unknown", ct);
 
-            // Models by creator status (in-memory groupby for EF Core compat)
-            var creatorData = await db.Models
-                .Include(m => m.Creator)
-                .Select(m => new { CreatorName = m.Creator.Name, m.FileCount })
-                .ToListAsync(ct);
+            // Push GroupBy to SQL — no in-memory aggregation at scale
+            var knownWithFiles    = await db.Models.CountAsync(m => m.Creator.Name != "unknown" && m.FileCount > 0,  ct);
+            var knownWithoutFiles = await db.Models.CountAsync(m => m.Creator.Name != "unknown" && m.FileCount == 0, ct);
+            var unknownWithFiles    = await db.Models.CountAsync(m => m.Creator.Name == "unknown" && m.FileCount > 0,  ct);
+            var unknownWithoutFiles = await db.Models.CountAsync(m => m.Creator.Name == "unknown" && m.FileCount == 0, ct);
 
-            var creatorBreakdown = creatorData
-                .GroupBy(m => m.CreatorName == "unknown" ? "unknown" : "known")
-                .Select(g => new
-                {
-                    Status = g.Key,
-                    Count = g.Count(),
-                    WithFiles = g.Count(m => m.FileCount > 0),
-                    WithoutFiles = g.Count(m => m.FileCount == 0),
-                })
-                .ToList();
+            var creatorBreakdown = new List<object>
+            {
+                new { Status = "known",   Count = knownWithFiles   + knownWithoutFiles,   WithFiles = knownWithFiles,   WithoutFiles = knownWithoutFiles   },
+                new { Status = "unknown", Count = unknownWithFiles + unknownWithoutFiles, WithFiles = unknownWithFiles, WithoutFiles = unknownWithoutFiles },
+            };
 
             var totalSizeBytes = await db.Models.SumAsync(m => m.TotalSizeBytes, ct);
 
@@ -93,51 +87,69 @@ public static class ScanEndpoints
 
         group.MapPost("/verify", async (ForgeDbContext db, CancellationToken ct) =>
         {
-            var models = await db.Models
-                .Include(m => m.Variants)
-                .ToListAsync(ct);
+            // Process in batches of 500 to avoid loading the entire library into memory.
+            // At 100K models × 10 variants = 1M rows — this would OOM without batching.
+            const int BatchSize = 500;
 
             int totalModels = 0, verifiedModels = 0, missingModels = 0;
             int totalFiles = 0, verifiedFiles = 0, missingFiles = 0;
             var missingItems = new List<object>();
 
-            foreach (var model in models)
-            {
-                totalModels++;
-                bool modelDirExists = Directory.Exists(model.BasePath);
-                if (modelDirExists)
-                    verifiedModels++;
-                else
-                {
-                    missingModels++;
-                    missingItems.Add(new
-                    {
-                        type = "model",
-                        modelId = model.Id,
-                        modelName = model.Name,
-                        path = model.BasePath,
-                    });
-                }
+            var modelCount = await db.Models.CountAsync(ct);
+            int offset = 0;
 
-                foreach (var variant in model.Variants)
+            while (offset < modelCount)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var batch = await db.Models
+                    .Include(m => m.Variants)
+                    .OrderBy(m => m.Id)
+                    .Skip(offset)
+                    .Take(BatchSize)
+                    .AsNoTracking()
+                    .ToListAsync(ct);
+
+                foreach (var model in batch)
                 {
-                    totalFiles++;
-                    if (File.Exists(variant.FilePath))
-                        verifiedFiles++;
+                    totalModels++;
+                    bool modelDirExists = Directory.Exists(model.BasePath);
+                    if (modelDirExists)
+                        verifiedModels++;
                     else
                     {
-                        missingFiles++;
+                        missingModels++;
                         missingItems.Add(new
                         {
-                            type = "file",
+                            type = "model",
                             modelId = model.Id,
                             modelName = model.Name,
-                            variantId = variant.Id,
-                            fileName = variant.FileName,
-                            path = variant.FilePath,
+                            path = model.BasePath,
                         });
                     }
+
+                    foreach (var variant in model.Variants)
+                    {
+                        totalFiles++;
+                        if (File.Exists(variant.FilePath))
+                            verifiedFiles++;
+                        else
+                        {
+                            missingFiles++;
+                            missingItems.Add(new
+                            {
+                                type = "file",
+                                modelId = model.Id,
+                                modelName = model.Name,
+                                variantId = variant.Id,
+                                fileName = variant.FileName,
+                                path = variant.FilePath,
+                            });
+                        }
+                    }
                 }
+
+                offset += BatchSize;
             }
 
             return Results.Ok(new
