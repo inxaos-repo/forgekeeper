@@ -86,6 +86,11 @@ public class ImportService : IImportService
             {
                 ct.ThrowIfCancellationRequested();
 
+                // Skip hidden directories and Forgekeeper internal folders
+                var entryName = Path.GetFileName(entry);
+                if (entryName.StartsWith(".") || entryName == ".forgekeeper" || entryName == "__MACOSX" || entryName == "Thumbs.db" || entryName == "desktop.ini")
+                    continue;
+
                 // Skip already-queued items
                 var existing = await _db.ImportQueue
                     .FirstOrDefaultAsync(q => q.OriginalPath == entry, ct);

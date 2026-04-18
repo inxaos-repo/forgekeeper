@@ -213,8 +213,14 @@ public static class ImportEndpoints
         else if (recursive && depth < maxDepth)
         {
             foreach (var subDir in Directory.EnumerateDirectories(currentPath))
+            {
+                var dirName = Path.GetFileName(subDir);
+                // Skip hidden dirs and Forgekeeper internals
+                if (dirName.StartsWith(".") || dirName == "__MACOSX" || dirName == "sources")
+                    continue;
                 ScanDirectory(rootPath, subDir, depth + 1, maxDepth, recursive,
                     pathLookup, existingModels, creatorNames, results, ref dirsScanned, ct);
+            }
         }
     }
 
