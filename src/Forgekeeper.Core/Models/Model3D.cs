@@ -65,6 +65,12 @@ public class Model3D
     public AcquisitionMethod? AcquisitionMethod { get; set; }
 
     /// <summary>
+    /// Workflow print status (e.g., "want-to-print", "printing", "printed", "on-hold", "skipped").
+    /// Free-form string set manually or via bulk update.
+    /// </summary>
+    public string? PrintStatus { get; set; }
+
+    /// <summary>
     /// Order or campaign ID from the acquisition, if applicable.
     /// </summary>
     public string? AcquisitionOrderId { get; set; }

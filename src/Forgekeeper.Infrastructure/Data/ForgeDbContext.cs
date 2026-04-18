@@ -64,6 +64,7 @@ public class ForgeDbContext : DbContext
             entity.Property(e => e.LicenseType).HasMaxLength(100);
             entity.Property(e => e.CollectionName).HasMaxLength(500);
             entity.Property(e => e.AcquisitionOrderId).HasMaxLength(200);
+            entity.Property(e => e.PrintStatus).HasMaxLength(100);
 
             // Enum stored as string
             entity.Property(e => e.AcquisitionMethod)
