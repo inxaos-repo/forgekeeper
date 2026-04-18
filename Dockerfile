@@ -63,7 +63,7 @@ WORKDIR /app
 # Install stl-thumb + system dependencies + Chromium for Playwright
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    wget ca-certificates \
+    wget ca-certificates curl \
     libegl1 libgl1 libxkbcommon0 \
     # Chromium and Playwright browser deps
     chromium \
@@ -71,6 +71,9 @@ RUN apt-get update && \
     libcups2 libdrm2 libxcomposite1 libxdamage1 \
     libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
     libcairo2 libx11-xcb1 libxcb-dri3-0 && \
+    # Install Node.js (Playwright .NET SDK needs node to drive the browser)
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
     # Install stl-thumb for 3D model thumbnail generation
     wget -q https://github.com/unlimitedbacon/stl-thumb/releases/download/v0.5.0/stl-thumb_0.5.0_amd64.deb -O /tmp/stl-thumb.deb && \
     dpkg -i /tmp/stl-thumb.deb || apt-get install -f -y && \
@@ -89,9 +92,11 @@ COPY --from=frontend-build /src/Forgekeeper.Api/wwwroot ./wwwroot/
 # Create directories for runtime data
 RUN mkdir -p /app/plugins /data
 
+# Install Playwright driver (node-based protocol driver, uses system Chromium)
+RUN npx playwright install --with-deps chromium 2>/dev/null || true
+
 # Environment defaults — Playwright uses system Chromium
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 ENV ASPNETCORE_URLS=http://+:5000 \
     ASPNETCORE_ENVIRONMENT=Production \
