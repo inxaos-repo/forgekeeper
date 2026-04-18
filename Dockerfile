@@ -60,11 +60,17 @@ RUN if [ -f node_modules/.bin/vite ]; then \
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
-# Install stl-thumb + system dependencies
+# Install stl-thumb + system dependencies + Chromium for Playwright
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     wget ca-certificates \
-    libegl1 libgl1 libxkbcommon0 && \
+    libegl1 libgl1 libxkbcommon0 \
+    # Chromium and Playwright browser deps
+    chromium \
+    libglib2.0-0 libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxcomposite1 libxdamage1 \
+    libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
+    libcairo2 libx11-xcb1 libxcb-dri3-0 && \
     # Install stl-thumb for 3D model thumbnail generation
     wget -q https://github.com/unlimitedbacon/stl-thumb/releases/download/v0.5.0/stl-thumb_0.5.0_amd64.deb -O /tmp/stl-thumb.deb && \
     dpkg -i /tmp/stl-thumb.deb || apt-get install -f -y && \
@@ -83,7 +89,10 @@ COPY --from=frontend-build /src/Forgekeeper.Api/wwwroot ./wwwroot/
 # Create directories for runtime data
 RUN mkdir -p /app/plugins /data
 
-# Environment defaults
+# Environment defaults — Playwright uses system Chromium
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+
 ENV ASPNETCORE_URLS=http://+:5000 \
     ASPNETCORE_ENVIRONMENT=Production \
     Forgekeeper__PluginsDirectory=/app/plugins \

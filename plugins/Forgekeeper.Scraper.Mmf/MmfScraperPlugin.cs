@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Forgekeeper.PluginSdk;
 using Microsoft.Extensions.Logging;
+using Microsoft.Playwright;
 
 namespace Forgekeeper.Scraper.Mmf;
 
@@ -15,8 +16,13 @@ namespace Forgekeeper.Scraper.Mmf;
 ///           so we accept the JSON export from the MMF data-library page).
 /// Scraping: Uses MMF v2 API for model details and file downloads.
 /// </summary>
-public class MmfScraperPlugin : ILibraryScraper
+public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 {
+    // Playwright browser — lazily created on first 403 fallback, shared across models in a sync
+    private IPlaywright? _playwright;
+    private IBrowser? _browser;
+    private IBrowserContext? _browserContext;
+
     private const string MmfApiBase = "https://www.myminifactory.com/api/v2";
     private const string MmfAuthBase = "https://auth.myminifactory.com";
 
@@ -282,10 +288,12 @@ public class MmfScraperPlugin : ILibraryScraper
                         
                         var fileResponse = await dlClient.GetAsync(file.DownloadUrl, ct);
 
-                        // 403 fallback: retry with FlareSolverr session cookies
+                        // 403 fallback chain: Bearer → session cookies → Playwright browser
                         HttpClient? cookieDlClient = null;
+                        bool downloadedByBrowser = false;
                         try
                         {
+                            // Fallback 1: retry with FlareSolverr session cookies
                             if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden
                                 && !string.IsNullOrEmpty(sessionCookies))
                             {
@@ -299,9 +307,27 @@ public class MmfScraperPlugin : ILibraryScraper
                                 fileResponse = await cookieDlClient.GetAsync(file.DownloadUrl, ct);
                             }
 
-                            fileResponse.EnsureSuccessStatusCode();
-                            await using var fs = File.Create(filePath);
-                            await fileResponse.Content.CopyToAsync(fs, ct);
+                            // Fallback 2: Playwright headless browser (Cloudflare bypass)
+                            if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden
+                                && !string.IsNullOrEmpty(bearerToken))
+                            {
+                                context.Logger.LogWarning(
+                                    "[MMF] 403 on cookie download — retrying with Playwright browser for {File}", safeName);
+                                fileResponse.Dispose();
+                                cookieDlClient?.Dispose();
+                                cookieDlClient = null;
+                                downloadedByBrowser = await DownloadWithBrowserAsync(
+                                    file.DownloadUrl, filePath, bearerToken, context.Logger, ct);
+                                if (!downloadedByBrowser)
+                                    throw new Exception($"All download methods (Bearer, cookies, Playwright) returned 403 for {safeName}");
+                            }
+
+                            if (!downloadedByBrowser)
+                            {
+                                fileResponse.EnsureSuccessStatusCode();
+                                await using var fs = File.Create(filePath);
+                                await fileResponse.Content.CopyToAsync(fs, ct);
+                            }
                         }
                         finally
                         {
@@ -473,6 +499,130 @@ public class MmfScraperPlugin : ILibraryScraper
                 </script>
             </div>
             """;
+    }
+
+    // --- Playwright browser download helpers ---
+
+    private async Task<IBrowserContext> GetBrowserContextAsync(string bearerToken, ILogger logger)
+    {
+        if (_browserContext != null) return _browserContext;
+
+        logger.LogInformation("[MMF] Launching headless Chromium for 403 fallback downloads...");
+        _playwright = await Playwright.CreateAsync();
+        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        _browserContext = await _browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            ExtraHTTPHeaders = new Dictionary<string, string> { ["Accept-Language"] = "en-US,en;q=0.9" }
+        });
+
+        // Inject Authorization header on all MMF origin requests
+        await _browserContext.RouteAsync("**/*myminifactory.com/**", async route =>
+        {
+            var headers = new Dictionary<string, string>(route.Request.Headers)
+            {
+                ["Authorization"] = $"Bearer {bearerToken}"
+            };
+            await route.ContinueAsync(new RouteContinueOptions { Headers = headers });
+        });
+
+        return _browserContext;
+    }
+
+    private async Task<bool> DownloadWithBrowserAsync(
+        string url, string filePath, string bearerToken, ILogger logger, CancellationToken ct)
+    {
+        try
+        {
+            var context = await GetBrowserContextAsync(bearerToken, logger);
+            var page = await context.NewPageAsync();
+            try
+            {
+                string? cdnUrl = null;
+
+                // Capture CDN redirect URL from response events
+                page.Response += (_, resp) =>
+                {
+                    if (resp.Url.Contains("dl4.myminifactory.com") ||
+                        resp.Url.Contains("dl3.myminifactory.com") ||
+                        resp.Url.Contains("dl.myminifactory.com") ||
+                        resp.Url.Contains("cdn.myminifactory.com"))
+                    {
+                        cdnUrl = resp.Url;
+                    }
+                };
+
+                try
+                {
+                    await page.GotoAsync(url, new PageGotoOptions
+                    {
+                        Timeout = 30000,
+                        WaitUntil = WaitUntilState.Commit
+                    });
+                }
+                catch { /* Expected — CDN redirect typically aborts navigation */ }
+
+                await Task.Delay(2000, ct);
+
+                if (cdnUrl != null)
+                {
+                    logger.LogDebug("[MMF] Browser CDN redirect: {Url}",
+                        cdnUrl.Length > 100 ? cdnUrl[..100] : cdnUrl);
+
+                    using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                    dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+
+                    var cdnResponse = await dlClient.GetAsync(
+                        cdnUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+
+                    if (cdnResponse.IsSuccessStatusCode)
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+                        await using var output = File.Create(filePath);
+                        await using var stream = await cdnResponse.Content.ReadAsStreamAsync(ct);
+                        await stream.CopyToAsync(output, ct);
+                        logger.LogInformation("[MMF] Browser download succeeded: {File}", Path.GetFileName(filePath));
+                        return true;
+                    }
+
+                    logger.LogWarning("[MMF] Browser CDN download failed: {Status}", cdnResponse.StatusCode);
+                }
+                else
+                {
+                    logger.LogWarning("[MMF] Playwright did not capture CDN URL for {Url}", url);
+                }
+            }
+            finally
+            {
+                await page.CloseAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("[MMF] Playwright browser download failed: {Error}", ex.Message);
+        }
+
+        return false;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_browserContext != null)
+        {
+            try { await _browserContext.DisposeAsync(); } catch { }
+            _browserContext = null;
+        }
+        if (_browser != null)
+        {
+            try { await _browser.DisposeAsync(); } catch { }
+            _browser = null;
+        }
+        if (_playwright != null)
+        {
+            try { _playwright.Dispose(); } catch { }
+            _playwright = null;
+        }
     }
 
     // --- Private helpers ---
@@ -1066,4 +1216,4 @@ internal class MmfTag
     [JsonPropertyName("name")]
     public string? Name { get; set; }
 }
-// Build: 1776450163
+// Build: 1776450164-playwright
