@@ -11,8 +11,8 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 
 const props = defineProps({
   url: { type: String, default: '' },
-  color: { type: String, default: '#4ecca3' },
-  backgroundColor: { type: String, default: '#1a1a2e' },
+  color: { type: String, default: '#c8b8a8' },
+  backgroundColor: { type: String, default: '#1c1c1c' },
   autoRotate: { type: Boolean, default: true },
 })
 
@@ -64,7 +64,7 @@ function init() {
   scene.add(dirLight2)
 
   // Grid helper
-  const grid = new THREE.GridHelper(200, 20, 0x2a3a5e, 0x2a3a5e)
+  const grid = new THREE.GridHelper(200, 20, 0x404040, 0x404040)
   grid.material.opacity = 0.3
   grid.material.transparent = true
   scene.add(grid)

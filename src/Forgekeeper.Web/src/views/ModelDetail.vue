@@ -11,6 +11,7 @@ import StlViewer from '../components/StlViewer.vue'
 import SourceBadge from '../components/SourceBadge.vue'
 import StarRating from '../components/StarRating.vue'
 import TagEditor from '../components/TagEditor.vue'
+import Breadcrumbs from '../components/Breadcrumbs.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -303,19 +304,13 @@ watch(() => route.params.id, fetchModel)
     <!-- Model detail -->
     <div v-else>
       <!-- Breadcrumb -->
-      <div class="flex items-center gap-2 text-sm text-forge-text-muted mb-6">
-        <RouterLink to="/" class="hover:text-forge-accent">Models</RouterLink>
-        <span>›</span>
-        <RouterLink
-          v-if="model.creatorId"
-          :to="{ name: 'CreatorDetail', params: { id: model.creatorId } }"
-          class="hover:text-forge-accent"
-        >
-          {{ model.creatorName }}
-        </RouterLink>
-        <span v-if="model.creatorId">›</span>
-        <span class="text-forge-text">{{ model.name }}</span>
-      </div>
+      <Breadcrumbs
+        :crumbs="[
+          { label: 'Models', to: '/' },
+          ...(model.creatorId ? [{ label: model.creatorName, to: { name: 'CreatorDetail', params: { id: model.creatorId } } }] : []),
+          { label: model.name },
+        ]"
+      />
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <!-- Left column: 3D Preview + Variants + Print History + Components + Related -->

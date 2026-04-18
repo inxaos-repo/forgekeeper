@@ -8,6 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi.js'
 import ModelCard from '../components/ModelCard.vue'
 import SourceBadge from '../components/SourceBadge.vue'
+import Breadcrumbs from '../components/Breadcrumbs.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -123,11 +124,12 @@ watch(() => route.params.id, () => {
 
     <div v-else>
       <!-- Breadcrumb -->
-      <div class="flex items-center gap-2 text-sm text-forge-text-muted mb-6">
-        <RouterLink to="/creators" class="hover:text-forge-accent">Creators</RouterLink>
-        <span>›</span>
-        <span class="text-forge-text">{{ creator.name }}</span>
-      </div>
+      <Breadcrumbs
+        :crumbs="[
+          { label: 'Creators', to: '/creators' },
+          { label: creator.name },
+        ]"
+      />
 
       <!-- Creator header -->
       <div class="bg-forge-card border border-forge-border rounded-xl p-6 mb-6">

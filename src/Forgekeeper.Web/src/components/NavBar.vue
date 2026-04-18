@@ -51,10 +51,10 @@ async function pollPluginUpdates() {
 const navLinks = [
   { to: '/', label: 'Models', name: 'Models' },
   { to: '/creators', label: 'Creators', name: 'Creators' },
-  { to: '/import', label: 'Import', name: 'Import', badge: 'import' },
   { to: '/stats', label: 'Stats', name: 'Stats' },
-  { to: '/plugins', label: 'Plugins', name: 'Plugins', badge: 'plugins' },
+  { to: '/import', label: 'Import', name: 'Import', badge: 'import' },
   { to: '/sources', label: 'Sources', name: 'Sources' },
+  { to: '/plugins', label: 'Plugins', name: 'Plugins', badge: 'plugins' },
 ]
 
 onMounted(() => {
@@ -76,9 +76,11 @@ onBeforeUnmount(() => {
       <div class="flex items-center justify-between h-16">
         <!-- Logo + Desktop Links -->
         <div class="flex items-center gap-8">
-          <RouterLink to="/" class="text-xl font-bold text-forge-accent flex items-center gap-2">
+          <RouterLink to="/" class="text-xl font-bold flex items-center gap-2">
             <span class="text-2xl">⚒️</span>
-            <span class="hidden sm:inline">Forgekeeper</span>
+            <span class="hidden sm:inline">
+              <span class="text-forge-accent">Forge</span><span class="text-forge-text">keeper</span>
+            </span>
           </RouterLink>
 
           <div class="hidden md:flex items-center gap-1">
@@ -99,7 +101,7 @@ onBeforeUnmount(() => {
               </span>
               <span
                 v-if="link.badge === 'plugins' && pluginUpdateCount > 0"
-                class="absolute -top-0.5 -right-1 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center bg-yellow-500 text-forge-bg text-[10px] font-bold rounded-full px-0.5"
+                class="absolute -top-0.5 -right-1 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center bg-orange-600 text-white text-[10px] font-bold rounded-full px-0.5"
               >
                 {{ pluginUpdateCount > 99 ? '99+' : pluginUpdateCount }}
               </span>
@@ -165,7 +167,7 @@ onBeforeUnmount(() => {
           </span>
           <span
             v-if="link.badge === 'plugins' && pluginUpdateCount > 0"
-            class="ml-1.5 inline-flex items-center justify-center min-w-[1.2rem] h-5 bg-yellow-500 text-forge-bg text-[10px] font-bold rounded-full px-1"
+            class="ml-1.5 inline-flex items-center justify-center min-w-[1.2rem] h-5 bg-orange-600 text-white text-[10px] font-bold rounded-full px-1"
           >
             {{ pluginUpdateCount > 99 ? '99+' : pluginUpdateCount }}
           </span>
