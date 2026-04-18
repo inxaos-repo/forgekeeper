@@ -294,80 +294,165 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                         continue;
                     }
 
-                    try
-                    {
-                        context.Logger.LogInformation("[MMF] Downloading: {File} for {Model}", safeName, model.Name);
-                        using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-                        // Use Bearer for MMF URLs, skip for CDN URLs
-                        if (!string.IsNullOrEmpty(bearerToken) && !IsCdnUrl(file.DownloadUrl))
-                            dlClient.DefaultRequestHeaders.Authorization = 
-                                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
-                        dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-                        
-                        var fileResponse = await dlClient.GetAsync(file.DownloadUrl, ct);
+                    // Retry wrapper: max 3 attempts with exponential backoff (2s, 8s, 30s)
+                    bool downloaded = false;
+                    Exception? lastDownloadEx = null;
+                    int[] retryBackoffSeconds = [2, 8, 30];
 
-                        // 403 fallback chain: Bearer → session cookies → Playwright browser
-                        HttpClient? cookieDlClient = null;
-                        bool downloadedByBrowser = false;
+                    for (int attempt = 0; attempt < 3 && !downloaded && !ct.IsCancellationRequested; attempt++)
+                    {
+                        if (attempt > 0)
+                        {
+                            var waitSec = retryBackoffSeconds[attempt - 1];
+                            context.Logger.LogWarning(
+                                "[MMF] Retry attempt {Attempt}/3 for {File}, waiting {Wait}s",
+                                attempt + 1, safeName, waitSec);
+                            await Task.Delay(TimeSpan.FromSeconds(waitSec), ct);
+                        }
+
                         try
                         {
-                            // Fallback 1: retry with FlareSolverr session cookies
-                            if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden
-                                && !string.IsNullOrEmpty(sessionCookies))
+                            context.Logger.LogInformation("[MMF] Downloading: {File} for {Model} (attempt {Attempt}/3)",
+                                safeName, model.Name, attempt + 1);
+                            using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                            // Use Bearer for MMF URLs, skip for CDN URLs
+                            if (!string.IsNullOrEmpty(bearerToken) && !IsCdnUrl(file.DownloadUrl))
+                                dlClient.DefaultRequestHeaders.Authorization =
+                                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
+                            dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+
+                            var fileResponse = await dlClient.GetAsync(file.DownloadUrl, ct);
+
+                            // Check for 404 — don't retry, file doesn't exist
+                            if (fileResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
                             {
-                                context.Logger.LogWarning(
-                                    "[MMF] 403 on Bearer download — retrying with session cookies for {File}", safeName);
-                                fileResponse.Dispose();
-                                cookieDlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-                                cookieDlClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
-                                cookieDlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-                                    sessionUA ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-                                fileResponse = await cookieDlClient.GetAsync(file.DownloadUrl, ct);
+                                context.Logger.LogWarning("[MMF] 404 for {File} — skipping (file not found)", safeName);
+                                filesFailed++;
+                                break;
                             }
 
-                            // Fallback 2: Playwright headless browser (Cloudflare bypass)
-                            if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden
-                                && !string.IsNullOrEmpty(bearerToken))
+                            // Check for 429 — respect Retry-After header, then retry
+                            if (fileResponse.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                             {
+                                var retryAfter = fileResponse.Headers.RetryAfter?.Delta;
+                                var rateLimitWait = retryAfter.HasValue
+                                    ? (int)Math.Ceiling(retryAfter.Value.TotalSeconds)
+                                    : retryBackoffSeconds[Math.Min(attempt, retryBackoffSeconds.Length - 1)];
                                 context.Logger.LogWarning(
-                                    "[MMF] 403 on cookie download — retrying with Playwright browser for {File}", safeName);
-                                fileResponse.Dispose();
-                                cookieDlClient?.Dispose();
-                                cookieDlClient = null;
-                                downloadedByBrowser = await DownloadWithBrowserAsync(
-                                    file.DownloadUrl, filePath, bearerToken, context.Logger, ct);
+                                    "[MMF] 429 Too Many Requests for {File} — waiting {Wait}s (attempt {Attempt}/3)",
+                                    safeName, rateLimitWait, attempt + 1);
+                                await Task.Delay(TimeSpan.FromSeconds(rateLimitWait), ct);
+                                lastDownloadEx = new HttpRequestException($"429 Too Many Requests for {safeName}",
+                                    null, fileResponse.StatusCode);
+                                continue; // next attempt
+                            }
+
+                            // Check for 5xx server errors — retry
+                            if ((int)fileResponse.StatusCode >= 500)
+                            {
+                                lastDownloadEx = new HttpRequestException(
+                                    $"Server error {(int)fileResponse.StatusCode} for {safeName}",
+                                    null, fileResponse.StatusCode);
+                                context.Logger.LogWarning(
+                                    "[MMF] Server error {Status} for {File} (attempt {Attempt}/3)",
+                                    (int)fileResponse.StatusCode, safeName, attempt + 1);
+                                continue; // next attempt
+                            }
+
+                            // 403 fallback chain: Bearer → session cookies → Playwright browser
+                            HttpClient? cookieDlClient = null;
+                            bool downloadedByBrowser = false;
+                            try
+                            {
+                                // Fallback 1: retry with FlareSolverr session cookies
+                                if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden
+                                    && !string.IsNullOrEmpty(sessionCookies))
+                                {
+                                    context.Logger.LogWarning(
+                                        "[MMF] 403 on Bearer download — retrying with session cookies for {File}", safeName);
+                                    fileResponse.Dispose();
+                                    cookieDlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                                    cookieDlClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
+                                    cookieDlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                                        sessionUA ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+                                    fileResponse = await cookieDlClient.GetAsync(file.DownloadUrl, ct);
+                                }
+
+                                // Fallback 2: Playwright headless browser (Cloudflare bypass)
+                                if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden
+                                    && !string.IsNullOrEmpty(bearerToken))
+                                {
+                                    context.Logger.LogWarning(
+                                        "[MMF] 403 on cookie download — retrying with Playwright browser for {File}", safeName);
+                                    fileResponse.Dispose();
+                                    cookieDlClient?.Dispose();
+                                    cookieDlClient = null;
+                                    downloadedByBrowser = await DownloadWithBrowserAsync(
+                                        file.DownloadUrl, filePath, bearerToken, context.Logger, ct);
+                                    if (!downloadedByBrowser)
+                                        throw new Exception($"All download methods (Bearer, cookies, Playwright) returned 403 for {safeName}");
+                                }
+
                                 if (!downloadedByBrowser)
-                                    throw new Exception($"All download methods (Bearer, cookies, Playwright) returned 403 for {safeName}");
+                                {
+                                    fileResponse.EnsureSuccessStatusCode();
+                                    await using var fs = File.Create(filePath);
+                                    await fileResponse.Content.CopyToAsync(fs, ct);
+                                }
                             }
-
-                            if (!downloadedByBrowser)
+                            finally
                             {
-                                fileResponse.EnsureSuccessStatusCode();
-                                await using var fs = File.Create(filePath);
-                                await fileResponse.Content.CopyToAsync(fs, ct);
+                                cookieDlClient?.Dispose();
                             }
-                        }
-                        finally
-                        {
-                            cookieDlClient?.Dispose();
-                        }
 
-                        var actualSize = new FileInfo(filePath).Length;
-                        var variant = DetectVariant(file.Filename);
-                        downloadedFiles.Add(new DownloadedFile
+                            var actualSize = new FileInfo(filePath).Length;
+                            var variant = DetectVariant(file.Filename);
+                            downloadedFiles.Add(new DownloadedFile
+                            {
+                                Filename = file.Filename ?? safeName,
+                                LocalPath = filePath,
+                                Size = actualSize,
+                                Variant = variant,
+                                IsArchive = IsArchiveFile(file.Filename),
+                            });
+                            filesDownloaded++;
+                            downloaded = true;
+                        }
+                        catch (TaskCanceledException) when (ct.IsCancellationRequested)
                         {
-                            Filename = file.Filename ?? safeName,
-                            LocalPath = filePath,
-                            Size = actualSize,
-                            Variant = variant,
-                            IsArchive = IsArchiveFile(file.Filename),
-                        });
-                        filesDownloaded++;
+                            throw; // Propagate real cancellation
+                        }
+                        catch (TaskCanceledException ex)
+                        {
+                            lastDownloadEx = ex;
+                            context.Logger.LogWarning(
+                                "[MMF] Timeout on attempt {Attempt}/3 for {File}", attempt + 1, safeName);
+                        }
+                        catch (HttpRequestException ex) when (
+                            ex.StatusCode == System.Net.HttpStatusCode.TooManyRequests ||
+                            ((int?)ex.StatusCode >= 500))
+                        {
+                            lastDownloadEx = ex;
+                            context.Logger.LogWarning(
+                                "[MMF] Retryable HTTP error {Status} on attempt {Attempt}/3 for {File}",
+                                ex.StatusCode, attempt + 1, safeName);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Non-retryable error (403 exhausted, general exception)
+                            lastDownloadEx = ex;
+                            context.Logger.LogWarning(
+                                "[MMF] Non-retryable error on attempt {Attempt}/3 for {File}: {Error}",
+                                attempt + 1, safeName, ex.Message);
+                            break;
+                        }
                     }
-                    catch (Exception ex)
+
+                    if (!downloaded && lastDownloadEx != null)
                     {
-                        context.Logger.LogWarning("[MMF] Failed to download {File}: {Error}", safeName, ex.Message);
+                        context.Logger.LogWarning("[MMF] Failed to download {File} after all attempts: {Error}",
+                            safeName, lastDownloadEx.Message);
                         filesFailed++;
                     }
 

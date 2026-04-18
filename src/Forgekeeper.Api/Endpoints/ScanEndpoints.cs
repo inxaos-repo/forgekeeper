@@ -1,4 +1,5 @@
 using Forgekeeper.Core.Interfaces;
+using Microsoft.AspNetCore.Mvc;
 
 namespace Forgekeeper.Api.Endpoints;
 
@@ -33,5 +34,9 @@ public static class ScanEndpoints
         {
             return Results.Ok(scanner.GetProgress());
         }).WithName("GetScanStatus");
+
+        group.MapGet("/untracked", async (IScannerService scanner, [FromQuery] string? source, CancellationToken ct) =>
+            Results.Ok(await scanner.FindUntrackedFilesAsync(source, ct)))
+            .WithName("GetUntrackedFiles");
     }
 }

@@ -7,6 +7,7 @@ using Forgekeeper.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Collections.Generic;
 
 namespace Forgekeeper.Infrastructure.Services;
 
@@ -527,6 +528,81 @@ public class FileScannerService : IScannerService
         // Remove control characters
         sanitized = new string(sanitized.Where(c => !char.IsControl(c)).ToArray());
         return sanitized.Trim();
+    }
+
+    /// <summary>
+    /// Scan source directories and return files/directories that exist on disk
+    /// but are not tracked in the database.
+    /// </summary>
+    public async Task<UntrackedReport> FindUntrackedFilesAsync(string? sourceSlug = null, CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+
+        // Load all tracked base_path values into a hash set for O(1) lookup
+        var trackedPaths = await db.Models
+            .Select(m => m.BasePath)
+            .ToListAsync(ct);
+        var trackedSet = new HashSet<string>(trackedPaths, StringComparer.OrdinalIgnoreCase);
+
+        var report = new UntrackedReport();
+
+        var basePaths = _config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
+
+        foreach (var basePath in basePaths)
+        {
+            var sourcesDir = Path.Combine(basePath, "sources");
+            if (!Directory.Exists(sourcesDir)) continue;
+
+            foreach (var sourceDir in SafeGetDirectories(sourcesDir))
+            {
+                var slug = Path.GetFileName(sourceDir);
+
+                // Filter by sourceSlug if provided
+                if (!string.IsNullOrEmpty(sourceSlug) &&
+                    !slug.Equals(sourceSlug, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Walk creator dirs
+                foreach (var creatorDir in SafeGetDirectories(sourceDir))
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    // Walk model-level dirs
+                    foreach (var modelDir in SafeGetDirectories(creatorDir))
+                    {
+                        ct.ThrowIfCancellationRequested();
+
+                        if (!trackedSet.Contains(modelDir))
+                        {
+                            var size = GetDirectorySize(modelDir);
+                            var lastModified = Directory.GetLastWriteTimeUtc(modelDir);
+                            report.Items.Add(new UntrackedItem
+                            {
+                                Path = modelDir,
+                                Source = slug,
+                                IsDirectory = true,
+                                SizeBytes = size,
+                                LastModified = lastModified,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        report.TotalOrphans = report.Items.Count;
+        report.OrphanSizeBytes = report.Items.Sum(i => i.SizeBytes);
+        return report;
+    }
+
+    private static long GetDirectorySize(string path)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+                .Sum(f => { try { return new FileInfo(f).Length; } catch { return 0L; } });
+        }
+        catch { return 0L; }
     }
 
     /// <summary>

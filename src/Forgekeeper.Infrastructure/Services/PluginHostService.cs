@@ -22,6 +22,7 @@ public class PluginHostService : BackgroundService
     private readonly ILogger<PluginHostService> _logger;
     private readonly ConcurrentDictionary<string, LoadedPlugin> _plugins = new();
     private readonly ConcurrentDictionary<string, PluginSyncStatus> _syncStatuses = new();
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _syncLocks = new();
     private readonly string _pluginsDirectory;
     private readonly string _sourcesDirectory;
 
@@ -73,8 +74,12 @@ public class PluginHostService : BackgroundService
             {
                 if (stoppingToken.IsCancellationRequested) break;
 
+                // Use TryWait(0) on the per-plugin semaphore to skip if a sync is already running
+                var loopSemaphore = _syncLocks.GetOrAdd(slug, _ => new SemaphoreSlim(1, 1));
+                if (!loopSemaphore.Wait(0)) continue;
+                loopSemaphore.Release(); // Release immediately — RunSyncAsync will re-acquire
+
                 var status = _syncStatuses.GetOrAdd(slug, _ => new PluginSyncStatus());
-                if (status.IsRunning) continue;
 
                 var interval = await GetSyncIntervalAsync(slug, stoppingToken);
                 if (interval <= TimeSpan.Zero) continue;
@@ -92,9 +97,19 @@ public class PluginHostService : BackgroundService
         if (!_plugins.ContainsKey(slug))
             throw new InvalidOperationException($"Plugin '{slug}' not found");
 
+        // Acquire the per-plugin sync lock to atomically check + set IsRunning
+        var semaphore = _syncLocks.GetOrAdd(slug, _ => new SemaphoreSlim(1, 1));
+        if (!await semaphore.WaitAsync(0, ct))
+            throw new InvalidOperationException($"Sync for '{slug}' is already running");
+
         var status = _syncStatuses.GetOrAdd(slug, _ => new PluginSyncStatus());
         if (status.IsRunning)
+        {
+            semaphore.Release();
             throw new InvalidOperationException($"Sync for '{slug}' is already running");
+        }
+        status.IsRunning = true; // Set while holding the lock
+        semaphore.Release();     // Release before starting background task
 
         // Use a long-lived token (not the HTTP request's CT which times out with nginx)
         // The sync runs in the background and can take minutes for FlareSolverr CF solve + login
@@ -115,6 +130,14 @@ public class PluginHostService : BackgroundService
     private async Task RunSyncAsync(string slug, CancellationToken ct)
     {
         if (!_plugins.TryGetValue(slug, out var loaded)) return;
+
+        // Acquire per-plugin sync lock with WaitAsync(0) — return immediately if locked
+        var semaphore = _syncLocks.GetOrAdd(slug, _ => new SemaphoreSlim(1, 1));
+        if (!await semaphore.WaitAsync(0))
+        {
+            _logger.LogDebug("[{Slug}] Sync skipped — another sync is already in progress", slug);
+            return;
+        }
 
         var status = _syncStatuses.GetOrAdd(slug, _ => new PluginSyncStatus());
         status.IsRunning = true;
@@ -224,6 +247,7 @@ public class PluginHostService : BackgroundService
         {
             status.IsRunning = false;
             status.CurrentProgress = null;
+            semaphore.Release();
         }
     }
 

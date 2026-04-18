@@ -7,4 +7,5 @@ public interface IScannerService
     Task<ScanProgress> ScanAsync(bool incremental = false, CancellationToken ct = default);
     ScanProgress GetProgress();
     bool IsRunning { get; }
+    Task<UntrackedReport> FindUntrackedFilesAsync(string? sourceSlug = null, CancellationToken ct = default);
 }
