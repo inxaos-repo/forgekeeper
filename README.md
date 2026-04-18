@@ -4,14 +4,18 @@ A self-hosted digital asset manager for massive 3D printing collections. **Plex 
 
 ## Current Status
 
+Forgekeeper is actively used in production managing a large personal collection:
+
 | Metric | Value |
 |--------|-------|
-| Models indexed | **4,010** |
-| Creators | **160** |
-| File variants | **200,931** |
-| Thumbnails generated | **16,600+** |
-| Backend tests | **241** |
+| Models indexed | **8,800+** |
+| Creators | **170+** |
+| File variants | **200,000+** |
+| Library size | **3.6 TB** |
+| Backend tests | **330+** |
 | E2E tests (Playwright) | **27** |
+
+*These numbers are from a real deployment — not synthetic benchmarks.*
 
 ## Features
 
