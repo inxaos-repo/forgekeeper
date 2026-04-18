@@ -509,7 +509,13 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
         logger.LogInformation("[MMF] Launching headless Chromium for 403 fallback downloads...");
         _playwright = await Playwright.CreateAsync();
-        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        // Use system Chromium if available (Docker image), fall back to Playwright's bundled version
+        var chromiumPath = Environment.GetEnvironmentVariable("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH");
+        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions 
+        { 
+            Headless = true,
+            ExecutablePath = !string.IsNullOrEmpty(chromiumPath) ? chromiumPath : null,
+        });
         _browserContext = await _browser.NewContextAsync(new BrowserNewContextOptions
         {
             UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
