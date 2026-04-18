@@ -27,6 +27,7 @@ public class PluginHostService : BackgroundService
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _syncLocks = new();
     private readonly string _pluginsDirectory;
     private readonly string _sourcesDirectory;
+    private CancellationToken _appStoppingToken;
     private readonly bool _forceLoadIncompatible;
     private readonly bool _hotReloadEnabled;
 
@@ -86,6 +87,7 @@ public class PluginHostService : BackgroundService
     {
         _logger.LogInformation("Plugin host starting, scanning {Dir}", _pluginsDirectory);
 
+        _appStoppingToken = stoppingToken;
         await DiscoverPluginsAsync(stoppingToken);
 
         _logger.LogInformation("Loaded {Count} plugin(s): {Slugs}",
@@ -167,9 +169,10 @@ public class PluginHostService : BackgroundService
 
         // Use a long-lived token (not the HTTP request's CT which times out with nginx)
         // The sync runs in the background and can take minutes for FlareSolverr CF solve + login
-        // Sync can take hours for large libraries (7,230+ models × download time)
-        var syncCts = new CancellationTokenSource(TimeSpan.FromHours(12));
-        _ = Task.Run(() => RunSyncAsync(slug, syncCts.Token, startIndex));
+        // No timeout — syncs run until complete, cancelled, or app shutdown.
+        // A full library restore (7,230+ models) can take days.
+        // Uses the application's stopping token, not the HTTP request's short-lived token.
+        _ = Task.Run(() => RunSyncAsync(slug, _appStoppingToken, startIndex));
     }
 
     /// <summary>Handle an auth callback routed from the web server.</summary>
