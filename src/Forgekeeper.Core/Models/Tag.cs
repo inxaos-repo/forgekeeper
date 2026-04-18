@@ -12,5 +12,6 @@ public class Tag
     public string? Source { get; set; }
 
     // Navigation
+    [System.Text.Json.Serialization.JsonIgnore]
     public List<Model3D> Models { get; set; } = [];
 }
