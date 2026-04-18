@@ -1,5 +1,6 @@
 using Forgekeeper.Core.Interfaces;
 using Forgekeeper.Infrastructure.Data;
+using Forgekeeper.Infrastructure.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -163,6 +164,48 @@ public static class ScanEndpoints
                 missingItems,
             });
         }).WithName("VerifyIntegrity");
+
+        // ── File Issue Tracking ──────────────────────────────────────────────
+
+        // GET /api/v1/scan/issues — list active issues (paginated, filterable by type)
+        group.MapGet("/issues", async (
+            FileIssueService fileIssueService,
+            [FromQuery] string? type,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 50,
+            CancellationToken ct = default) =>
+        {
+            var issues = await fileIssueService.GetActiveIssuesAsync(type, page, pageSize, ct);
+            return Results.Ok(issues);
+        }).WithName("GetFileIssues");
+
+        // GET /api/v1/scan/issues/summary — counts by type
+        group.MapGet("/issues/summary", async (
+            FileIssueService fileIssueService,
+            CancellationToken ct) =>
+        {
+            var summary = await fileIssueService.GetSummaryAsync(ct);
+            return Results.Ok(summary);
+        }).WithName("GetFileIssuesSummary");
+
+        // POST /api/v1/scan/issues/{id}/dismiss — dismiss a single issue
+        group.MapPost("/issues/{id}/dismiss", async (
+            Guid id,
+            FileIssueService fileIssueService,
+            CancellationToken ct) =>
+        {
+            await fileIssueService.DismissAsync(id, "user", ct);
+            return Results.NoContent();
+        }).WithName("DismissFileIssue");
+
+        // DELETE /api/v1/scan/issues/dismissed — purge all dismissed issues
+        group.MapDelete("/issues/dismissed", async (
+            FileIssueService fileIssueService,
+            CancellationToken ct) =>
+        {
+            var deleted = await fileIssueService.PurgeDismissedAsync(ct);
+            return Results.Ok(new { deleted });
+        }).WithName("PurgeDismissedFileIssues");
 
         // GET /api/v1/scan/hash-status — SHA-256 hashing progress
         group.MapGet("/hash-status", async (ForgeDbContext db, CancellationToken ct) =>

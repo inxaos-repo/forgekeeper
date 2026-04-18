@@ -3,6 +3,7 @@ using Forgekeeper.Core.Interfaces;
 using Forgekeeper.Infrastructure.Data;
 using Forgekeeper.Infrastructure.Repositories;
 using Forgekeeper.Infrastructure.Services;
+using Forgekeeper.Core.Models;
 using Forgekeeper.Infrastructure.SourceAdapters;
 using Forgekeeper.Api.BackgroundServices;
 using Forgekeeper.Api.Cli;
@@ -44,6 +45,7 @@ builder.Services.AddDbContext<ForgeDbContext>(options =>
 
 // Repositories
 builder.Services.AddScoped<MetadataWritebackService>();
+builder.Services.AddScoped<FileIssueService>();
 builder.Services.AddScoped<IModelRepository, ModelRepository>();
 builder.Services.AddScoped<ICreatorRepository, CreatorRepository>();
 
@@ -214,6 +216,27 @@ app.MapGet("/metrics", async (IServiceProvider services, PluginHostService plugi
     sb.AppendLine("# HELP forgekeeper_hash_worker_running Is the hash worker actively processing (1=yes, 0=no)");
     sb.AppendLine("# TYPE forgekeeper_hash_worker_running gauge");
     sb.AppendLine($"forgekeeper_hash_worker_running {(hashWorker.IsRunning ? 1 : 0)}");
+    sb.AppendLine();
+
+    // File issues
+    var issuesByType = await db.FileIssues
+        .Where(x => !x.Dismissed)
+        .GroupBy(x => x.IssueType)
+        .Select(g => new { Type = g.Key, Count = g.Count() })
+        .ToListAsync(ct);
+    var dismissedIssues = await db.FileIssues.CountAsync(x => x.Dismissed, ct);
+
+    sb.AppendLine("# HELP forgekeeper_file_issues_total Active file issues by type");
+    sb.AppendLine("# TYPE forgekeeper_file_issues_total gauge");
+    foreach (var issue in issuesByType)
+        sb.AppendLine($"forgekeeper_file_issues_total{{type=\"{issue.Type}\"}} {issue.Count}");
+    if (!issuesByType.Any())
+        sb.AppendLine("forgekeeper_file_issues_total 0");
+    sb.AppendLine();
+
+    sb.AppendLine("# HELP forgekeeper_file_issues_dismissed_total Dismissed file issues");
+    sb.AppendLine("# TYPE forgekeeper_file_issues_dismissed_total gauge");
+    sb.AppendLine($"forgekeeper_file_issues_dismissed_total {dismissedIssues}");
     sb.AppendLine();
 
     // Per-plugin sync metrics

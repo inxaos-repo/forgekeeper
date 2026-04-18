@@ -18,6 +18,7 @@ public class ForgeDbContext : DbContext
     public DbSet<PluginConfig> PluginConfigs => Set<PluginConfig>();
     public DbSet<SavedTemplate> SavedTemplates => Set<SavedTemplate>();
     public DbSet<SyncRun> SyncRuns => Set<SyncRun>();
+    public DbSet<FileIssue> FileIssues => Set<FileIssue>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -251,6 +252,32 @@ public class ForgeDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.PluginSlug);
             entity.HasIndex(e => e.StartedAt);
+        });
+
+        // FileIssue
+        modelBuilder.Entity<FileIssue>(entity =>
+        {
+            entity.ToTable("file_issues");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.FilePath).HasMaxLength(2000).IsRequired();
+            entity.Property(e => e.IssueType).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.ErrorMessage).HasColumnType("text");
+            entity.Property(e => e.DismissedBy).HasMaxLength(200);
+
+            entity.HasOne(e => e.Variant)
+                .WithMany()
+                .HasForeignKey(e => e.VariantId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(e => e.Model)
+                .WithMany()
+                .HasForeignKey(e => e.ModelId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // Unique constraint for upsert: one record per (FilePath, IssueType)
+            entity.HasIndex(e => new { e.FilePath, e.IssueType }).IsUnique();
+            entity.HasIndex(e => e.IssueType);
         });
 
         // ScanState

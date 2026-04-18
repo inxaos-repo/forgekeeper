@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Forgekeeper.Infrastructure.Data;
+using Forgekeeper.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace Forgekeeper.Api.BackgroundServices;
@@ -95,6 +96,7 @@ public class HashWorker : BackgroundService
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var fileIssueService = scope.ServiceProvider.GetRequiredService<FileIssueService>();
 
         // Get total counts for progress tracking
         TotalCount = await db.Variants.LongCountAsync(ct);
@@ -130,6 +132,10 @@ public class HashWorker : BackgroundService
                     variant.FileHash = "sha256:missing";
                     ErrorCount++;
                     _logger.LogDebug("[Hash] File missing: {Path}", variant.FilePath);
+                    await fileIssueService.ReportIssueAsync(
+                        variant.FilePath, "hash_fail",
+                        "File not found on disk",
+                        variant.Id, variant.ModelId, ct);
                 }
             }
             catch (Exception ex)
@@ -137,6 +143,10 @@ public class HashWorker : BackgroundService
                 ErrorCount++;
                 _logger.LogWarning(ex, "[Hash] Error hashing {Path}", variant.FilePath);
                 // Skip this file, try again later (leave FileHash null)
+                await fileIssueService.ReportIssueAsync(
+                    variant.FilePath, "hash_fail",
+                    ex.Message,
+                    variant.Id, variant.ModelId, ct);
             }
         }
 

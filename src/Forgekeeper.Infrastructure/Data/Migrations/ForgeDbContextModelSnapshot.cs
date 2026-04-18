@@ -723,6 +723,76 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                     b.ToTable("sync_runs", (string)null);
                 });
 
+            modelBuilder.Entity("Forgekeeper.Core.Models.FileIssue", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
+                    b.Property<DateTime?>("DismissedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("dismissed_at");
+
+                    b.Property<string>("DismissedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("dismissed_by");
+
+                    b.Property<bool>("Dismissed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("dismissed");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasColumnType("text")
+                        .HasColumnName("error_message");
+
+                    b.Property<string>("FilePath")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("file_path");
+
+                    b.Property<DateTime>("FirstSeen")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_seen");
+
+                    b.Property<string>("IssueType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("issue_type");
+
+                    b.Property<DateTime>("LastSeen")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_seen");
+
+                    b.Property<Guid?>("ModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("model_id");
+
+                    b.Property<Guid?>("VariantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("variant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_file_issues");
+
+                    b.HasIndex("IssueType")
+                        .HasDatabaseName("ix_file_issues_issue_type");
+
+                    b.HasIndex("FilePath", "IssueType")
+                        .IsUnique()
+                        .HasDatabaseName("ix_file_issues_file_path_issue_type");
+
+                    b.ToTable("file_issues", (string)null);
+                });
+
             modelBuilder.Entity("model_tags", b =>
                 {
                     b.Property<Guid>("ModelId")
@@ -740,6 +810,25 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .HasDatabaseName("ix_model_tags_tag_id");
 
                     b.ToTable("model_tags", (string)null);
+                });
+
+            modelBuilder.Entity("Forgekeeper.Core.Models.FileIssue", b =>
+                {
+                    b.HasOne("Forgekeeper.Core.Models.Model3D", "Model")
+                        .WithMany()
+                        .HasForeignKey("ModelId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_file_issues_models_model_id");
+
+                    b.HasOne("Forgekeeper.Core.Models.Variant", "Variant")
+                        .WithMany()
+                        .HasForeignKey("VariantId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_file_issues_variants_variant_id");
+
+                    b.Navigation("Model");
+
+                    b.Navigation("Variant");
                 });
 
             modelBuilder.Entity("Forgekeeper.Core.Models.Model3D", b =>

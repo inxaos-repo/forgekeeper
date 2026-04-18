@@ -2,8 +2,10 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using Forgekeeper.Core.Interfaces;
 using Forgekeeper.Infrastructure.Data;
+using Forgekeeper.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Forgekeeper.Infrastructure.Services;
@@ -13,17 +15,20 @@ public class ThumbnailService : IThumbnailService
     private readonly IDbContextFactory<ForgeDbContext> _dbFactory;
     private readonly IConfiguration _config;
     private readonly ILogger<ThumbnailService> _logger;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ConcurrentQueue<Guid> _priorityQueue = new();
     private bool? _rendererAvailable;
 
     public ThumbnailService(
         IDbContextFactory<ForgeDbContext> dbFactory,
         IConfiguration config,
-        ILogger<ThumbnailService> logger)
+        ILogger<ThumbnailService> logger,
+        IServiceScopeFactory scopeFactory)
     {
         _dbFactory = dbFactory;
         _config = config;
         _logger = logger;
+        _scopeFactory = scopeFactory;
     }
 
     /// <summary>
@@ -194,6 +199,16 @@ public class ThumbnailService : IThumbnailService
                 variant.Model.ThumbnailPath = thumbPath;
 
             await db.SaveChangesAsync(ct);
+        }
+        else
+        {
+            // Thumbnail wasn't created — generation failed or timed out. Record for visibility.
+            using var scope = _scopeFactory.CreateScope();
+            var fileIssueService = scope.ServiceProvider.GetRequiredService<FileIssueService>();
+            await fileIssueService.ReportIssueAsync(
+                stlPath, "thumbnail_fail",
+                "Thumbnail generation failed or timed out",
+                variant.Id, variant.ModelId, ct);
         }
     }
 }
