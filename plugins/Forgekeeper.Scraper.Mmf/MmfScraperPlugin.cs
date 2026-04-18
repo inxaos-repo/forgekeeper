@@ -368,7 +368,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                         {
                             context.Logger.LogInformation("[MMF] Downloading: {File} for {Model} (attempt {Attempt}/3)",
                                 safeName, model.Name, attempt + 1);
-                            using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                            using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
                             // Use Bearer for MMF URLs, skip for CDN URLs
                             if (!string.IsNullOrEmpty(bearerToken) && !IsCdnUrl(file.DownloadUrl))
                                 dlClient.DefaultRequestHeaders.Authorization =
@@ -426,7 +426,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                                     context.Logger.LogWarning(
                                         "[MMF] 403 on Bearer download — retrying with session cookies for {File}", safeName);
                                     fileResponse.Dispose();
-                                    cookieDlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                                    cookieDlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
                                     cookieDlClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
                                     cookieDlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
                                         sessionUA ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
@@ -523,7 +523,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 var archivePath = Path.Combine(modelDir, archiveName);
                 try
                 {
-                    using var archClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                    using var archClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
                     if (!string.IsNullOrEmpty(bearerToken))
                         archClient.DefaultRequestHeaders.Authorization =
                             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
@@ -743,7 +743,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     logger.LogDebug("[MMF] Browser CDN redirect: {Url}",
                         cdnUrl.Length > 100 ? cdnUrl[..100] : cdnUrl);
 
-                    using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                    using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
                     dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
 
@@ -802,7 +802,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         _unzipRunning = false;
         if (_unzipTask != null)
         {
-            try { await Task.WhenAny(_unzipTask, Task.Delay(TimeSpan.FromSeconds(60))); } catch { }
+            try { await Task.WhenAny(_unzipTask, Task.Delay(TimeSpan.FromMinutes(30))); } catch { }
         }
     }
 
