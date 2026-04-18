@@ -1091,7 +1091,8 @@ public static class ModelEndpoints
 
             var results = models.Select(m =>
             {
-                var dirName = Path.GetFileName(m.BasePath.TrimEnd('/'));
+                var rawDirName = Path.GetFileName(m.BasePath.TrimEnd('/'));
+                var dirName = FilenameTrashFilter.Clean(rawDirName, request.TrashPatterns);
                 var parsed = parser.Parse(request.Template, dirName);
                 return new
                 {
@@ -1148,7 +1149,8 @@ public static class ModelEndpoints
 
             foreach (var model in models)
             {
-                var dirName = Path.GetFileName(model.BasePath.TrimEnd('/'));
+                var rawDirName = Path.GetFileName(model.BasePath.TrimEnd('/'));
+                var dirName = FilenameTrashFilter.Clean(rawDirName, request.TrashPatterns);
                 var parsed = parser.Parse(request.Template, dirName);
                 if (parsed == null) { skipped++; continue; }
 

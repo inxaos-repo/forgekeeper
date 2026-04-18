@@ -275,3 +275,59 @@ public class ParseResult
     public Dictionary<string, string>? Parsed { get; set; }
     public bool Success { get; set; }
 }
+
+/// <summary>
+/// Default trash patterns to strip from filenames before parsing.
+/// Users can add custom patterns via the trashPatterns parameter.
+/// </summary>
+public static class FilenameTrashFilter
+{
+    /// <summary>Built-in patterns to strip from directory/file names before parsing.</summary>
+    public static readonly string[] DefaultTrashPatterns =
+    [
+        // OS artifacts
+        "_MACOSX", "__MACOSX", ".DS_Store", "Thumbs.db", "desktop.ini",
+        // Duplicate suffixes
+        " - Copy", " (1)", " (2)", " (3)", " (4)", " (5)",
+        "Copy of ", "Copy_of_",
+        // Common noise in 3D printing filenames
+        " UPDATED", " UPDATE", " FIXED", " FIX", " NEW",
+        " v1.0", " v2.0", " v1", " v2",
+        " (FREE)", "(FREE)", "[FREE]",
+        " (Pre-Supported)", " (Presupported)",
+        " - STL", " STL Files", " STL",
+        " - OBJ", " OBJ Files",
+        // Patreon-specific
+        " - Patreon", " (Patreon Only)", " (Early Access)",
+        " - Welcome Pack", " - Sample",
+    ];
+
+    /// <summary>
+    /// Strip trash patterns from a filename/directory name.
+    /// Returns the cleaned string.
+    /// </summary>
+    public static string Clean(string input, IEnumerable<string>? customPatterns = null)
+    {
+        var result = input;
+        
+        foreach (var pattern in DefaultTrashPatterns)
+        {
+            result = result.Replace(pattern, "", StringComparison.OrdinalIgnoreCase);
+        }
+        
+        if (customPatterns != null)
+        {
+            foreach (var pattern in customPatterns)
+            {
+                if (!string.IsNullOrWhiteSpace(pattern))
+                    result = result.Replace(pattern, "", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        
+        // Clean up double spaces and trim
+        while (result.Contains("  "))
+            result = result.Replace("  ", " ");
+        
+        return result.Trim().TrimEnd('-', '_', '.').Trim();
+    }
+}

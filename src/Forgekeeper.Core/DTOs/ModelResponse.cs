@@ -359,6 +359,13 @@ public class ParseFilenameRequest
     /// <summary>Subset of model IDs to parse. Null = all models.</summary>
     public List<Guid>? ModelIds { get; set; }
 
+    /// <summary>
+    /// Additional trash patterns to strip from filenames before parsing.
+    /// Built-in patterns (OS junk, duplicate suffixes, etc.) are always applied.
+    /// Add creator-specific noise here, e.g., ["MyPatreon - ", " Monthly Release"].
+    /// </summary>
+    public List<string>? TrashPatterns { get; set; }
+
     /// <summary>Max results returned (preview only). Defaults to 50.</summary>
     public int? Limit { get; set; }
 }
