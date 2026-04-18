@@ -190,7 +190,7 @@ public class FileScannerService : IScannerService
 
         UpdateStatus($"scanning {sourceName}");
 
-        const int SaveBatchSize = 100;
+        const int SaveBatchSize = 50;
         int pendingChanges = 0;
 
         async Task FlushBatchAsync()
