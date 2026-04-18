@@ -5,7 +5,8 @@ test.describe('Creators', () => {
     const response = await request.get('/api/v1/creators');
     expect(response.ok()).toBeTruthy();
     const body = await response.json();
-    expect(Array.isArray(body)).toBeTruthy();
+    // Creators list is now paginated — check for PaginatedResult shape
+    expect(body.items !== undefined || Array.isArray(body)).toBeTruthy();
   });
 
   test('creators page loads', async ({ page }) => {
