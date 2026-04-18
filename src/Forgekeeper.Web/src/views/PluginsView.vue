@@ -20,6 +20,8 @@ const savingConfig = ref(false)
 const saveConfigSuccess = ref(false)
 const syncingSlug = ref(null)
 const statusPollTimer = ref(null)
+const sseSource = ref(null)
+const liveProgress = ref(null)
 
 // Editing config values (keyed by field key)
 const configValues = ref({})
@@ -138,23 +140,76 @@ async function saveConfig() {
 
 async function triggerSync(slug) {
   syncingSlug.value = slug
+  liveProgress.value = null
   try {
     await api.triggerPluginSync(slug)
-    startStatusPoll(slug)
+    startProgressStream(slug)
   } catch { syncingSlug.value = null }
+}
+
+function startProgressStream(slug) {
+  stopProgressStream()
+  // Try SSE first, fall back to polling
+  try {
+    const es = new EventSource(`/api/v1/plugins/${slug}/progress`)
+    sseSource.value = es
+    
+    es.addEventListener('progress', (e) => {
+      try {
+        liveProgress.value = JSON.parse(e.data)
+      } catch {}
+    })
+    
+    es.addEventListener('complete', (e) => {
+      try {
+        liveProgress.value = { ...JSON.parse(e.data), complete: true }
+      } catch {}
+      stopProgressStream()
+      syncingSlug.value = null
+      fetchPlugins()
+      fetchPluginStatus(slug)
+    })
+    
+    es.addEventListener('error', () => {
+      // SSE failed, fall back to polling
+      stopProgressStream()
+      startStatusPoll(slug)
+    })
+  } catch {
+    startStatusPoll(slug)
+  }
 }
 
 function startStatusPoll(slug) {
   stopStatusPoll()
   statusPollTimer.value = setInterval(async () => {
     await fetchPluginStatus(slug)
+    // Map API status to liveProgress format
+    if (pluginStatus.value) {
+      liveProgress.value = {
+        scraped: pluginStatus.value.scrapedModels || 0,
+        total: pluginStatus.value.totalModels || 0,
+        failed: pluginStatus.value.failedModels || 0,
+        currentItem: pluginStatus.value.currentProgress?.currentItem || '',
+        status: pluginStatus.value.currentProgress?.status || 'syncing',
+      }
+    }
     await fetchPlugins()
     const plugin = plugins.value.find((p) => (p.slug || p.sourceSlug) === slug)
-    if (!plugin?.syncRunning && !plugin?.isSyncing) {
+    if (!plugin?.syncRunning && !plugin?.isSyncing && !pluginStatus.value?.isRunning) {
       stopStatusPoll()
       syncingSlug.value = null
+      liveProgress.value = null
     }
   }, 3000)
+}
+
+function stopProgressStream() {
+  if (sseSource.value) {
+    sseSource.value.close()
+    sseSource.value = null
+  }
+  stopStatusPoll()
 }
 
 function stopStatusPoll() {
@@ -216,8 +271,24 @@ function fieldType(field) {
   return 'text'
 }
 
+function estimateTimeRemaining(progress) {
+  if (!progress?.scraped || !progress?.total) return ''
+  // Rough estimate: assume constant rate from start
+  const pct = progress.scraped / progress.total
+  if (pct <= 0) return ''
+  const elapsed = (progress.elapsedMs || 60000) // default 1min if unknown
+  const totalEstimate = elapsed / pct
+  const remaining = totalEstimate - elapsed
+  if (remaining < 60000) return 'less than a minute'
+  if (remaining < 3600000) return `${Math.round(remaining / 60000)} minutes`
+  return `${(remaining / 3600000).toFixed(1)} hours`
+}
+
 onMounted(fetchPlugins)
-onBeforeUnmount(stopStatusPoll)
+onBeforeUnmount(() => {
+  stopProgressStream()
+  stopStatusPoll()
+})
 </script>
 
 <template>
@@ -324,36 +395,50 @@ onBeforeUnmount(stopStatusPoll)
 
         <!-- Sync status / progress -->
         <div
-          v-if="pluginStatus?.syncProgress || syncingSlug === selectedSlug"
+          v-if="liveProgress || syncingSlug === selectedSlug"
           class="bg-forge-card border border-forge-accent/30 rounded-xl p-4"
         >
           <div class="flex items-center gap-3 mb-3">
-            <div class="w-5 h-5 border-2 border-forge-accent border-t-transparent rounded-full animate-spin shrink-0"></div>
-            <span class="text-sm font-medium text-forge-text">
-              {{ pluginStatus?.syncProgress?.status || 'Sync in progress...' }}
-            </span>
+            <div v-if="!liveProgress?.complete" class="w-5 h-5 border-2 border-forge-accent border-t-transparent rounded-full animate-spin shrink-0"></div>
+            <span v-else class="text-lg">✅</span>
+            <div class="flex-1 min-w-0">
+              <span class="text-sm font-medium text-forge-text">
+                {{ liveProgress?.complete ? 'Sync complete!' : liveProgress?.status || 'Starting sync...' }}
+              </span>
+              <p v-if="liveProgress?.currentItem && !liveProgress?.complete" class="text-xs text-forge-text-muted truncate mt-0.5">
+                {{ liveProgress.currentItem }}
+              </p>
+            </div>
           </div>
-          <div v-if="pluginStatus?.syncProgress" class="space-y-2">
+
+          <div v-if="liveProgress?.total" class="space-y-2">
             <!-- Progress bar -->
-            <div v-if="pluginStatus.syncProgress.totalItems" class="space-y-1">
+            <div class="space-y-1">
               <div class="flex justify-between text-xs text-forge-text-muted">
-                <span>{{ pluginStatus.syncProgress.processedItems || 0 }} / {{ pluginStatus.syncProgress.totalItems }}</span>
-                <span>{{ Math.round(((pluginStatus.syncProgress.processedItems || 0) / pluginStatus.syncProgress.totalItems) * 100) }}%</span>
+                <span>{{ liveProgress.scraped || 0 }} / {{ liveProgress.total }}</span>
+                <span>{{ Math.round(((liveProgress.scraped || 0) / liveProgress.total) * 100) }}%</span>
               </div>
-              <div class="h-2 bg-forge-bg rounded-full overflow-hidden">
+              <div class="h-2.5 bg-forge-bg rounded-full overflow-hidden">
                 <div
-                  class="h-full bg-forge-accent rounded-full transition-all duration-300"
-                  :style="{ width: `${((pluginStatus.syncProgress.processedItems || 0) / pluginStatus.syncProgress.totalItems) * 100}%` }"
+                  class="h-full rounded-full transition-all duration-500 ease-out"
+                  :class="liveProgress.complete ? 'bg-forge-accent' : 'bg-forge-accent/80'"
+                  :style="{ width: `${Math.min(((liveProgress.scraped || 0) / liveProgress.total) * 100, 100)}%` }"
                 ></div>
               </div>
             </div>
-            <!-- Stats -->
-            <div class="flex gap-4 text-xs text-forge-text-muted">
-              <span v-if="pluginStatus.syncProgress.newModels">{{ pluginStatus.syncProgress.newModels }} new</span>
-              <span v-if="pluginStatus.syncProgress.updatedModels">{{ pluginStatus.syncProgress.updatedModels }} updated</span>
-              <span v-if="pluginStatus.syncProgress.skippedModels">{{ pluginStatus.syncProgress.skippedModels }} skipped</span>
-              <span v-if="pluginStatus.syncProgress.failedModels">{{ pluginStatus.syncProgress.failedModels }} failed</span>
+
+            <!-- Stats row -->
+            <div class="flex gap-4 text-xs">
+              <span class="text-forge-accent">{{ liveProgress.scraped || 0 }} scraped</span>
+              <span v-if="liveProgress.failed" class="text-forge-danger">{{ liveProgress.failed }} failed</span>
+              <span v-if="liveProgress.downloaded" class="text-blue-400">{{ liveProgress.downloaded }} downloaded</span>
+              <span v-if="liveProgress.skipped" class="text-forge-text-muted">{{ liveProgress.skipped }} skipped</span>
             </div>
+
+            <!-- ETA -->
+            <p v-if="liveProgress.scraped > 0 && !liveProgress.complete && liveProgress.total > liveProgress.scraped" class="text-xs text-forge-text-muted">
+              ~{{ estimateTimeRemaining(liveProgress) }} remaining
+            </p>
           </div>
         </div>
 
