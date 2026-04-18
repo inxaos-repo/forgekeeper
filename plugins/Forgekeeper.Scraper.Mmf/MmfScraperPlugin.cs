@@ -13,10 +13,12 @@ namespace Forgekeeper.Scraper.Mmf;
 /// <summary>
 /// MyMiniFactory library scraper plugin.
 /// 
-/// Authentication: OAuth implicit flow via MMF's API.
-/// Manifest: Uploaded by the user (data-library API requires browser cookies, 
-///           so we accept the JSON export from the MMF data-library page).
+/// Authentication: FlareSolverr for Cloudflare bypass + cookie-based login.
+///                 Falls back to Bearer token from MiniDownloader download_token.
+/// Manifest: Fetched via FlareSolverr session cookies (data-library API).
+///           Also supports manual JSON upload via the Plugins page.
 /// Scraping: Uses MMF v2 API for model details and file downloads.
+///           403 fallback chain: Bearer → session cookies → Playwright headless browser.
 /// </summary>
 public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 {
@@ -66,7 +68,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             DefaultValue = "downloader_v2",
             HelpText = "MMF OAuth client ID. Default 'downloader_v2' works for most users.",
         },
-        // CLIENT_SECRET not needed for OAuth implicit flow
+        // CLIENT_ID is declared for config completeness; not used in the FlareSolverr login flow.
+        // Kept in schema so existing plugin configs remain valid.
         new PluginConfigField
         {
             Key = "FLARESOLVERR_URL",
@@ -137,7 +140,9 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
     public async Task<AuthResult> HandleAuthCallbackAsync(PluginContext context, IDictionary<string, string> callbackParams, CancellationToken ct = default)
     {
-        // OAuth implicit flow returns access_token as a fragment parameter
+        // Legacy OAuth implicit flow: access_token is returned as a URL fragment parameter.
+        // The primary auth flow is now FlareSolverr + cookie login (see FetchLibraryViaBrowserAsync).
+        // This callback path is retained for future OAuth support or direct token injection.
         if (callbackParams.TryGetValue("access_token", out var accessToken) && !string.IsNullOrEmpty(accessToken))
         {
             await context.TokenStore.SaveTokenAsync("access_token", accessToken, ct);
@@ -166,13 +171,15 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             CurrentItem = "Loading library manifest...",
         });
 
-        // If user uploaded a manifest JSON, use it directly
+        // If user uploaded a manifest JSON, use it directly (secondary path)
         if (uploadedManifest is not null)
         {
             return await ParseUploadedManifestAsync(uploadedManifest, ct);
         }
 
-        // Try Playwright browser login with username/password
+        // Primary path: FlareSolverr login + HttpClient library fetch
+        // Uses FlareSolverr to solve Cloudflare challenge, logs in, then fetches
+        // the data-library API with session cookies via a plain HttpClient.
         return await FetchLibraryViaBrowserAsync(context, ct);
     }
 

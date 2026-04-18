@@ -32,7 +32,9 @@ public interface ILibraryScraper
 
     /// <summary>
     /// Fetch or load the user's library manifest — the list of models they own/have access to.
-    /// For sources where the API requires browser cookies, this may accept an uploaded manifest file.
+    /// Plugins should attempt to fetch the manifest automatically (e.g., via API or browser automation).
+    /// If <paramref name="uploadedManifest"/> is provided, it is used as a fallback or override
+    /// (e.g., a JSON export file uploaded manually by the user via the Plugins admin page).
     /// Returns a list of scraped model summaries.
     /// </summary>
     Task<IReadOnlyList<ScrapedModel>> FetchManifestAsync(PluginContext context, Stream? uploadedManifest = null, CancellationToken ct = default);

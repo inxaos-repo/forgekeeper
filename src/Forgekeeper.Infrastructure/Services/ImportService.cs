@@ -343,7 +343,7 @@ public class ImportService : IImportService
     private async Task<string?> ExtractArchiveAsync(string archivePath, CancellationToken ct)
     {
         var ext = Path.GetExtension(archivePath).ToLowerInvariant();
-        if (ext != ".zip") return null; // Only ZIP for MVP
+        if (ext != ".zip") return null; // Only ZIP supported here; RAR/7z are handled by the plugin layer (MmfScraperPlugin.UnzipWorkerLoop)
 
         var extractDir = Path.Combine(
             Path.GetDirectoryName(archivePath)!,

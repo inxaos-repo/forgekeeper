@@ -61,7 +61,10 @@ public class SearchService : ISearchService
 
         if (request.Printed.HasValue)
         {
-            // Printed is computed from PrintHistory; filter via JSONB query
+            // Printed is filtered via JSONB query on PrintHistory.
+            // REVIEW: The computed Model3D.Printed property checks Any(p => p.Result == "success"),
+            // but this filter uses Count > 0, which matches any print attempt regardless of outcome.
+            // Consider aligning: filter by result=="success" for strict printed=true semantics.
             if (request.Printed.Value)
                 query = query.Where(m => m.PrintHistory != null && m.PrintHistory.Count > 0);
             else

@@ -84,12 +84,9 @@ public class MetadataService : IMetadataService
             var merged = existingTags.Union(modelTags, StringComparer.OrdinalIgnoreCase).ToList();
             metadata.Tags = merged;
 
-            // Forgekeeper-owned fields: write back for database-free recovery
-            if (model.PrintHistory is { Count: > 0 })
-            {
-                // Store printHistory in extra or as a top-level field via raw JSON merge
-                // For now, we store in the metadata object structure
-            }
+            // NOTE: PrintHistory, Rating, Notes, and other user-owned fields are written back
+            // to metadata.json by MetadataWritebackService.WritebackAsync — not here.
+            // MergeAsync only handles tag union-merge and structural fields (Components, PrintSettings).
 
             if (model.Components is { Count: > 0 })
                 metadata.Components = model.Components;
