@@ -44,7 +44,11 @@ public class PluginHostServiceTests : IDisposable
             .Build();
 
         var logger = new Mock<ILogger<PluginHostService>>();
-        return new PluginHostService(services, logger.Object, config);
+        var manifestLogger = new Mock<ILogger<ManifestValidationService>>();
+        var sdkLogger = new Mock<ILogger<SdkCompatibilityChecker>>();
+        var manifestValidator = new ManifestValidationService(manifestLogger.Object);
+        var sdkChecker = new SdkCompatibilityChecker(sdkLogger.Object);
+        return new PluginHostService(services, logger.Object, config, manifestValidator, sdkChecker);
     }
 
     private IServiceProvider BuildServiceProvider(string dbName)

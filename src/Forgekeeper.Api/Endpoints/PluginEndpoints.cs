@@ -20,9 +20,17 @@ public static class PluginEndpoints
             var plugins = pluginHost.Plugins.Select(p => new PluginListResponse
             {
                 Slug = p.Value.Scraper.SourceSlug,
-                Name = p.Value.Scraper.SourceName,
-                Description = p.Value.Scraper.Description,
-                Version = p.Value.Scraper.Version,
+                // Prefer manifest name/version if available, fall back to scraper interface values
+                Name = p.Value.Manifest?.Name ?? p.Value.Scraper.SourceName,
+                Description = p.Value.Manifest?.Description ?? p.Value.Scraper.Description,
+                Version = p.Value.Manifest?.Version ?? p.Value.Scraper.Version,
+                Author = p.Value.Manifest?.Author,
+                ManifestValid = p.Value.ValidationResult?.IsValid,
+                ManifestErrors = p.Value.ValidationResult?.Errors,
+                ManifestWarnings = p.Value.ValidationResult?.Warnings,
+                SdkCompatLevel = p.Value.CompatResult?.Level.ToString(),
+                SdkCompatReason = p.Value.CompatResult?.Reason,
+                Source = p.Value.Source,
                 RequiresBrowserAuth = p.Value.Scraper.RequiresBrowserAuth,
                 LoadedAt = p.Value.LoadedAt,
                 SyncStatus = MapSyncStatus(pluginHost.GetSyncStatus(p.Key)),
@@ -416,6 +424,16 @@ public class PluginListResponse
     public string Name { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public string Version { get; set; } = string.Empty;
+    public string? Author { get; set; }
+    /// <summary>Whether the manifest.json passed validation. Null = no manifest.</summary>
+    public bool? ManifestValid { get; set; }
+    public List<string>? ManifestErrors { get; set; }
+    public List<string>? ManifestWarnings { get; set; }
+    /// <summary>SDK compatibility level: Compatible, MinorMismatch, MajorMismatch, Unknown. Null = no manifest.</summary>
+    public string? SdkCompatLevel { get; set; }
+    public string? SdkCompatReason { get; set; }
+    /// <summary>Plugin origin: builtin, registry, github, manual.</summary>
+    public string Source { get; set; } = "manual";
     public bool RequiresBrowserAuth { get; set; }
     public DateTime LoadedAt { get; set; }
     public PluginSyncStatusResponse? SyncStatus { get; set; }

@@ -20,21 +20,29 @@ public class PluginHostService : BackgroundService
 {
     private readonly IServiceProvider _services;
     private readonly ILogger<PluginHostService> _logger;
+    private readonly ManifestValidationService _manifestValidator;
+    private readonly SdkCompatibilityChecker _sdkChecker;
     private readonly ConcurrentDictionary<string, LoadedPlugin> _plugins = new();
     private readonly ConcurrentDictionary<string, PluginSyncStatus> _syncStatuses = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _syncLocks = new();
     private readonly string _pluginsDirectory;
     private readonly string _sourcesDirectory;
+    private readonly bool _forceLoadIncompatible;
 
     public PluginHostService(
         IServiceProvider services,
         ILogger<PluginHostService> logger,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        ManifestValidationService manifestValidator,
+        SdkCompatibilityChecker sdkChecker)
     {
         _services = services;
         _logger = logger;
+        _manifestValidator = manifestValidator;
+        _sdkChecker = sdkChecker;
         _pluginsDirectory = configuration["Forgekeeper:PluginsDirectory"] ?? "/app/plugins";
         _sourcesDirectory = configuration["Forgekeeper:SourcesDirectory"] ?? "/mnt/3dprinting/sources";
+        _forceLoadIncompatible = configuration.GetValue<bool>("Plugins:ForceLoadIncompatible", false);
     }
 
     /// <summary>Get all loaded plugins.</summary>
@@ -375,6 +383,54 @@ public class PluginHostService : BackgroundService
         {
             try
             {
+                // Load and validate manifest (optional — backward compat)
+                var manifest = _manifestValidator.LoadManifest(pluginDir);
+                ManifestValidationResult? validationResult = null;
+                SdkCompatResult? compatResult = null;
+
+                if (manifest is not null)
+                {
+                    validationResult = _manifestValidator.Validate(manifest);
+
+                    foreach (var warn in validationResult.Warnings)
+                        _logger.LogWarning("[manifest:{Dir}] {Warning}", Path.GetFileName(pluginDir), warn);
+
+                    foreach (var error in validationResult.Errors)
+                        _logger.LogError("[manifest:{Dir}] {Error}", Path.GetFileName(pluginDir), error);
+
+                    // SDK compatibility check
+                    compatResult = _sdkChecker.CheckCompatibility(manifest);
+
+                    if (compatResult.Level == SdkCompatLevel.MajorMismatch)
+                    {
+                        if (_forceLoadIncompatible)
+                        {
+                            _logger.LogWarning(
+                                "[{Dir}] ⚠️ FORCE LOADING incompatible plugin (major SDK mismatch): {Reason}",
+                                Path.GetFileName(pluginDir), compatResult.Reason);
+                        }
+                        else
+                        {
+                            _logger.LogError(
+                                "[{Dir}] Refusing to load plugin — major SDK mismatch: {Reason}",
+                                Path.GetFileName(pluginDir), compatResult.Reason);
+                            continue; // Skip this plugin directory entirely
+                        }
+                    }
+                    else if (compatResult.Level == SdkCompatLevel.MinorMismatch)
+                    {
+                        _logger.LogWarning(
+                            "[{Dir}] Loading plugin with minor SDK mismatch (may be unstable): {Reason}",
+                            Path.GetFileName(pluginDir), compatResult.Reason);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "[{Dir}] No manifest.json found — loading without validation (legacy plugin)",
+                        Path.GetFileName(pluginDir));
+                }
+
                 var dlls = Directory.GetFiles(pluginDir, "*.dll")
                     .Where(f => !Path.GetFileName(f).StartsWith("Forgekeeper.PluginSdk"))
                     .ToArray();
@@ -390,12 +446,26 @@ public class PluginHostService : BackgroundService
                     foreach (var type in scraperTypes)
                     {
                         var scraper = (ILibraryScraper)Activator.CreateInstance(type)!;
+
+                        // If manifest has a slug, verify it matches the plugin's SourceSlug
+                        if (manifest is not null && !string.IsNullOrWhiteSpace(manifest.Slug) &&
+                            !string.Equals(manifest.Slug, scraper.SourceSlug, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _logger.LogError(
+                                "[{Dir}] Manifest slug '{ManifestSlug}' does not match plugin SourceSlug '{PluginSlug}'",
+                                Path.GetFileName(pluginDir), manifest.Slug, scraper.SourceSlug);
+                        }
+
                         _plugins[scraper.SourceSlug] = new LoadedPlugin
                         {
                             Scraper = scraper,
                             Assembly = assembly,
                             LoadContext = loadContext,
                             LoadedAt = DateTime.UtcNow,
+                            Manifest = manifest,
+                            ValidationResult = validationResult,
+                            CompatResult = compatResult,
+                            Source = DetermineSource(pluginDir),
                         };
                         _logger.LogInformation("Loaded plugin: {Name} v{Version} ({Slug})",
                             scraper.SourceName, scraper.Version, scraper.SourceSlug);
@@ -407,6 +477,15 @@ public class PluginHostService : BackgroundService
                 _logger.LogError(ex, "Failed to load plugin from {Dir}", pluginDir);
             }
         }
+    }
+
+    /// <summary>Determines the plugin source based on directory naming conventions.</summary>
+    private static string DetermineSource(string pluginDir)
+    {
+        var dirName = Path.GetFileName(pluginDir) ?? "";
+        // Convention: builtin plugins are in the image; others dropped manually
+        // Future: registry/github sources will set this explicitly
+        return "builtin";
     }
 
     /// <summary>Create a plugin context for external use (e.g., manifest upload).</summary>
@@ -539,6 +618,11 @@ public class LoadedPlugin
     public required Assembly Assembly { get; init; }
     public required AssemblyLoadContext LoadContext { get; init; }
     public DateTime LoadedAt { get; init; }
+    public Forgekeeper.Core.Models.PluginManifest? Manifest { get; init; }
+    public ManifestValidationResult? ValidationResult { get; init; }
+    public SdkCompatResult? CompatResult { get; init; }
+    /// <summary>Origin of the plugin: "builtin", "registry", "github", "manual".</summary>
+    public string Source { get; init; } = "manual";
 }
 
 /// <summary>Tracks sync status for a single plugin.</summary>

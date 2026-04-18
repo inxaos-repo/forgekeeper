@@ -59,6 +59,10 @@ builder.Services.AddScoped<IImportService, ImportService>();
 builder.Services.AddSingleton<IThumbnailService, ThumbnailService>();
 builder.Services.AddSingleton<NamingTemplateService>();
 
+// Plugin system services
+builder.Services.AddSingleton<ManifestValidationService>();
+builder.Services.AddSingleton<SdkCompatibilityChecker>();
+
 // Background Services
 builder.Services.AddHostedService<ThumbnailWorker>();
 builder.Services.AddHostedService<ScannerWorker>();
