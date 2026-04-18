@@ -1,7 +1,7 @@
 <!--
   ModelsList.vue — Main browse/search page
   Search bar, filter sidebar, sort options, paginated grid of model cards
-  Supports bulk selection + bulk actions (tag, categorize, rate)
+  Supports bulk selection + Mp3tag-style bulk metadata editor panel
 -->
 <script setup>
 import { ref, reactive, computed, watch, onMounted } from 'vue'
@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi.js'
 import ModelCard from '../components/ModelCard.vue'
 import FilterSidebar from '../components/FilterSidebar.vue'
+import CreatorAutocomplete from '../components/CreatorAutocomplete.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -50,12 +51,51 @@ const sortOptions = [
 // ─── Bulk Selection ──────────────────────────────────────
 const selectedIds = ref(new Set())
 const bulkMode = ref(false)
-const bulkAction = ref('')
-const bulkTag = ref('')
-const bulkCategory = ref('')
-const bulkGameSystem = ref('')
-const bulkRating = ref(0)
 const bulkProcessing = ref(false)
+const bulkActiveTab = ref('metadata')
+const bulkShowSummary = ref(false)
+const bulkSuccessMsg = ref('')
+const bulkSuccessTimer = ref(null)
+
+// Bulk editor fields — only non-empty/non-zero values are sent to API
+const bulk = reactive({
+  // Metadata tab
+  category: '',
+  gameSystem: '',
+  scale: '',
+  licenseType: '',
+  // Status tab
+  rating: 0,
+  printStatus: '',
+  updateNotes: false,   // checkbox to explicitly set notes (allows clearing)
+  notes: '',
+  // Organization tab
+  creatorName: '',
+  collectionName: '',
+  addTagsInput: '',     // comma-separated
+  removeTagsInput: '',  // comma-separated
+})
+
+const categories = [
+  'Miniature', 'Terrain', 'Vehicle', 'Prop', 'Bust', 'Base', 'Scenery', 'Accessory', 'Other',
+]
+const gameSystems = [
+  'Warhammer 40K', 'Age of Sigmar', 'D&D', 'Pathfinder', 'Star Wars Legion',
+  'Bolt Action', 'Malifaux', 'Kill Team', 'Necromunda', 'Other',
+]
+const scaleOptions = ['28mm', '32mm', '35mm', '54mm', '75mm', '1:72', '1:48', '1:35', '1:24']
+const licenseTypes = [
+  { value: 'personal', label: 'Personal Use' },
+  { value: 'commercial', label: 'Commercial' },
+  { value: 'creative-commons', label: 'Creative Commons' },
+  { value: 'unknown', label: 'Unknown' },
+]
+const printStatuses = [
+  { value: 'unprinted', label: 'Unprinted' },
+  { value: 'queued', label: 'Queued' },
+  { value: 'printed', label: 'Printed' },
+  { value: 'failed', label: 'Failed' },
+]
 
 const allSelected = computed(() =>
   models.value.length > 0 && models.value.every((m) => selectedIds.value.has(m.id))
@@ -76,51 +116,109 @@ function toggleSelect(id) {
   selectedIds.value = s
 }
 
+function resetBulkFields() {
+  bulk.category = ''
+  bulk.gameSystem = ''
+  bulk.scale = ''
+  bulk.licenseType = ''
+  bulk.rating = 0
+  bulk.printStatus = ''
+  bulk.updateNotes = false
+  bulk.notes = ''
+  bulk.creatorName = ''
+  bulk.collectionName = ''
+  bulk.addTagsInput = ''
+  bulk.removeTagsInput = ''
+  bulkShowSummary.value = false
+  bulkActiveTab.value = 'metadata'
+}
+
 function cancelBulk() {
   bulkMode.value = false
   selectedIds.value = new Set()
-  bulkAction.value = ''
-  bulkTag.value = ''
-  bulkCategory.value = ''
-  bulkGameSystem.value = ''
-  bulkRating.value = 0
+  resetBulkFields()
 }
 
-const categories = [
-  'Miniature', 'Terrain', 'Vehicle', 'Prop', 'Bust', 'Base', 'Scenery', 'Accessory', 'Other',
-]
-const gameSystems = [
-  'Warhammer 40K', 'Age of Sigmar', 'D&D', 'Pathfinder', 'Star Wars Legion',
-  'Bolt Action', 'Malifaux', 'Kill Team', 'Necromunda', 'Other',
-]
+// Parse comma-separated tag strings
+function parseTags(str) {
+  return str.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
+}
+
+// Build summary of what will change
+const changeSummary = computed(() => {
+  const items = []
+  if (bulk.category) items.push(`Category → ${bulk.category}`)
+  if (bulk.gameSystem) items.push(`Game System → ${bulk.gameSystem}`)
+  if (bulk.scale) items.push(`Scale → ${bulk.scale}`)
+  if (bulk.licenseType) {
+    const l = licenseTypes.find((x) => x.value === bulk.licenseType)
+    items.push(`License → ${l?.label ?? bulk.licenseType}`)
+  }
+  if (bulk.rating > 0) items.push(`Rating → ${'★'.repeat(bulk.rating)}`)
+  if (bulk.printStatus) {
+    const p = printStatuses.find((x) => x.value === bulk.printStatus)
+    items.push(`Print Status → ${p?.label ?? bulk.printStatus}`)
+  }
+  if (bulk.updateNotes) items.push(`Notes → "${bulk.notes || '(cleared)'}"`)
+  if (bulk.creatorName) items.push(`Creator → ${bulk.creatorName}`)
+  if (bulk.collectionName) items.push(`Collection → ${bulk.collectionName}`)
+  const addTags = parseTags(bulk.addTagsInput)
+  const removeTags = parseTags(bulk.removeTagsInput)
+  if (addTags.length) items.push(`Add tags: ${addTags.join(', ')}`)
+  if (removeTags.length) items.push(`Remove tags: ${removeTags.join(', ')}`)
+  return items
+})
+
+const hasChanges = computed(() => changeSummary.value.length > 0)
+
+function requestApply() {
+  if (!hasChanges.value) return
+  bulkShowSummary.value = true
+}
 
 async function executeBulkAction() {
-  if (!selectedIds.value.size) return
+  if (!selectedIds.value.size || !hasChanges.value) return
   bulkProcessing.value = true
   try {
     const ids = [...selectedIds.value]
+    const payload = { modelIds: ids }
 
-    if (bulkAction.value === 'tag' && bulkTag.value.trim()) {
-      await api.bulkTagModels({ modelIds: ids, addTags: [bulkTag.value.trim().toLowerCase()], removeTags: [] })
-    } else if (bulkAction.value === 'removeTag' && bulkTag.value.trim()) {
-      await api.bulkTagModels({ modelIds: ids, addTags: [], removeTags: [bulkTag.value.trim().toLowerCase()] })
-    } else if (bulkAction.value === 'category' && bulkCategory.value) {
-      await api.bulkUpdateModels({ modelIds: ids, operation: 'categorize', value: bulkCategory.value })
-    } else if (bulkAction.value === 'gameSystem' && bulkGameSystem.value) {
-      await api.bulkUpdateModels({ modelIds: ids, operation: 'setgamesystem', value: bulkGameSystem.value })
-    } else if (bulkAction.value === 'rating' && bulkRating.value > 0) {
-      await api.bulkUpdateModels({ modelIds: ids, operation: 'setrating', value: String(bulkRating.value) })
-    } else {
-      return
-    }
+    if (bulk.category) payload.category = bulk.category
+    if (bulk.gameSystem) payload.gameSystem = bulk.gameSystem
+    if (bulk.scale) payload.scale = bulk.scale
+    if (bulk.licenseType) payload.licenseType = bulk.licenseType
+    if (bulk.rating > 0) payload.rating = bulk.rating
+    if (bulk.printStatus) payload.printStatus = bulk.printStatus
+    if (bulk.updateNotes) payload.notes = bulk.notes
+    if (bulk.creatorName) payload.creatorName = bulk.creatorName
+    if (bulk.collectionName) payload.collectionName = bulk.collectionName
 
-    cancelBulk()
+    const addTags = parseTags(bulk.addTagsInput)
+    const removeTags = parseTags(bulk.removeTagsInput)
+    if (addTags.length) payload.addTags = addTags
+    if (removeTags.length) payload.removeTags = removeTags
+
+    await api.bulkMetadata(payload)
+
+    // Success
+    const count = ids.length
+    showBulkSuccess(`Applied to ${count} model${count === 1 ? '' : 's'}`)
+    bulkShowSummary.value = false
+    resetBulkFields()
+    selectedIds.value = new Set()
     await fetchModels()
   } catch {
     // error shown by api.error
+    bulkShowSummary.value = false
   } finally {
     bulkProcessing.value = false
   }
+}
+
+function showBulkSuccess(msg) {
+  bulkSuccessMsg.value = msg
+  if (bulkSuccessTimer.value) clearTimeout(bulkSuccessTimer.value)
+  bulkSuccessTimer.value = setTimeout(() => { bulkSuccessMsg.value = '' }, 3500)
 }
 
 // ─── Fetch + Query Sync ──────────────────────────────────
@@ -285,80 +383,284 @@ onMounted(fetchModels)
       </div>
     </div>
 
-    <!-- Bulk action bar -->
+    <!-- ─── Bulk Editor Panel ─────────────────────────────── -->
+    <transition name="slide-down">
+      <div
+        v-if="bulkMode && selectedIds.size > 0"
+        class="bg-forge-card border border-forge-accent/40 rounded-xl mb-6 overflow-hidden shadow-lg"
+      >
+        <!-- Header -->
+        <div class="flex items-center justify-between px-4 py-3 bg-forge-accent/10 border-b border-forge-accent/20">
+          <div class="flex items-center gap-3">
+            <span class="text-forge-accent font-semibold text-sm">
+              ✏️ {{ selectedIds.size }} model{{ selectedIds.size === 1 ? '' : 's' }} selected
+            </span>
+            <span v-if="hasChanges" class="text-xs text-forge-text-muted">
+              {{ changeSummary.length }} change{{ changeSummary.length === 1 ? '' : 's' }} pending
+            </span>
+          </div>
+          <button
+            @click="cancelBulk"
+            class="text-forge-text-muted hover:text-forge-danger text-sm transition-colors"
+          >
+            ✕ Cancel
+          </button>
+        </div>
+
+        <!-- Tab bar -->
+        <div class="flex border-b border-forge-border">
+          <button
+            v-for="tab in [
+              { id: 'metadata', label: '📋 Metadata' },
+              { id: 'status', label: '📊 Status' },
+              { id: 'organization', label: '🗂 Organization' },
+            ]"
+            :key="tab.id"
+            @click="bulkActiveTab = tab.id"
+            :class="[
+              'px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px',
+              bulkActiveTab === tab.id
+                ? 'border-forge-accent text-forge-accent'
+                : 'border-transparent text-forge-text-muted hover:text-forge-text',
+            ]"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
+
+        <!-- Tab: Metadata -->
+        <div v-if="bulkActiveTab === 'metadata'" class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">Category</label>
+            <select
+              v-model="bulk.category"
+              class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+            >
+              <option value="">— no change —</option>
+              <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">Game System</label>
+            <select
+              v-model="bulk.gameSystem"
+              class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+            >
+              <option value="">— no change —</option>
+              <option v-for="gs in gameSystems" :key="gs" :value="gs">{{ gs }}</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">Scale</label>
+            <select
+              v-model="bulk.scale"
+              class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+            >
+              <option value="">— no change —</option>
+              <option v-for="s in scaleOptions" :key="s" :value="s">{{ s }}</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">License Type</label>
+            <select
+              v-model="bulk.licenseType"
+              class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+            >
+              <option value="">— no change —</option>
+              <option v-for="lic in licenseTypes" :key="lic.value" :value="lic.value">{{ lic.label }}</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Tab: Status -->
+        <div v-if="bulkActiveTab === 'status'" class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">Rating</label>
+            <div class="flex items-center gap-1">
+              <button
+                v-for="star in 5"
+                :key="star"
+                @click="bulk.rating = bulk.rating === star ? 0 : star"
+                :class="[
+                  'text-2xl transition-colors leading-none',
+                  star <= bulk.rating ? 'text-yellow-400' : 'text-forge-border hover:text-yellow-300',
+                ]"
+              >★</button>
+              <span v-if="bulk.rating" class="text-xs text-forge-text-muted ml-2">
+                {{ bulk.rating }}/5
+              </span>
+              <span v-else class="text-xs text-forge-text-muted ml-2">no change</span>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">Print Status</label>
+            <select
+              v-model="bulk.printStatus"
+              class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+            >
+              <option value="">— no change —</option>
+              <option v-for="ps in printStatuses" :key="ps.value" :value="ps.value">{{ ps.label }}</option>
+            </select>
+          </div>
+
+          <div class="sm:col-span-2">
+            <div class="flex items-center gap-2 mb-1">
+              <input
+                id="bulk-update-notes"
+                v-model="bulk.updateNotes"
+                type="checkbox"
+                class="rounded border-forge-border bg-forge-bg text-forge-accent focus:ring-forge-accent"
+              />
+              <label for="bulk-update-notes" class="text-xs font-medium text-forge-text-muted cursor-pointer">
+                Update Notes (overwrites existing notes on all selected models)
+              </label>
+            </div>
+            <textarea
+              v-if="bulk.updateNotes"
+              v-model="bulk.notes"
+              rows="3"
+              placeholder="Notes to apply to all selected models..."
+              class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent resize-none"
+            />
+          </div>
+        </div>
+
+        <!-- Tab: Organization -->
+        <div v-if="bulkActiveTab === 'organization'" class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">Reassign Creator</label>
+            <CreatorAutocomplete
+              v-model="bulk.creatorName"
+              placeholder="Search creators..."
+            />
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">Collection Name</label>
+            <input
+              v-model="bulk.collectionName"
+              type="text"
+              placeholder="e.g. Space Marines Vanguard..."
+              class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
+            />
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">
+              Add Tags
+              <span class="font-normal text-forge-text-muted">(comma-separated)</span>
+            </label>
+            <input
+              v-model="bulk.addTagsInput"
+              type="text"
+              placeholder="space marines, primaris, painted..."
+              class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
+            />
+            <!-- Preview chips -->
+            <div v-if="parseTags(bulk.addTagsInput).length" class="flex flex-wrap gap-1 mt-1.5">
+              <span
+                v-for="tag in parseTags(bulk.addTagsInput)"
+                :key="tag"
+                class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-forge-accent/15 text-forge-accent"
+              >
+                + {{ tag }}
+              </span>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">
+              Remove Tags
+              <span class="font-normal text-forge-text-muted">(comma-separated)</span>
+            </label>
+            <input
+              v-model="bulk.removeTagsInput"
+              type="text"
+              placeholder="old-tag, draft..."
+              class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
+            />
+            <!-- Preview chips -->
+            <div v-if="parseTags(bulk.removeTagsInput).length" class="flex flex-wrap gap-1 mt-1.5">
+              <span
+                v-for="tag in parseTags(bulk.removeTagsInput)"
+                :key="tag"
+                class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-forge-danger/15 text-forge-danger"
+              >
+                − {{ tag }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer: Apply / Summary -->
+        <div class="border-t border-forge-border px-4 py-3">
+          <!-- Summary confirmation -->
+          <div v-if="bulkShowSummary" class="mb-3 p-3 bg-forge-bg rounded-lg border border-forge-border">
+            <p class="text-xs font-semibold text-forge-text mb-2">
+              Applying to {{ selectedIds.size }} model{{ selectedIds.size === 1 ? '' : 's' }}:
+            </p>
+            <ul class="text-xs text-forge-text-muted space-y-1">
+              <li v-for="item in changeSummary" :key="item" class="flex items-start gap-1.5">
+                <span class="text-forge-accent mt-0.5">▸</span>
+                <span>{{ item }}</span>
+              </li>
+            </ul>
+            <div class="flex gap-2 mt-3">
+              <button
+                @click="executeBulkAction"
+                :disabled="bulkProcessing"
+                class="px-4 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {{ bulkProcessing ? 'Applying…' : 'Confirm & Apply' }}
+              </button>
+              <button
+                @click="bulkShowSummary = false"
+                class="px-3 py-1.5 text-sm text-forge-text-muted hover:text-forge-text transition-colors"
+              >
+                Back
+              </button>
+            </div>
+          </div>
+
+          <!-- Apply button row -->
+          <div v-else class="flex items-center gap-3">
+            <button
+              @click="requestApply"
+              :disabled="!hasChanges || bulkProcessing"
+              class="px-4 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Apply to {{ selectedIds.size }} model{{ selectedIds.size === 1 ? '' : 's' }}
+            </button>
+            <span v-if="!hasChanges" class="text-xs text-forge-text-muted italic">
+              Fill in at least one field above to enable
+            </span>
+            <span v-else class="text-xs text-forge-text-muted">
+              {{ changeSummary.length }} field{{ changeSummary.length === 1 ? '' : 's' }} will change
+            </span>
+            <button
+              @click="resetBulkFields"
+              v-if="hasChanges"
+              class="ml-auto text-xs text-forge-text-muted hover:text-forge-danger transition-colors"
+            >
+              Clear fields
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- Prompt when bulk mode is on but nothing selected -->
     <div
-      v-if="bulkMode && selectedIds.size > 0"
-      class="bg-forge-card border border-forge-accent/30 rounded-xl p-4 mb-6 flex flex-wrap items-center gap-3"
+      v-if="bulkMode && selectedIds.size === 0"
+      class="bg-forge-card border border-forge-border rounded-xl px-4 py-3 mb-6 flex items-center gap-3 text-sm text-forge-text-muted"
     >
-      <span class="text-sm font-medium text-forge-accent">
-        {{ selectedIds.size }} selected
-      </span>
-
-      <select
-        v-model="bulkAction"
-        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
-      >
-        <option value="">Choose action...</option>
-        <option value="tag">Add Tag</option>
-        <option value="removeTag">Remove Tag</option>
-        <option value="category">Set Category</option>
-        <option value="gameSystem">Set Game System</option>
-        <option value="rating">Set Rating</option>
-      </select>
-
-      <!-- Tag input -->
-      <input
-        v-if="bulkAction === 'tag' || bulkAction === 'removeTag'"
-        v-model="bulkTag"
-        type="text"
-        placeholder="Tag name..."
-        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
-      />
-
-      <!-- Category select -->
-      <select
-        v-if="bulkAction === 'category'"
-        v-model="bulkCategory"
-        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
-      >
-        <option value="">Choose...</option>
-        <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
-      </select>
-
-      <!-- Game system select -->
-      <select
-        v-if="bulkAction === 'gameSystem'"
-        v-model="bulkGameSystem"
-        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
-      >
-        <option value="">Choose...</option>
-        <option v-for="gs in gameSystems" :key="gs" :value="gs">{{ gs }}</option>
-      </select>
-
-      <!-- Rating select -->
-      <select
-        v-if="bulkAction === 'rating'"
-        v-model.number="bulkRating"
-        class="bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
-      >
-        <option :value="0">Choose...</option>
-        <option v-for="r in 5" :key="r" :value="r">{{ '★'.repeat(r) }}</option>
-      </select>
-
-      <button
-        @click="executeBulkAction"
-        :disabled="bulkProcessing || !bulkAction"
-        class="px-4 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-      >
-        {{ bulkProcessing ? 'Applying...' : 'Apply' }}
-      </button>
-
-      <button
-        @click="cancelBulk"
-        class="px-3 py-1.5 text-sm text-forge-text-muted hover:text-forge-danger transition-colors"
-      >
-        Cancel
-      </button>
+      <span>☑️</span>
+      <span>Bulk mode active — select models below to edit them together</span>
+      <button @click="cancelBulk" class="ml-auto text-xs hover:text-forge-danger transition-colors">Cancel</button>
     </div>
 
     <!-- Result count + select all -->
@@ -482,6 +784,16 @@ onMounted(fetchModels)
       </div>
     </div>
 
+    <!-- Success toast -->
+    <transition name="fade">
+      <div
+        v-if="bulkSuccessMsg"
+        class="fixed bottom-4 right-4 bg-emerald-600/90 text-white px-4 py-2 rounded-lg shadow-lg text-sm flex items-center gap-2"
+      >
+        <span>✅</span> {{ bulkSuccessMsg }}
+      </div>
+    </transition>
+
     <!-- Error toast -->
     <div
       v-if="api.error.value"
@@ -491,3 +803,24 @@ onMounted(fetchModels)
     </div>
   </div>
 </template>
+
+<style scoped>
+.slide-down-enter-active,
+.slide-down-leave-active {
+  transition: all 0.2s ease;
+}
+.slide-down-enter-from,
+.slide-down-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>

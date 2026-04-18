@@ -35,6 +35,7 @@ builder.Services.AddDbContext<ForgeDbContext>(options =>
         .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)));
 
 // Repositories
+builder.Services.AddScoped<MetadataWritebackService>();
 builder.Services.AddScoped<IModelRepository, ModelRepository>();
 builder.Services.AddScoped<ICreatorRepository, CreatorRepository>();
 
@@ -56,6 +57,7 @@ builder.Services.AddSingleton<IScannerService, FileScannerService>();
 builder.Services.AddScoped<ISearchService, SearchService>();
 builder.Services.AddScoped<IImportService, ImportService>();
 builder.Services.AddSingleton<IThumbnailService, ThumbnailService>();
+builder.Services.AddSingleton<NamingTemplateService>();
 
 // Background Services
 builder.Services.AddHostedService<ThumbnailWorker>();

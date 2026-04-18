@@ -251,6 +251,54 @@ public class DetectedVariantFile
     public string? DetectedVariant { get; set; }
 }
 
+/// <summary>
+/// Request to rename a single model's directory or reassign it to a different creator.
+/// </summary>
+public class RenameRequest
+{
+    /// <summary>New name for the model (renames the directory on disk).</summary>
+    public string? NewName { get; set; }
+
+    /// <summary>Reassign to a different creator (moves directory into creator folder).</summary>
+    public string? NewCreator { get; set; }
+}
+
+/// <summary>
+/// Request to preview what a set of models would look like after a template rename.
+/// Does not move any files.
+/// </summary>
+public class RenamePreviewRequest
+{
+    public List<Guid> ModelIds { get; set; } = [];
+
+    /// <summary>Naming template, e.g. "{Creator CleanName}/{Model CleanName}"</summary>
+    public string? Template { get; set; }
+}
+
+/// <summary>
+/// Request to bulk-reassign models to a different creator, optionally moving files on disk.
+/// </summary>
+public class BulkCreatorRequest
+{
+    public List<Guid> ModelIds { get; set; } = [];
+
+    /// <summary>Name of the creator to reassign to (created if not found).</summary>
+    public string CreatorName { get; set; } = string.Empty;
+
+    /// <summary>If true, move model directories on disk into the creator's folder.</summary>
+    public bool MoveFiles { get; set; } = true;
+}
+
+/// <summary>Response for bulk-creator endpoint.</summary>
+public class BulkCreatorResponse
+{
+    public int AffectedCount { get; set; }
+    public string CreatorName { get; set; } = string.Empty;
+    public Guid CreatorId { get; set; }
+    public int FilesMovedCount { get; set; }
+    public List<string> Errors { get; set; } = [];
+}
+
 /// <summary>Input for PreviewRename in NamingTemplateService.</summary>
 public class ModelRenameInput
 {

@@ -70,6 +70,26 @@ export function useApi() {
     return post('/models/bulk-tags', data)
   }
 
+  /** Bulk update metadata fields on multiple models (Mp3tag-style) */
+  function bulkMetadata(data) {
+    return post('/models/bulk-metadata', data)
+  }
+
+  /** Rename a model's directory and/or reassign to a different creator */
+  function renameModel(id, data) {
+    return post(`/models/${id}/rename`, data)
+  }
+
+  /** Preview what models would be renamed to under a given template (no files moved) */
+  function renamePreview(data) {
+    return post('/models/rename/preview', data)
+  }
+
+  /** Bulk reassign models to a different creator (optionally moving files on disk) */
+  function bulkCreatorReassign(data) {
+    return post('/models/bulk-creator', data)
+  }
+
   // ─── Related Models ────────────────────────────────────
   function addRelatedModel(modelId, relatedModelId, relation = 'related') {
     return post(`/models/${modelId}/related`, { relatedModelId, relation })
@@ -148,6 +168,11 @@ export function useApi() {
     return del(`/import/queue/${itemId}`)
   }
 
+  /** Alias for rejectImport — dismiss an import queue item */
+  function dismissImport(itemId) {
+    return del(`/import/queue/${itemId}`)
+  }
+
   // ─── Sources ───────────────────────────────────────────
   function getSources() {
     return get('/sources')
@@ -219,6 +244,10 @@ export function useApi() {
     deleteModel,
     bulkUpdateModels,
     bulkTagModels,
+    bulkMetadata,
+    renameModel,
+    renamePreview,
+    bulkCreatorReassign,
     // Related Models
     addRelatedModel,
     removeRelatedModel,
@@ -242,6 +271,7 @@ export function useApi() {
     getImportQueue,
     confirmImport,
     rejectImport,
+    dismissImport,
     // Sources
     getSources,
     getSource,

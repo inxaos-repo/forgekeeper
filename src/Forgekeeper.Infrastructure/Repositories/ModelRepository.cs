@@ -9,10 +9,12 @@ namespace Forgekeeper.Infrastructure.Repositories;
 public class ModelRepository : IModelRepository
 {
     private readonly ForgeDbContext _db;
+    private readonly Services.MetadataWritebackService? _writeback;
 
-    public ModelRepository(ForgeDbContext db)
+    public ModelRepository(ForgeDbContext db, Services.MetadataWritebackService? writeback = null)
     {
         _db = db;
+        _writeback = writeback;
     }
 
     public async Task<Model3D?> GetByIdAsync(Guid id, CancellationToken ct = default)
@@ -65,6 +67,13 @@ public class ModelRepository : IModelRepository
         entry.Property(m => m.Extra).IsModified = true;
         entry.Property(m => m.PrintSettings).IsModified = true;
         await _db.SaveChangesAsync(ct);
+
+        // Write user-owned fields back to metadata.json (non-blocking, non-fatal)
+        if (_writeback != null)
+        {
+            try { await _writeback.WritebackAsync(model, ct); }
+            catch { /* logged inside writeback service */ }
+        }
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)

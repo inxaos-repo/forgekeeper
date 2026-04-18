@@ -1,7 +1,10 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Forgekeeper.Core.DTOs;
 using Forgekeeper.Core.Interfaces;
 using Forgekeeper.Core.Models;
 using Forgekeeper.Infrastructure.Data;
+using Forgekeeper.Infrastructure.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -605,6 +608,247 @@ public static class ModelEndpoints
             return Results.Ok(results);
         }).WithName("FindDuplicates");
 
+        // --- Rename / Move ---
+
+        group.MapPost("/rename/preview", async (
+            [FromBody] RenamePreviewRequest request,
+            ForgeDbContext db,
+            NamingTemplateService namingService,
+            CancellationToken ct) =>
+        {
+            if (request.ModelIds.Count == 0)
+                return Results.BadRequest(new { message = "No model IDs provided" });
+
+            if (request.ModelIds.Count > 500)
+                return Results.BadRequest(new { message = "Maximum 500 models per preview operation" });
+
+            if (string.IsNullOrWhiteSpace(request.Template))
+                return Results.BadRequest(new { message = "Template is required" });
+
+            var models = await db.Models
+                .Include(m => m.Creator)
+                .Where(m => request.ModelIds.Contains(m.Id))
+                .ToListAsync(ct);
+
+            var inputs = models.Select(m =>
+            {
+                var files = Directory.Exists(m.BasePath)
+                    ? Directory.EnumerateFiles(m.BasePath, "*", SearchOption.AllDirectories).ToList()
+                    : [];
+
+                return new ModelRenameInput
+                {
+                    ModelId = m.Id,
+                    CurrentPath = m.BasePath,
+                    ModelName = m.Name,
+                    CreatorName = m.Creator.Name,
+                    Scale = m.Scale,
+                    Source = m.Source.ToString().ToLowerInvariant(),
+                    Category = m.Category,
+                    GameSystem = m.GameSystem,
+                    Collection = m.CollectionName,
+                    DateAdded = m.CreatedAt,
+                    Files = files,
+                };
+            }).ToList();
+
+            var previews = namingService.PreviewRename(inputs, request.Template);
+            return Results.Ok(previews);
+        }).WithName("PreviewRename");
+
+        group.MapPost("/{id:guid}/rename", async (
+            Guid id,
+            [FromBody] RenameRequest request,
+            ForgeDbContext db,
+            IModelRepository repo,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
+        {
+            if (request.NewName == null && request.NewCreator == null)
+                return Results.BadRequest(new { message = "At least one of NewName or NewCreator must be provided" });
+
+            var model = await db.Models
+                .Include(m => m.Creator)
+                .Include(m => m.Tags)
+                .Include(m => m.Variants)
+                .FirstOrDefaultAsync(m => m.Id == id, ct);
+
+            if (model == null) return Results.NotFound();
+
+            var logger = loggerFactory.CreateLogger("ModelEndpoints");
+            var oldPath = model.BasePath;
+            var parentDir = Path.GetDirectoryName(oldPath) ?? oldPath;
+
+            // Determine new creator
+            Creator? newCreator = null;
+            if (request.NewCreator != null)
+            {
+                newCreator = await db.Creators
+                    .FirstOrDefaultAsync(c => c.Name.ToLower() == request.NewCreator.ToLower(), ct);
+                if (newCreator == null)
+                {
+                    newCreator = new Creator
+                    {
+                        Id = Guid.NewGuid(),
+                        Name = request.NewCreator,
+                        Source = model.Creator.Source,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow,
+                    };
+                    db.Creators.Add(newCreator);
+                    await db.SaveChangesAsync(ct);
+                }
+            }
+
+            // Build new path
+            var newDirName = SanitizeName(request.NewName ?? model.Name);
+            string newPath;
+            if (newCreator != null)
+            {
+                // Move to a parallel creator folder under the same grandparent
+                var grandparentDir = Path.GetDirectoryName(parentDir) ?? parentDir;
+                var newCreatorDir = Path.Combine(grandparentDir, SanitizeName(newCreator.Name));
+                newPath = Path.Combine(newCreatorDir, newDirName);
+            }
+            else
+            {
+                // Simple rename within same creator folder
+                newPath = Path.Combine(parentDir, newDirName);
+            }
+
+            // Move directory on disk
+            if (oldPath != newPath && Directory.Exists(oldPath))
+            {
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+                    Directory.Move(oldPath, newPath);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed to move {Old} to {New}", oldPath, newPath);
+                    return Results.Problem($"Failed to move directory: {ex.Message}");
+                }
+            }
+
+            // Update DB
+            if (request.NewName != null) model.Name = request.NewName;
+            if (newCreator != null) model.CreatorId = newCreator.Id;
+            model.BasePath = newPath;
+            model.UpdatedAt = DateTime.UtcNow;
+
+            // Rewrite metadata.json in new location
+            WriteMetadataJson(model, newPath, logger);
+
+            await repo.UpdateAsync(model, ct);
+
+            return Results.Ok(new ModelDetailResponse
+            {
+                Id = model.Id,
+                Name = model.Name,
+                CreatorName = newCreator?.Name ?? model.Creator.Name,
+                CreatorId = model.CreatorId,
+                Source = model.Source,
+                BasePath = model.BasePath,
+                UpdatedAt = model.UpdatedAt,
+            });
+        }).WithName("RenameModel");
+
+        // --- Bulk Creator Reassignment ---
+
+        group.MapPost("/bulk-creator", async (
+            [FromBody] BulkCreatorRequest request,
+            ForgeDbContext db,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
+        {
+            if (request.ModelIds.Count == 0)
+                return Results.BadRequest(new { message = "No model IDs provided" });
+
+            if (request.ModelIds.Count > 500)
+                return Results.BadRequest(new { message = "Maximum 500 models per bulk operation" });
+
+            if (string.IsNullOrWhiteSpace(request.CreatorName))
+                return Results.BadRequest(new { message = "CreatorName is required" });
+
+            var logger = loggerFactory.CreateLogger("ModelEndpoints");
+
+            // Find or create target creator
+            var targetCreator = await db.Creators
+                .FirstOrDefaultAsync(c => c.Name.ToLower() == request.CreatorName.ToLower(), ct);
+
+            if (targetCreator == null)
+            {
+                targetCreator = new Creator
+                {
+                    Id = Guid.NewGuid(),
+                    Name = request.CreatorName,
+                    Source = Forgekeeper.Core.Enums.SourceType.Manual,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                };
+                db.Creators.Add(targetCreator);
+                await db.SaveChangesAsync(ct);
+            }
+
+            var models = await db.Models
+                .Include(m => m.Creator)
+                .Where(m => request.ModelIds.Contains(m.Id))
+                .ToListAsync(ct);
+
+            if (models.Count == 0)
+                return Results.NotFound(new { message = "No matching models found" });
+
+            var errors = new List<string>();
+            var filesMoved = 0;
+
+            foreach (var model in models)
+            {
+                var oldPath = model.BasePath;
+                model.CreatorId = targetCreator.Id;
+
+                if (request.MoveFiles && Directory.Exists(oldPath))
+                {
+                    try
+                    {
+                        var parentDir = Path.GetDirectoryName(oldPath) ?? oldPath;
+                        var grandparentDir = Path.GetDirectoryName(parentDir) ?? parentDir;
+                        var newCreatorDir = Path.Combine(grandparentDir, SanitizeName(targetCreator.Name));
+                        var newPath = Path.Combine(newCreatorDir, Path.GetFileName(oldPath));
+
+                        if (oldPath != newPath)
+                        {
+                            Directory.CreateDirectory(newCreatorDir);
+                            Directory.Move(oldPath, newPath);
+                            model.BasePath = newPath;
+                            filesMoved++;
+
+                            // Rewrite metadata.json
+                            WriteMetadataJson(model, newPath, logger);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"Model {model.Id} ({model.Name}): {ex.Message}");
+                        logger.LogWarning(ex, "Failed to move {Path} for bulk creator reassign", oldPath);
+                    }
+                }
+
+                model.UpdatedAt = DateTime.UtcNow;
+            }
+
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new BulkCreatorResponse
+            {
+                AffectedCount = models.Count,
+                CreatorName = targetCreator.Name,
+                CreatorId = targetCreator.Id,
+                FilesMovedCount = filesMoved,
+                Errors = errors,
+            });
+        }).WithName("BulkCreatorReassign");
+
         // --- Bulk Metadata (multi-field + tags in one request) ---
 
         group.MapPost("/bulk-metadata", async (
@@ -710,5 +954,48 @@ public static class ModelEndpoints
                 Errors = errors,
             });
         }).WithName("BulkMetadata");
+    }
+
+    // -------- private helpers --------
+
+    private static string SanitizeName(string name)
+    {
+        var invalidChars = Path.GetInvalidFileNameChars()
+            .Concat(Path.GetInvalidPathChars())
+            .Distinct()
+            .ToArray();
+        var cleaned = string.Concat(name.Select(c => invalidChars.Contains(c) ? '_' : c));
+        return cleaned.Trim().TrimStart('.').TrimEnd('.');
+    }
+
+    private static void WriteMetadataJson(Model3D model, string targetPath, ILogger logger)
+    {
+        try
+        {
+            var metadataPath = Path.Combine(targetPath, "metadata.json");
+            if (!File.Exists(metadataPath)) return;
+
+            var existing = JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(metadataPath));
+            // Re-serialize with updated name/creator if possible — just rewrite in place
+            var jsonOptions = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            };
+            // Build a minimal metadata update (name field)
+            var dict = new Dictionary<string, object?>();
+            if (existing.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var prop in existing.EnumerateObject())
+                    dict[prop.Name] = prop.Value;
+            }
+            dict["name"] = model.Name;
+            File.WriteAllText(metadataPath, JsonSerializer.Serialize(dict, jsonOptions));
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to update metadata.json at {Path}", targetPath);
+        }
     }
 }
