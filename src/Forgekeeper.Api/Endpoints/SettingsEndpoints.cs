@@ -1,3 +1,4 @@
+using Forgekeeper.Api.BackgroundServices;
 using Forgekeeper.Infrastructure.Data;
 using Forgekeeper.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
@@ -20,6 +21,7 @@ public static class SettingsEndpoints
             IConfiguration config,
             ForgeDbContext db,
             PluginHostService pluginHost,
+            HashWorker hashWorker,
             CancellationToken ct) =>
         {
             // Gather thumbnail progress from DB
@@ -70,6 +72,14 @@ public static class SettingsEndpoints
                 autoUpdateEnabled = config.GetValue("Plugins:AutoUpdate:Enabled", false),
                 autoUpdateMode = config["Plugins:AutoUpdate:Mode"] ?? "notify",
                 autoUpdateIntervalHours = config.GetValue("Plugins:AutoUpdate:IntervalHours", 24),
+
+                // ─── Hashing ──────────────────────────────────────────
+                hashingEnabled = config.GetValue("Hashing:Enabled", true),
+                hashingBatchSize = config.GetValue("Hashing:BatchSize", 50),
+                hashingIntervalSeconds = config.GetValue("Hashing:IntervalSeconds", 5),
+                hashingWorkerRunning = hashWorker.IsRunning,
+                hashingTotalHashed = hashWorker.HashedCount,
+                hashingErrors = hashWorker.ErrorCount,
 
                 // ─── Security ─────────────────────────────────────────
                 apiKeyConfigured = !string.IsNullOrEmpty(config["Security:ApiKey"]),

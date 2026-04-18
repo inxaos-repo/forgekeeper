@@ -163,5 +163,23 @@ public static class ScanEndpoints
                 missingItems,
             });
         }).WithName("VerifyIntegrity");
+
+        // GET /api/v1/scan/hash-status — SHA-256 hashing progress
+        group.MapGet("/hash-status", async (ForgeDbContext db, CancellationToken ct) =>
+        {
+            var total = await db.Variants.CountAsync(ct);
+            var hashed = await db.Variants.CountAsync(v => v.FileHash != null && v.FileHash != "sha256:missing", ct);
+            var missing = await db.Variants.CountAsync(v => v.FileHash == "sha256:missing", ct);
+            var unhashed = total - hashed - missing;
+
+            return Results.Ok(new
+            {
+                totalFiles = total,
+                hashedFiles = hashed,
+                unhashedFiles = unhashed,
+                missingFiles = missing,
+                completionPercent = total > 0 ? Math.Round((double)hashed / total * 100, 1) : 0,
+            });
+        }).WithName("GetHashStatus");
     }
 }

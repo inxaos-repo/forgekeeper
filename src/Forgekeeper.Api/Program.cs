@@ -83,6 +83,8 @@ builder.Services.AddHostedService<PluginUpdateWorker>();
 builder.Services.AddHostedService<ThumbnailWorker>();
 builder.Services.AddHostedService<ScannerWorker>();
 builder.Services.AddHostedService<ImportWorker>();
+builder.Services.AddSingleton<HashWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<HashWorker>());
 builder.Services.AddSingleton<PluginHostService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PluginHostService>());
 
@@ -136,7 +138,7 @@ app.MapGet("/version", () => Results.Ok(new
 })).WithTags("System").WithName("GetVersion");
 
 // Prometheus metrics endpoint
-app.MapGet("/metrics", async (IServiceProvider services, PluginHostService pluginHost, CancellationToken ct) =>
+app.MapGet("/metrics", async (IServiceProvider services, PluginHostService pluginHost, HashWorker hashWorker, CancellationToken ct) =>
 {
     using var scope = services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
@@ -196,6 +198,22 @@ app.MapGet("/metrics", async (IServiceProvider services, PluginHostService plugi
     sb.AppendLine("# HELP forgekeeper_printed_total Models with print status printed");
     sb.AppendLine("# TYPE forgekeeper_printed_total gauge");
     sb.AppendLine($"forgekeeper_printed_total {printedCount}");
+    sb.AppendLine();
+
+    // File hashing progress
+    var hashedFiles = await db.Variants.CountAsync(v => v.FileHash != null && v.FileHash != "sha256:missing", ct);
+    var unhashedFiles = totalFiles - hashedFiles;
+    sb.AppendLine("# HELP forgekeeper_files_hashed_total Files with SHA-256 hash computed");
+    sb.AppendLine("# TYPE forgekeeper_files_hashed_total gauge");
+    sb.AppendLine($"forgekeeper_files_hashed_total {hashedFiles}");
+    sb.AppendLine();
+    sb.AppendLine("# HELP forgekeeper_files_unhashed_total Files without SHA-256 hash");
+    sb.AppendLine("# TYPE forgekeeper_files_unhashed_total gauge");
+    sb.AppendLine($"forgekeeper_files_unhashed_total {unhashedFiles}");
+    sb.AppendLine();
+    sb.AppendLine("# HELP forgekeeper_hash_worker_running Is the hash worker actively processing (1=yes, 0=no)");
+    sb.AppendLine("# TYPE forgekeeper_hash_worker_running gauge");
+    sb.AppendLine($"forgekeeper_hash_worker_running {(hashWorker.IsRunning ? 1 : 0)}");
     sb.AppendLine();
 
     // Per-plugin sync metrics
