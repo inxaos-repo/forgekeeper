@@ -1,6 +1,6 @@
 services:
   forgekeeper:
-    image: ghcr.io/your-org/forgekeeper:main
+    image: ghcr.io/inxaos-repo/forgekeeper:main
     # Or build locally: build: .
     restart: unless-stopped
     ports:
