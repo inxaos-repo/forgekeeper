@@ -61,6 +61,27 @@ public class PluginHostService : BackgroundService
     public ILibraryScraper? GetPlugin(string slug) =>
         _plugins.TryGetValue(slug, out var loaded) ? loaded.Scraper : null;
 
+    /// <summary>
+    /// Unload a plugin by slug: removes it from the registry and unloads its AssemblyLoadContext.
+    /// Used by the remove API endpoint after deleting the plugin directory.
+    /// </summary>
+    public void UnloadPlugin(string slug)
+    {
+        if (_plugins.TryRemove(slug, out var plugin))
+        {
+            _logger.LogInformation("Unloading plugin: {Slug}", slug);
+            plugin.LoadContext.Unload();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            _logger.LogInformation("Plugin '{Slug}' unloaded", slug);
+        }
+    }
+
+    /// <summary>Whether a plugin is currently syncing.</summary>
+    public bool IsPluginSyncing(string slug) =>
+        _syncStatuses.TryGetValue(slug, out var s) && s.IsRunning;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Plugin host starting, scanning {Dir}", _pluginsDirectory);

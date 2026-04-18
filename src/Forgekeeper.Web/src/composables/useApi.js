@@ -288,6 +288,18 @@ export function useApi() {
     return put(`/plugins/${encodeURIComponent(slug)}/config`, { ENABLED: enabled ? 'true' : 'false' })
   }
 
+  function installPlugin(source, version) {
+    return post('/plugins/install', { source, version: version || null })
+  }
+
+  function updatePlugin(slug) {
+    return post(`/plugins/${encodeURIComponent(slug)}/update`)
+  }
+
+  function removePlugin(slug) {
+    return del(`/plugins/${encodeURIComponent(slug)}`)
+  }
+
   // ─── Files / Directory Browser ─────────────────────────
   /**
    * Browse server-side filesystem.
@@ -368,6 +380,9 @@ export function useApi() {
     reloadPlugins,
     reloadPlugin,
     togglePlugin,
+    installPlugin,
+    updatePlugin,
+    removePlugin,
     // Files
     browseFiles,
   }

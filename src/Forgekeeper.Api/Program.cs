@@ -5,6 +5,7 @@ using Forgekeeper.Infrastructure.Repositories;
 using Forgekeeper.Infrastructure.Services;
 using Forgekeeper.Infrastructure.SourceAdapters;
 using Forgekeeper.Api.BackgroundServices;
+using Forgekeeper.Api.Cli;
 using Forgekeeper.Api.Endpoints;
 using Forgekeeper.Api.Mcp;
 using Forgekeeper.Api.Middleware;
@@ -12,6 +13,13 @@ using Microsoft.EntityFrameworkCore;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// CLI mode: forgekeeper plugin <subcommand>
+// Intercept before web server setup — runs as a one-shot command and exits.
+if (args.Length > 0 && args[0] == "plugin")
+{
+    return await PluginCli.RunAsync(args[1..], builder.Configuration);
+}
 
 // Serilog
 builder.Host.UseSerilog((context, config) =>
@@ -62,6 +70,9 @@ builder.Services.AddSingleton<NamingTemplateService>();
 // Plugin system services
 builder.Services.AddSingleton<ManifestValidationService>();
 builder.Services.AddSingleton<SdkCompatibilityChecker>();
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<IGitHubReleaseResolver, GitHubReleaseResolver>();
+builder.Services.AddScoped<IPluginInstallService, PluginInstallService>();
 
 // Background Services
 builder.Services.AddHostedService<ThumbnailWorker>();
@@ -528,6 +539,7 @@ app.MapPost("/mcp/invoke", async (
 app.MapFallbackToFile("index.html");
 
 app.Run();
+return 0;
 
 // Needed for WebApplicationFactory<Program> in integration tests
 public partial class Program { }

@@ -1,3 +1,4 @@
+using Forgekeeper.Core.Interfaces;
 using Forgekeeper.Core.Models;
 using Forgekeeper.Infrastructure.Data;
 using Forgekeeper.Infrastructure.Services;
@@ -279,6 +280,54 @@ public static class PluginEndpoints
             return Results.Ok(runs);
         }).WithName("GetPluginSyncHistory");
 
+        // POST /api/v1/plugins/install — install a plugin from a GitHub release URL
+        group.MapPost("/install", async (
+            [FromBody] PluginInstallRequest request,
+            IPluginInstallService installService,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Source))
+                return Results.BadRequest(new { message = "'source' is required" });
+
+            var result = await installService.InstallAsync(request.Source, request.Version, ct);
+            return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+        }).WithName("InstallPlugin");
+
+        // POST /api/v1/plugins/{slug}/update — update to latest version
+        group.MapPost("/{slug}/update", async (
+            string slug,
+            IPluginInstallService installService,
+            PluginHostService pluginHost,
+            CancellationToken ct) =>
+        {
+            if (pluginHost.IsPluginSyncing(slug))
+                return Results.Conflict(new { message = $"Plugin '{slug}' is currently syncing — update rejected. Stop the sync first." });
+
+            var result = await installService.UpdateAsync(slug, ct);
+            return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+        }).WithName("UpdatePlugin");
+
+        // DELETE /api/v1/plugins/{slug} — uninstall a plugin
+        group.MapDelete("/{slug}", async (
+            string slug,
+            IPluginInstallService installService,
+            PluginHostService pluginHost,
+            CancellationToken ct) =>
+        {
+            if (pluginHost.IsPluginSyncing(slug))
+                return Results.Conflict(new { message = $"Plugin '{slug}' is currently syncing — remove rejected. Stop the sync first." });
+
+            var success = await installService.RemoveAsync(slug, ct);
+            if (!success)
+                return Results.BadRequest(new { message = $"Failed to remove plugin '{slug}'. Check logs for details." });
+
+            // Unload from runtime if hot-reload is enabled
+            if (pluginHost.HotReloadEnabled)
+                pluginHost.UnloadPlugin(slug);
+
+            return Results.NoContent();
+        }).WithName("RemovePlugin");
+
         // POST /api/v1/plugins/reload — hot-reload all plugins
         group.MapPost("/reload", async (PluginHostService pluginHost, CancellationToken ct) =>
         {
@@ -517,4 +566,13 @@ public class ScrapeProgressResponse
     public int Current { get; set; }
     public int Total { get; set; }
     public string? CurrentItem { get; set; }
+}
+
+public class PluginInstallRequest
+{
+    /// <summary>GitHub URL or owner/repo shorthand. May include @version suffix.</summary>
+    public string Source { get; set; } = "";
+
+    /// <summary>Specific version/tag to install. null = latest.</summary>
+    public string? Version { get; set; }
 }
