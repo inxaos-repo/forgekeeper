@@ -148,10 +148,10 @@ https://raw.githubusercontent.com/forgekeeper/plugin-registry/main/registry.json
       "slug": "mmf",
       "name": "My Manga Forum Scraper",
       "version": "1.0.0",
-      "author": "Damon Prater",
+      "author": "Plugin Author",
       "description": "Scrapes library data from My Manga Forum (MMF).",
-      "homepage": "https://github.com/inxaos/Forgekeeper.Scraper.Mmf",
-      "download_url": "https://github.com/inxaos/Forgekeeper.Scraper.Mmf/releases/download/v1.0.0/Forgekeeper.Scraper.Mmf-1.0.0.zip",
+      "homepage": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
+      "download_url": "https://github.com/your-org/Forgekeeper.Scraper.Mmf/releases/download/v1.0.0/Forgekeeper.Scraper.Mmf-1.0.0.zip",
       "sdk_version": "1.0.0",
       "min_sdk_version": "1.0.0",
       "checksum_sha256": "abc123...",
@@ -238,7 +238,7 @@ For Docker deployments, mount a host directory as the plugins volume:
 ```yaml
 services:
   forgekeeper:
-    image: ghcr.io/inxaos/forgekeeper:latest
+    image: ghcr.io/your-org/forgekeeper:latest
     volumes:
       - ./plugins:/data/plugins    # user-installed plugins
       - ./data:/data/library        # library database
@@ -429,13 +429,13 @@ forgekeeper/plugin-registry/
       "slug": "mmf",
       "name": "My Manga Forum Scraper",
       "version": "1.0.0",
-      "author": "Damon Prater",
-      "author_url": "https://github.com/damonp",
+      "author": "Plugin Author",
+      "author_url": "https://github.com/your-github-username",
       "description": "Scrapes library data from My Manga Forum (MMF). Supports series, volumes, and reading progress sync.",
-      "homepage": "https://github.com/inxaos/Forgekeeper.Scraper.Mmf",
-      "source_url": "https://github.com/inxaos/Forgekeeper.Scraper.Mmf",
-      "download_url": "https://github.com/inxaos/Forgekeeper.Scraper.Mmf/releases/download/v1.0.0/Forgekeeper.Scraper.Mmf-1.0.0.zip",
-      "icon_url": "https://raw.githubusercontent.com/inxaos/Forgekeeper.Scraper.Mmf/main/icon.png",
+      "homepage": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
+      "source_url": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
+      "download_url": "https://github.com/your-org/Forgekeeper.Scraper.Mmf/releases/download/v1.0.0/Forgekeeper.Scraper.Mmf-1.0.0.zip",
+      "icon_url": "https://raw.githubusercontent.com/your-org/Forgekeeper.Scraper.Mmf/main/icon.png",
       "sdk_version": "1.0.0",
       "min_sdk_version": "1.0.0",
       "max_sdk_version": "1.x",

@@ -1,5 +1,6 @@
 using Forgekeeper.Core.DTOs;
 using Forgekeeper.Core.Interfaces;
+using Microsoft.AspNetCore.Mvc;
 
 namespace Forgekeeper.Api.Endpoints;
 
@@ -76,6 +77,10 @@ public static class CreatorEndpoints
 
         group.MapGet("/{id:guid}/models", async (
             Guid id,
+            [FromQuery] int? page,
+            [FromQuery] int? pageSize,
+            [FromQuery] string? sortBy,
+            [FromQuery] bool? sortDescending,
             IModelRepository modelRepo,
             ICreatorRepository creatorRepo,
             CancellationToken ct) =>
@@ -83,8 +88,10 @@ public static class CreatorEndpoints
             var creator = await creatorRepo.GetByIdAsync(id, ct);
             if (creator == null) return Results.NotFound();
 
-            var models = await modelRepo.GetByCreatorIdAsync(id, ct);
-            var response = models.Select(m => new ModelResponse
+            var (models, totalCount) = await modelRepo.GetByCreatorIdPagedAsync(
+                id, page ?? 1, pageSize ?? 50, sortBy, sortDescending ?? false, ct);
+
+            var items = models.Select(m => new ModelResponse
             {
                 Id = m.Id,
                 Name = m.Name,
@@ -104,7 +111,13 @@ public static class CreatorEndpoints
                 UpdatedAt = m.UpdatedAt,
             }).ToList();
 
-            return Results.Ok(response);
+            return Results.Ok(new PaginatedResult<ModelResponse>
+            {
+                Items = items,
+                TotalCount = totalCount,
+                Page = page ?? 1,
+                PageSize = pageSize ?? 50,
+            });
         }).WithName("GetCreatorModels");
     }
 }

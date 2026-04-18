@@ -30,7 +30,7 @@ Existing tools (Manyfold) choke at scale, treat supported/unsupported variants a
 | **3D Viewer** | Three.js + STLLoader + OrbitControls | In-browser STL preview |
 | **Thumbnails** | stl-thumb (Rust CLI) → WebP | Background generation |
 | **Deployment** | Docker (multi-stage) → Kubernetes via Flux GitOps | Ingress at `forge.example.com` |
-| **Storage** | NFS mount to `/warehousepool/3dprinting/` (ZFS) | Source of truth for files |
+| **Storage** | NFS mount to `/mnt/3dprinting/` | Source of truth for files |
 | **Testing** | xUnit, Moq, Testcontainers | Integration tests preferred |
 
 ### Repository Structure
@@ -957,7 +957,7 @@ public class SearchServiceTests : IClassFixture<PostgresFixture>
 | 16.2 | Create production docker-compose.yml | Single command `docker compose up -d` starts Forgekeeper + Postgres |
 | 16.3 | Create Kubernetes manifests | Deployment, Service, Ingress (host: `forge.example.com`), NFS PVC, CNPG Cluster |
 | 16.4 | Create CNPG Cluster manifest | PostgreSQL 16, 10Gi Longhorn storage, pg_trgm enabled, 256MB shared_buffers |
-| 16.5 | Configure NFS PersistentVolume | Mount `/warehousepool/3dprinting/` as read-write PV |
+| 16.5 | Configure NFS PersistentVolume | Mount `/mnt/3dprinting/` as read-write PV |
 | 16.6 | Create GitHub Actions CI workflow | Build Docker image on push to main, push to `ghcr.io` |
 | 16.7 | Create Flux HelmRelease or Kustomization | Auto-deploy when new image tag is pushed |
 | 16.8 | Configure environment variables from secrets | Connection string from CNPG secret, storage paths from ConfigMap |
@@ -1725,7 +1725,7 @@ Located in `your-flux-repo` GitOps repo under `apps/forgekeeper/`:
 | `service.yaml` | ClusterIP on port 5000 |
 | `ingress.yaml` | Host: `forge.example.com` |
 | `cnpg-cluster.yaml` | PostgreSQL 16 via CNPG, 10Gi Longhorn, pg_trgm |
-| `nfs-pv.yaml` | PersistentVolume for `/warehousepool/3dprinting/` |
+| `nfs-pv.yaml` | PersistentVolume for your 3D printing collection |
 | `nfs-pvc.yaml` | PersistentVolumeClaim for the NFS PV |
 | `configmap.yaml` | Non-secret configuration (storage paths, scanner config) |
 | `secret.yaml` | Sealed secret for DB credentials |

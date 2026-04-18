@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/your-org/forgekeeper/blob/main/plugins/manifest.schema.json",
+  "title": "Forgekeeper Plugin Manifest",
+  "description": "Schema for manifest.json files in Forgekeeper plugins.",
+  "type": "object",
+  "required": [
+    "slug",
+    "name",
+    "version",
+    "sdk_version",
+    "min_sdk_version",
+    "max_sdk_version",
+    "min_forgekeeper_version",
+    "author",
+    "description",
+    "entry_assembly"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "slug": {
+      "type": "string",
+      "description": "Unique short identifier for the plugin. Lowercase letters, digits, and hyphens only.",
+      "pattern": "^[a-z0-9-]+$",
+      "minLength": 2,
+      "maxLength": 64,
+      "examples": ["mmf", "some-manga-site", "mysite-v2"]
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable display name for the plugin.",
+      "minLength": 2,
+      "maxLength": 128,
+      "examples": ["My Manga Forum Scraper"]
+    },
+    "version": {
+      "type": "string",
+      "description": "Plugin version following Semantic Versioning (SemVer 2.0.0).",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "examples": ["1.0.0", "1.2.3", "2.0.0-beta.1"]
+    },
+    "sdk_version": {
+      "type": "string",
+      "description": "The exact Forgekeeper.PluginSdk version this plugin was compiled against.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "examples": ["1.0.0", "1.2.0"]
+    },
+    "min_sdk_version": {
+      "type": "string",
+      "description": "Minimum Forgekeeper.PluginSdk version required to run this plugin.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "examples": ["1.0.0"]
+    },
+    "max_sdk_version": {
+      "type": "string",
+      "description": "Maximum compatible Forgekeeper.PluginSdk version. Use '1.x' to mean any 1.y.z release.",
+      "pattern": "^(0|[1-9]\\d*)\\.(x|[0-9]+(\\.[0-9]+)?)$",
+      "examples": ["1.x", "1.2.x", "1.9.99"]
+    },
+    "min_forgekeeper_version": {
+      "type": "string",
+      "description": "Minimum Forgekeeper application version required to run this plugin.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "examples": ["1.0.0"]
+    },
+    "author": {
+      "type": "string",
+      "description": "Display name of the plugin author or organization.",
+      "minLength": 1,
+      "maxLength": 128,
+      "examples": ["Plugin Author", "Community Bot"]
+    },
+    "email": {
+      "type": "string",
+      "description": "Contact email for the plugin author (optional).",
+      "format": "email",
+      "examples": ["author@example.com"]
+    },
+    "description": {
+      "type": "string",
+      "description": "Short description of what the plugin does (1-2 sentences).",
+      "minLength": 10,
+      "maxLength": 512,
+      "examples": ["Scrapes library data from My Manga Forum (MMF). Supports series, volumes, and reading progress sync."]
+    },
+    "homepage": {
+      "type": "string",
+      "description": "URL of the plugin's homepage or project page.",
+      "format": "uri",
+      "examples": ["https://github.com/your-org/Forgekeeper.Scraper.Mmf"]
+    },
+    "source_url": {
+      "type": "string",
+      "description": "URL of the plugin's source code repository.",
+      "format": "uri",
+      "examples": ["https://github.com/your-org/Forgekeeper.Scraper.Mmf"]
+    },
+    "license": {
+      "type": "string",
+      "description": "SPDX license identifier (see https://spdx.org/licenses/).",
+      "examples": ["MIT", "Apache-2.0", "GPL-3.0-only"]
+    },
+    "tags": {
+      "type": "array",
+      "description": "Category tags for discoverability in the plugin registry.",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9-]+$",
+        "maxLength": 32
+      },
+      "maxItems": 10,
+      "uniqueItems": true,
+      "examples": [["manga", "scraper", "mmf"]]
+    },
+    "entry_assembly": {
+      "type": "string",
+      "description": "Filename (not path) of the DLL to load as the plugin entry point.",
+      "pattern": "^[^/\\\\]+\\.dll$",
+      "examples": ["Forgekeeper.Scraper.Mmf.dll"]
+    },
+    "icon": {
+      "type": "string",
+      "description": "Relative path to the plugin icon (PNG, 128x128 recommended).",
+      "examples": ["icon.png"]
+    }
+  }
+}

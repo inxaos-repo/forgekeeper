@@ -43,7 +43,7 @@ No installation needed on your-desktop beyond Visual Studio — all build toolin
 Create this file at the project root:
 
 ```yaml
-# /home/openclaw/.openclaw/workspace/projects/forgekeeper/docker-compose.dev.yml
+# /path/to/forgekeeper/docker-compose.dev.yml
 #
 # Dev environment: SDK container + Postgres + Node frontend
 # Usage: docker compose -f docker-compose.dev.yml up -d
@@ -55,7 +55,7 @@ services:
     working_dir: /src
     command: sleep infinity
     volumes:
-      - /home/openclaw/.openclaw/workspace/projects/forgekeeper:/src
+      - /path/to/forgekeeper:/src
       - nuget-cache:/root/.nuget/packages
     ports:
       - "5000:5000"     # API (Kestrel)
@@ -98,7 +98,7 @@ services:
     working_dir: /app
     command: sleep infinity
     volumes:
-      - /home/openclaw/.openclaw/workspace/projects/forgekeeper/src/Forgekeeper.Frontend:/app
+      - /path/to/forgekeeper/src/Forgekeeper.Frontend:/app
       - node-modules:/app/node_modules
     ports:
       - "5173:5173"     # Vite dev server
@@ -127,7 +127,7 @@ networks:
 ## 3. First-Time Setup
 
 ```bash
-cd /home/openclaw/.openclaw/workspace/projects/forgekeeper
+cd /path/to/forgekeeper
 
 # Start all containers
 docker compose -f docker-compose.dev.yml up -d
@@ -513,10 +513,10 @@ VS may also hold locks on `.suo` and `.user` files — these are in the `.vs/` d
 **Fix:** The container runs as root by default, so this usually means the host filesystem permissions are wrong:
 ```bash
 # On your-server, check ownership
-ls -la /home/openclaw/.openclaw/workspace/projects/forgekeeper/
+ls -la /path/to/forgekeeper/
 
 # Fix if needed (the SMB share should handle this, but just in case)
-sudo chown -R 1000:1000 /home/openclaw/.openclaw/workspace/projects/forgekeeper/
+sudo chown -R 1000:1000 /path/to/forgekeeper/
 ```
 
 ### Container won't start

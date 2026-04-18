@@ -4,9 +4,9 @@ description: A self-hosted 3D print file manager — Plex for STL files
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/inxaos-repo/forgekeeper
+home: https://github.com/your-org/forgekeeper
 sources:
-  - https://github.com/inxaos-repo/forgekeeper
+  - https://github.com/your-org/forgekeeper
 keywords:
   - 3d-printing
   - stl
@@ -14,4 +14,4 @@ keywords:
   - miniatures
   - self-hosted
 maintainers:
-  - name: inxaos-repo
+  - name: your-org

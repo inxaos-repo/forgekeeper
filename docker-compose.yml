@@ -1,6 +1,6 @@
 services:
   forgekeeper:
-    image: ghcr.io/inxaos-repo/forgekeeper:main
+    image: ghcr.io/your-org/forgekeeper:main
     # Or build locally: build: .
     restart: unless-stopped
     ports:
@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
     environment:
       - LOG_LEVEL=info
-      - TZ=America/Los_Angeles
+      - TZ=UTC
     ports:
       - "8191:8191"
 

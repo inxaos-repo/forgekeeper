@@ -24,7 +24,7 @@ Forgekeeper maintains **separate directory structures per source** on disk, each
 ### Canonical Directory Layout
 
 ```
-/warehousepool/3dprinting/
+/mnt/3dprinting/
 ├── sources/
 │   ├── mmf/                        # MyMiniFactory (via MMFDownloader)
 │   │   └── CreatorName/
@@ -163,7 +163,7 @@ flowchart TB
         direction TB
         RESCAN["Periodic Rescan\n(detect new/changed)"]
         DEDUP["Duplicate Detection\n(cross-source)"]
-        BACKUP["NFS Backup\n(warehousepool)"]
+        BACKUP["NFS Backup\n(NFS storage)"]
         UPDATE["Re-download\nupdated models"]
     end
 
@@ -535,9 +535,9 @@ tag_id: FK → Tag
 - Responsive (works on phone for browsing collection in the shop)
 
 ### Storage
-- **NFS mount** to `/warehousepool/3dprinting/` (read-only for browsing, read-write for thumbnails)
+- **NFS mount** to `/mnt/3dprinting/` (read-only for browsing, read-write for thumbnails)
 - **PostgreSQL** for all metadata (CNPG on Longhorn)
-- Thumbnails stored alongside models on NFS (`/warehousepool/3dprinting/.thumbnails/` or next to files)
+- Thumbnails stored alongside models on NFS (`/mnt/3dprinting/.thumbnails/` or next to files)
 
 
 ### Project Structure
@@ -763,7 +763,7 @@ flowchart TB
         PG[("PostgreSQL 16\n(CNPG on Longhorn)\n• Metadata\n• Tags & ratings\n• Scan state")]
     end
 
-    subgraph STORAGE["NFS Storage (warehousepool)"]
+    subgraph STORAGE["NFS Storage"]
         direction TB
         SRC_DIRS["sources/\n├── mmf/\n├── thangs/\n├── patreon/\n├── cults3d/\n├── thingiverse/\n└── manual/"]
         UNSORTED_DIR["unsorted/\n(drop zone)"]
@@ -960,7 +960,7 @@ flowchart LR
 
     subgraph NFS_TRUTH["Source of Truth: FILES"]
         direction TB
-        NFS["NFS — warehousepool\n3.9TB / 346K files"]
+        NFS["NFS Storage\n(your collection)"]
         NFS_FILES["Actual 3D model files\nOrganized in sources/"]
         NFS_THUMBS["Generated thumbnails\n.forgekeeper/thumbnails/\n(.webp cached renders)"]
     end
@@ -1015,7 +1015,7 @@ flowchart LR
 
 | Data Type | Source of Truth | Notes |
 |-----------|----------------|-------|
-| **3D model files** | NFS (warehousepool) | Forgekeeper never copies or moves files outside NFS |
+| **3D model files** | NFS storage | Forgekeeper never copies or moves files outside NFS |
 | **File structure** | NFS directory layout | Scanner reads this; it's authoritative |
 | **External metadata** | `metadata.json` on NFS | Written by downloaders, read-only for Forgekeeper |
 | **User metadata** | PostgreSQL | Tags, ratings, printed status, notes, categories |
@@ -1030,7 +1030,7 @@ flowchart LR
 > This section provides key context for AI-assisted development (Codex, Copilot, etc.) working on the Forgekeeper codebase.
 
 ### Collection Statistics
-- **Total size:** 3.9 TB across NFS (warehousepool ZFS dataset)
+- **Total size:** 3.9 TB across NFS
 - **Files:** ~346,000 files in ~55,000 directories
 - **MMF items:** 7,223 models from MyMiniFactory
 - **Structure:** 72% follows MMFDownloader layout (165 unique creators)
@@ -1100,7 +1100,7 @@ unsorted/
 
 ### Deployment Target
 - **Kubernetes cluster** at `k8s.example.com` managed by Flux GitOps
-- **NFS storage** from warehousepool ZFS dataset (mounted as PV)
+- **NFS storage** mounted as a PV
 - **PostgreSQL** via CNPG (CloudNativePG) operator on Longhorn storage
 - **Ingress** at `forge.example.com` (Traefik or nginx)
 - **Container registry:** GitHub Container Registry (ghcr.io)

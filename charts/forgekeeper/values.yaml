@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/inxaos-repo/forgekeeper
+  repository: ghcr.io/your-org/forgekeeper
   tag: main
   pullPolicy: Always
 
@@ -94,7 +94,7 @@ postgresql:
     password: ""
 
 config:
-  timezone: America/Los_Angeles
+  timezone: UTC
   aspnetcoreUrls: "http://+:5000"
   encryptionKey: "change-me"
   thumbnails:

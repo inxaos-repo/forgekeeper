@@ -267,7 +267,7 @@ Effort sizing:
 - Cache resolved metadata for 1 hour to avoid hammering GitHub
 
 **Acceptance Criteria:**
-- `forgekeeper plugin install https://github.com/inxaos/Forgekeeper.Scraper.Mmf` resolves latest release
+- `forgekeeper plugin install https://github.com/your-org/Forgekeeper.Scraper.Mmf` resolves latest release
 - `forgekeeper plugin install https://github.com/.../Mmf@1.0.0` resolves specific tag
 - Rate limit hit → clear error message with retry-after suggestion
 - No network → clear offline error

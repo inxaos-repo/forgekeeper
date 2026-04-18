@@ -49,6 +49,33 @@ public class ModelRepository : IModelRepository
             .ToListAsync(ct);
     }
 
+    public async Task<(List<Model3D> Items, int TotalCount)> GetByCreatorIdPagedAsync(
+        Guid creatorId, int page = 1, int pageSize = 50,
+        string? sortBy = null, bool sortDescending = false, CancellationToken ct = default)
+    {
+        var query = _db.Models
+            .Include(m => m.Tags)
+            .Include(m => m.SourceEntity)
+            .Where(m => m.CreatorId == creatorId);
+
+        query = sortBy?.ToLowerInvariant() switch
+        {
+            "size" or "totalsizebytes" => sortDescending ? query.OrderByDescending(m => m.TotalSizeBytes) : query.OrderBy(m => m.TotalSizeBytes),
+            "files" or "filecount" => sortDescending ? query.OrderByDescending(m => m.FileCount) : query.OrderBy(m => m.FileCount),
+            "date" or "createdat" => sortDescending ? query.OrderByDescending(m => m.CreatedAt) : query.OrderBy(m => m.CreatedAt),
+            "rating" => sortDescending ? query.OrderByDescending(m => m.Rating) : query.OrderBy(m => m.Rating),
+            _ => sortDescending ? query.OrderByDescending(m => m.Name) : query.OrderBy(m => m.Name),
+        };
+
+        var totalCount = await query.CountAsync(ct);
+        var items = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct);
+
+        return (items, totalCount);
+    }
+
     public async Task<Model3D> AddAsync(Model3D model, CancellationToken ct = default)
     {
         _db.Models.Add(model);

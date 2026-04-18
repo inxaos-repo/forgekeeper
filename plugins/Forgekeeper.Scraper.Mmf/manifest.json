@@ -1,0 +1,18 @@
+{
+  "slug": "mmf",
+  "name": "My Manga Forum Scraper",
+  "version": "1.0.0",
+  "sdk_version": "1.0.0",
+  "min_sdk_version": "1.0.0",
+  "max_sdk_version": "1.x",
+  "min_forgekeeper_version": "1.0.0",
+  "author": "Forgekeeper Contributors",
+  "email": "forgekeeper@example.com",
+  "description": "Scrapes library data from MyMiniFactory (MMF). Supports model discovery, metadata, preview images, and incremental library sync.",
+  "homepage": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
+  "source_url": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
+  "license": "MIT",
+  "tags": ["manga", "scraper", "mmf", "official"],
+  "entry_assembly": "Forgekeeper.Scraper.Mmf.dll",
+  "icon": "icon.png"
+}

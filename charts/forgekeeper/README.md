@@ -28,7 +28,7 @@ helm install forgekeeper ./charts/forgekeeper -n forgekeeper --create-namespace 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of replicas | `1` |
-| `image.repository` | Container image | `ghcr.io/inxaos-repo/forgekeeper` |
+| `image.repository` | Container image | `ghcr.io/your-org/forgekeeper` |
 | `image.tag` | Image tag | `main` |
 | `image.pullPolicy` | Pull policy | `Always` |
 | `service.type` | Service type | `ClusterIP` |
@@ -87,14 +87,14 @@ persistence:
   library:
     nfs:
       enabled: true
-      server: 192.168.4.10
-      path: "/warehousepool/3d printing"
+      server: your-nfs-server
+      path: "/mnt/3dprinting"
     size: 4Ti
   data:
     nfs:
       enabled: true
-      server: 192.168.4.10
-      path: "/storagepool/docker/forgekeeper"
+      server: your-nfs-server
+      path: "/data/forgekeeper"
 
 nodeSelector:
   nodetype: storage
@@ -105,13 +105,13 @@ ingress:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-production
   hosts:
-    - host: forgekeeper.k8s.inxaos.com
+    - host: forgekeeper.example.com
       paths:
         - path: /
           pathType: Prefix
   tls:
     - hosts:
-        - forgekeeper.k8s.inxaos.com
+        - forgekeeper.example.com
       secretName: forgekeeper-tls
 ```
 
@@ -122,7 +122,7 @@ ingress:
 replicaCount: 1
 
 image:
-  repository: ghcr.io/inxaos-repo/forgekeeper
+  repository: ghcr.io/your-org/forgekeeper
   tag: v0.1.0
   pullPolicy: IfNotPresent
 
@@ -138,8 +138,8 @@ persistence:
   library:
     nfs:
       enabled: true
-      server: 192.168.4.10
-      path: "/warehousepool/3d printing"
+      server: your-nfs-server
+      path: "/mnt/3dprinting"
     size: 4Ti
   data:
     size: 10Gi
@@ -157,15 +157,15 @@ ingress:
   className: nginx
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-production
-    external-dns.alpha.kubernetes.io/hostname: forgekeeper.k8s.inxaos.com
+    external-dns.alpha.kubernetes.io/hostname: forgekeeper.example.com
   hosts:
-    - host: forgekeeper.k8s.inxaos.com
+    - host: forgekeeper.example.com
       paths:
         - path: /
           pathType: Prefix
   tls:
     - hosts:
-        - forgekeeper.k8s.inxaos.com
+        - forgekeeper.example.com
       secretName: forgekeeper-tls
 
 nodeSelector:
