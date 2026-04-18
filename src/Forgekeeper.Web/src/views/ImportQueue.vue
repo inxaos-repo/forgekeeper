@@ -7,6 +7,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useApi } from '../composables/useApi.js'
 import SourceBadge from '../components/SourceBadge.vue'
+import ImportWizard from '../components/ImportWizard.vue'
 
 const api = useApi()
 
@@ -17,6 +18,7 @@ const statusPollTimer = ref(null)
 const filterStatus = ref('')
 
 const sources = ['mmf', 'thangs', 'patreon', 'cults3d', 'thingiverse', 'manual']
+const showWizard = ref(false)
 
 async function fetchQueue() {
   try {
@@ -148,6 +150,12 @@ onBeforeUnmount(stopStatusPoll)
           class="px-4 py-2 rounded-lg text-sm font-medium bg-forge-card border border-forge-accent text-forge-accent hover:bg-forge-accent/10 transition-colors"
         >
           ✓ Auto-confirm high confidence
+        </button>
+        <button
+          @click="showWizard = true"
+          class="px-4 py-2 rounded-lg text-sm font-medium bg-forge-accent hover:bg-forge-accent-hover text-forge-bg transition-colors"
+        >
+          📥 Manual Import
         </button>
         <button
           @click="triggerScan"
@@ -315,5 +323,8 @@ onBeforeUnmount(stopStatusPoll)
     >
       {{ api.error.value }}
     </div>
+
+    <!-- Import Wizard -->
+    <ImportWizard v-if="showWizard" @close="showWizard = false; fetchQueue()" />
   </div>
 </template>
