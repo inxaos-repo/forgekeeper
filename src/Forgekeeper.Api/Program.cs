@@ -74,6 +74,11 @@ builder.Services.AddHttpClient();
 builder.Services.AddSingleton<IGitHubReleaseResolver, GitHubReleaseResolver>();
 builder.Services.AddScoped<IPluginInstallService, PluginInstallService>();
 
+// Plugin registry + auto-update services (Phase C)
+builder.Services.AddHttpClient<IPluginRegistryClient, PluginRegistryClient>();
+builder.Services.AddSingleton<PluginUpdateTracker>();
+builder.Services.AddHostedService<PluginUpdateWorker>();
+
 // Background Services
 builder.Services.AddHostedService<ThumbnailWorker>();
 builder.Services.AddHostedService<ScannerWorker>();

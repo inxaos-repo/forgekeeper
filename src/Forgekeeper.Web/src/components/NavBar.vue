@@ -12,7 +12,9 @@ const api = useApi()
 const globalSearch = ref('')
 const mobileMenuOpen = ref(false)
 const importPendingCount = ref(0)
+const pluginUpdateCount = ref(0)
 let importPollTimer = null
+let pluginUpdatePollTimer = null
 
 function onGlobalSearch() {
   if (globalSearch.value.trim()) {
@@ -37,22 +39,34 @@ async function pollImportCount() {
   }
 }
 
+async function pollPluginUpdates() {
+  try {
+    const result = await api.getPluginUpdates()
+    pluginUpdateCount.value = result?.count ?? 0
+  } catch {
+    // Silently ignore — nav badge is non-critical
+  }
+}
+
 const navLinks = [
   { to: '/', label: 'Models', name: 'Models' },
   { to: '/creators', label: 'Creators', name: 'Creators' },
-  { to: '/import', label: 'Import', name: 'Import', badge: true },
+  { to: '/import', label: 'Import', name: 'Import', badge: 'import' },
   { to: '/stats', label: 'Stats', name: 'Stats' },
-  { to: '/plugins', label: 'Plugins', name: 'Plugins' },
+  { to: '/plugins', label: 'Plugins', name: 'Plugins', badge: 'plugins' },
   { to: '/sources', label: 'Sources', name: 'Sources' },
 ]
 
 onMounted(() => {
   pollImportCount()
   importPollTimer = setInterval(pollImportCount, 60_000)  // refresh every 60s
+  pollPluginUpdates()
+  pluginUpdatePollTimer = setInterval(pollPluginUpdates, 5 * 60_000)  // refresh every 5 min
 })
 
 onBeforeUnmount(() => {
   clearInterval(importPollTimer)
+  clearInterval(pluginUpdatePollTimer)
 })
 </script>
 
@@ -78,10 +92,16 @@ onBeforeUnmount(() => {
             >
               {{ link.label }}
               <span
-                v-if="link.badge && importPendingCount > 0"
+                v-if="link.badge === 'import' && importPendingCount > 0"
                 class="absolute -top-0.5 -right-1 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center bg-forge-accent text-forge-bg text-[10px] font-bold rounded-full px-0.5"
               >
                 {{ importPendingCount > 99 ? '99+' : importPendingCount }}
+              </span>
+              <span
+                v-if="link.badge === 'plugins' && pluginUpdateCount > 0"
+                class="absolute -top-0.5 -right-1 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center bg-yellow-500 text-forge-bg text-[10px] font-bold rounded-full px-0.5"
+              >
+                {{ pluginUpdateCount > 99 ? '99+' : pluginUpdateCount }}
               </span>
             </RouterLink>
           </div>
@@ -138,10 +158,16 @@ onBeforeUnmount(() => {
         >
           {{ link.label }}
           <span
-            v-if="link.badge && importPendingCount > 0"
+            v-if="link.badge === 'import' && importPendingCount > 0"
             class="ml-1.5 inline-flex items-center justify-center min-w-[1.2rem] h-5 bg-forge-accent text-forge-bg text-[10px] font-bold rounded-full px-1"
           >
             {{ importPendingCount > 99 ? '99+' : importPendingCount }}
+          </span>
+          <span
+            v-if="link.badge === 'plugins' && pluginUpdateCount > 0"
+            class="ml-1.5 inline-flex items-center justify-center min-w-[1.2rem] h-5 bg-yellow-500 text-forge-bg text-[10px] font-bold rounded-full px-1"
+          >
+            {{ pluginUpdateCount > 99 ? '99+' : pluginUpdateCount }}
           </span>
         </RouterLink>
       </div>

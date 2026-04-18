@@ -14,6 +14,93 @@ import PluginSdkBadge from '../components/PluginSdkBadge.vue'
 
 const api = useApi()
 
+// Tab state
+const activeTab = ref('installed') // 'installed' | 'available'
+
+// ─── Available Plugins (registry browser) ────────────────
+const availablePlugins = ref([])
+const registrySearch = ref('')
+const registryLoading = ref(false)
+const registryError = ref(null)
+const installingSlug = ref(null)
+const installMessage = ref(null)
+const availableUpdates = ref({})
+
+async function fetchRegistry(forceRefresh = false) {
+  registryLoading.value = true
+  registryError.value = null
+  try {
+    let url = '/plugins/registry'
+    const params = []
+    if (registrySearch.value.trim()) params.push(`search=${encodeURIComponent(registrySearch.value.trim())}`)
+    if (forceRefresh) params.push('forceRefresh=true')
+    if (params.length) url += '?' + params.join('&')
+    availablePlugins.value = await api.get(url) || []
+  } catch (e) {
+    registryError.value = e.message
+    availablePlugins.value = []
+  } finally {
+    registryLoading.value = false
+  }
+}
+
+async function fetchAvailableUpdates() {
+  try {
+    const result = await api.getPluginUpdates()
+    availableUpdates.value = result?.updates || {}
+  } catch {
+    availableUpdates.value = {}
+  }
+}
+
+function isInstalled(slug) {
+  return plugins.value.some(p => (p.slug || p.sourceSlug) === slug)
+}
+
+function getInstalledVersion(slug) {
+  const p = plugins.value.find(p => (p.slug || p.sourceSlug) === slug)
+  return p?.version || null
+}
+
+function hasUpdate(slug) {
+  return !!availableUpdates.value[slug]
+}
+
+function getUpdateInfo(slug) {
+  return availableUpdates.value[slug] || null
+}
+
+async function installFromRegistry(entry) {
+  installingSlug.value = entry.slug
+  installMessage.value = null
+  try {
+    await api.installPlugin(entry.downloadUrl)
+    installMessage.value = `✓ '${entry.name}' installed successfully`
+    await fetchPlugins()
+  } catch (e) {
+    installMessage.value = `✗ Install failed: ${e.message}`
+  } finally {
+    installingSlug.value = null
+    setTimeout(() => (installMessage.value = null), 6000)
+  }
+}
+
+async function updateFromRegistry(entry) {
+  installingSlug.value = entry.slug
+  installMessage.value = null
+  try {
+    await api.updatePlugin(entry.slug)
+    installMessage.value = `✓ '${entry.name}' updated`
+    await fetchPlugins()
+    await fetchAvailableUpdates()
+  } catch (e) {
+    installMessage.value = `✗ Update failed: ${e.message}`
+  } finally {
+    installingSlug.value = null
+    setTimeout(() => (installMessage.value = null), 6000)
+  }
+}
+
 const plugins = ref([])
 const selectedSlug = ref(null)
 const pluginConfig = ref(null)
@@ -390,7 +477,10 @@ function syncRunStatusColor(status) {
   return 'text-forge-text-muted'
 }
 
-onMounted(fetchPlugins)
+onMounted(() => {
+  fetchPlugins()
+  fetchAvailableUpdates()
+})
 onBeforeUnmount(() => {
   stopProgressStream()
   stopStatusPoll()
@@ -399,9 +489,42 @@ onBeforeUnmount(() => {
 
 <template>
   <div>
-    <!-- Header with title + global reload button -->
+    <!-- Header: title + tabs + reload button -->
     <div class="flex items-center justify-between mb-6">
-      <h1 class="text-2xl font-bold text-forge-text">Plugins</h1>
+      <div class="flex items-center gap-6">
+        <h1 class="text-2xl font-bold text-forge-text">Plugins</h1>
+        <!-- Tab switcher -->
+        <div class="flex gap-1 bg-forge-card border border-forge-border rounded-lg p-0.5">
+          <button
+            @click="activeTab = 'installed'"
+            :class="[
+              'px-3 py-1 rounded text-sm font-medium transition-colors',
+              activeTab === 'installed'
+                ? 'bg-forge-bg text-forge-text'
+                : 'text-forge-text-muted hover:text-forge-text',
+            ]"
+          >
+            Installed
+          </button>
+          <button
+            @click="activeTab = 'available'; if (!availablePlugins.length) fetchRegistry()"
+            :class="[
+              'px-3 py-1 rounded text-sm font-medium transition-colors relative',
+              activeTab === 'available'
+                ? 'bg-forge-bg text-forge-text'
+                : 'text-forge-text-muted hover:text-forge-text',
+            ]"
+          >
+            Available
+            <span
+              v-if="Object.keys(availableUpdates).length > 0"
+              class="absolute -top-1 -right-1 min-w-[1rem] h-4 flex items-center justify-center bg-yellow-500 text-forge-bg text-[9px] font-bold rounded-full px-0.5"
+            >
+              {{ Object.keys(availableUpdates).length }}
+            </span>
+          </button>
+        </div>
+      </div>
       <button
         @click="hotReloadAll"
         :disabled="reloading"
@@ -422,6 +545,124 @@ onBeforeUnmount(() => {
     <div v-if="reloadMessage" class="mb-4 px-4 py-2 rounded-lg text-sm bg-forge-card border border-forge-border text-forge-text-muted">
       {{ reloadMessage }}
     </div>
+
+    <!-- ─────────── Available Plugins Tab ────────────────────────────────────────────── -->
+    <div v-if="activeTab === 'available'">
+      <!-- Search bar + Refresh button -->
+      <div class="flex gap-3 mb-4">
+        <input
+          v-model="registrySearch"
+          @keyup.enter="fetchRegistry()"
+          type="text"
+          placeholder="Search plugins by name, tag, description…"
+          class="flex-1 bg-forge-bg border border-forge-border rounded-lg px-4 py-2 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
+        />
+        <button
+          @click="fetchRegistry()"
+          class="px-3 py-2 bg-forge-card border border-forge-border rounded-lg text-sm text-forge-text-muted hover:text-forge-text transition-colors"
+        >Search</button>
+        <button
+          @click="fetchRegistry(true)"
+          :disabled="registryLoading"
+          class="px-3 py-2 bg-forge-card border border-forge-border rounded-lg text-sm text-forge-text-muted hover:text-forge-text transition-colors"
+          title="Force-reload registry from server"
+        >↻ Refresh</button>
+      </div>
+
+      <!-- Install message toast -->
+      <div v-if="installMessage" class="mb-4 px-4 py-2 rounded-lg text-sm border"
+        :class="installMessage.startsWith('✓') ? 'bg-forge-accent/10 border-forge-accent/30 text-forge-accent' : 'bg-forge-danger/10 border-forge-danger/30 text-forge-danger'">
+        {{ installMessage }}
+      </div>
+
+      <!-- Loading state -->
+      <div v-if="registryLoading" class="flex justify-center py-20">
+        <div class="w-8 h-8 border-2 border-forge-accent border-t-transparent rounded-full animate-spin"></div>
+      </div>
+
+      <!-- Error state -->
+      <div v-else-if="registryError" class="text-center py-20">
+        <span class="text-4xl">⚠️</span>
+        <p class="text-forge-danger mt-3">{{ registryError }}</p>
+        <button @click="fetchRegistry()" class="mt-3 text-sm text-forge-accent hover:underline">Retry</button>
+      </div>
+
+      <!-- Empty state -->
+      <div v-else-if="!availablePlugins.length" class="text-center py-20">
+        <span class="text-5xl">🔍</span>
+        <p class="text-forge-text-muted mt-4">No plugins found</p>
+        <p class="text-sm text-forge-text-muted mt-1">Try a different search, or click Refresh to reload the registry.</p>
+      </div>
+
+      <!-- Plugin cards grid -->
+      <div v-else class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div
+          v-for="entry in availablePlugins"
+          :key="entry.slug"
+          class="bg-forge-card border border-forge-border rounded-xl p-4 flex flex-col gap-3"
+        >
+          <!-- Card header -->
+          <div class="flex items-start gap-3">
+            <img
+              v-if="entry.iconUrl"
+              :src="entry.iconUrl"
+              :alt="entry.name"
+              class="w-10 h-10 rounded-lg object-cover shrink-0"
+            />
+            <div v-else class="w-10 h-10 rounded-lg bg-forge-bg flex items-center justify-center text-xl shrink-0">🔌</div>
+            <div class="min-w-0 flex-1">
+              <h3 class="font-semibold text-forge-text truncate">{{ entry.name }}</h3>
+              <p class="text-xs text-forge-text-muted">v{{ entry.version }} · {{ entry.author }}</p>
+            </div>
+          </div>
+
+          <!-- Description -->
+          <p class="text-sm text-forge-text-muted line-clamp-2">{{ entry.description }}</p>
+
+          <!-- Tags -->
+          <div v-if="entry.tags?.length" class="flex flex-wrap gap-1">
+            <span
+              v-for="tag in entry.tags.slice(0, 4)"
+              :key="tag"
+              class="px-1.5 py-0.5 text-xs bg-forge-bg text-forge-text-muted rounded"
+            >{{ tag }}</span>
+          </div>
+
+          <!-- Action button -->
+          <div class="mt-auto">
+            <!-- Installed + has update -->
+            <button
+              v-if="isInstalled(entry.slug) && hasUpdate(entry.slug)"
+              @click="updateFromRegistry(entry)"
+              :disabled="installingSlug === entry.slug"
+              class="w-full py-1.5 rounded-lg text-sm font-medium bg-yellow-500/15 border border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/25 transition-colors"
+            >
+              <span v-if="installingSlug === entry.slug">🔄 Updating…</span>
+              <span v-else>Update Available ({{ getInstalledVersion(entry.slug) }} → {{ entry.version }})</span>
+            </button>
+
+            <!-- Installed, no update -->
+            <div
+              v-else-if="isInstalled(entry.slug)"
+              class="w-full py-1.5 rounded-lg text-sm font-medium text-center bg-forge-accent/10 border border-forge-accent/30 text-forge-accent"
+            >✓ Installed</div>
+
+            <!-- Not installed -->
+            <button
+              v-else
+              @click="installFromRegistry(entry)"
+              :disabled="installingSlug === entry.slug"
+              class="w-full py-1.5 rounded-lg text-sm font-medium bg-forge-accent hover:bg-forge-accent-hover text-forge-bg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ installingSlug === entry.slug ? '🔄 Installing…' : 'Install' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─────────── Installed Plugins Tab ────────────────────────────────────────────── -->
+    <div v-if="activeTab === 'installed'">
 
     <!-- Loading -->
     <div v-if="api.loading.value && !plugins.length" class="flex justify-center py-20">
@@ -874,5 +1115,7 @@ onBeforeUnmount(() => {
         <p class="text-forge-text-muted">Select a plugin from the list</p>
       </div>
     </div>
+
+    </div> <!-- end activeTab === 'installed' -->
   </div>
 </template>

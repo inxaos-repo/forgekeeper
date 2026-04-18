@@ -55,6 +55,11 @@ Forgekeeper is configured via environment variables, `appsettings.json`, or a co
 | Variable | Description | Default |
 |----------|-------------|------|
 | `Forgekeeper__HotReloadEnabled` | Enable hot-reload of plugins without service restart | `false` |
+| `Plugins__RegistryUrl` | URL for the community plugin registry JSON | `https://raw.githubusercontent.com/forgekeeper/plugin-registry/main/registry.json` |
+| `Plugins__RegistryCacheHours` | How long to cache the registry locally (hours) | `24` |
+| `Plugins__AutoUpdate__Enabled` | Enable background update checks | `false` |
+| `Plugins__AutoUpdate__IntervalHours` | How often to check for updates (hours) | `24` |
+| `Plugins__AutoUpdate__Mode` | `notify` (badge only) or `apply` (auto-install compatible) | `notify` |
 
 ### ASP.NET Core
 
@@ -101,7 +106,14 @@ Forgekeeper is configured via environment variables, `appsettings.json`, or a co
     "IntervalMinutes": 30
   },
   "Plugins": {
-    "HotReloadEnabled": false
+    "HotReloadEnabled": false,
+    "RegistryUrl": "https://raw.githubusercontent.com/forgekeeper/plugin-registry/main/registry.json",
+    "RegistryCacheHours": 24,
+    "AutoUpdate": {
+      "Enabled": false,
+      "IntervalHours": 24,
+      "Mode": "notify"
+    }
   },
   "Security": {
     "ApiKey": null

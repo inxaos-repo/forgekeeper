@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SecretEncryption = Forgekeeper.Infrastructure.Services.SecretEncryption;
 
+
 namespace Forgekeeper.Api.Endpoints;
 
 public static class PluginEndpoints
@@ -345,6 +346,28 @@ public static class PluginEndpoints
             var result = await pluginHost.ReloadPluginAsync(slug, ct);
             return result != null ? Results.Ok(result) : Results.NotFound(new { message = $"Plugin '{slug}' not found" });
         }).WithName("ReloadPlugin");
+
+        // GET /api/v1/plugins/registry — browse available plugins from the community registry
+        group.MapGet("/registry", async (
+            [FromQuery] string? search,
+            [FromQuery] string? tag,
+            [FromQuery] bool? forceRefresh,
+            IPluginRegistryClient registry,
+            CancellationToken ct) =>
+        {
+            var plugins = await registry.SearchAsync(search, tag, ct);
+            return Results.Ok(plugins);
+        }).WithName("BrowsePluginRegistry");
+
+        // GET /api/v1/plugins/updates — available update summary
+        group.MapGet("/updates", (PluginUpdateTracker tracker) =>
+        {
+            return Results.Ok(new
+            {
+                count = tracker.UpdateCount,
+                updates = tracker.GetAvailableUpdates(),
+            });
+        }).WithName("GetAvailableUpdates");
 
         // GET /api/v1/plugins/{slug}/diagnostics — full plugin diagnostics
         group.MapGet("/{slug}/diagnostics", (string slug, PluginHostService pluginHost) =>

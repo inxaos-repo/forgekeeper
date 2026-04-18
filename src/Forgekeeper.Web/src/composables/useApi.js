@@ -288,6 +288,15 @@ export function useApi() {
     return put(`/plugins/${encodeURIComponent(slug)}/config`, { ENABLED: enabled ? 'true' : 'false' })
   }
 
+  function getPluginRegistry(search, tag) {
+    const qs = buildQuery({ search, tag })
+    return get(`/plugins/registry${qs}`)
+  }
+
+  function getPluginUpdates() {
+    return get('/plugins/updates')
+  }
+
   function installPlugin(source, version) {
     return post('/plugins/install', { source, version: version || null })
   }
@@ -382,6 +391,8 @@ export function useApi() {
     togglePlugin,
     installPlugin,
     updatePlugin,
+    getPluginRegistry,
+    getPluginUpdates,
     removePlugin,
     // Files
     browseFiles,
