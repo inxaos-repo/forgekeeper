@@ -221,6 +221,192 @@ function showBulkSuccess(msg) {
   bulkSuccessTimer.value = setTimeout(() => { bulkSuccessMsg.value = '' }, 3500)
 }
 
+// ─── Bulk Actions: Reorganize / Parse / Move Creator ─────────
+// Action type currently selected in the Actions tab
+const bulkActionType = ref('')  // '' | 'reorganize' | 'parseFilename' | 'moveCreator'
+
+// ─ Reorganize state ───────────────────────────────
+const showReorgModal = ref(false)
+const reorgTemplate = ref('{source}/{creator}/{name}')
+const reorgPresets = ref([])
+const selectedReorgPreset = ref('')
+const reorgPreviewRows = ref([])
+const reorgPreviewing = ref(false)
+const reorgApplying = ref(false)
+const reorgResult = ref(null)
+const showSaveReorgPreset = ref(false)
+const saveReorgPresetName = ref('')
+
+// ─ Parse from Filename state ────────────────────────
+const showParseModal = ref(false)
+const parseTemplate = ref('{creator} - {name}')
+const parsePresets = ref([])
+const selectedParsePreset = ref('')
+const parsePreviewRows = ref([])
+const parsePreviewing = ref(false)
+const parseApplying = ref(false)
+const parseResult = ref(null)
+const showSaveParsePreset = ref(false)
+const saveParsePresetName = ref('')
+
+const parseMatchCount = computed(() => parsePreviewRows.value.filter((r) => r.matched).length)
+const parseMatchPct = computed(() =>
+  parsePreviewRows.value.length
+    ? Math.round((parseMatchCount.value / parsePreviewRows.value.length) * 100)
+    : 0
+)
+
+// ─ Move to Creator state ────────────────────────────
+const moveCreatorName = ref('')
+const moveCreatorApplying = ref(false)
+
+// ─ Preset helpers ────────────────────────────────
+async function loadReorgPresets() {
+  try {
+    reorgPresets.value = await api.getSavedTemplates('reorganize') || []
+  } catch { reorgPresets.value = [] }
+}
+
+async function loadParsePresets() {
+  try {
+    parsePresets.value = await api.getSavedTemplates('parse') || []
+  } catch { parsePresets.value = [] }
+}
+
+function applyReorgPreset(id) {
+  const preset = reorgPresets.value.find((p) => String(p.id) === String(id))
+  if (preset) reorgTemplate.value = preset.template
+}
+
+function applyParsePreset(id) {
+  const preset = parsePresets.value.find((p) => String(p.id) === String(id))
+  if (preset) parseTemplate.value = preset.template
+}
+
+// ─ Reorganize functions ────────────────────────────
+async function openReorgModal() {
+  reorgPreviewRows.value = []
+  reorgResult.value = null
+  showSaveReorgPreset.value = false
+  await loadReorgPresets()
+  showReorgModal.value = true
+  await runReorgPreview()
+}
+
+async function runReorgPreview() {
+  if (!reorgTemplate.value) return
+  reorgPreviewing.value = true
+  try {
+    const ids = [...selectedIds.value]
+    const data = await api.reorganizePreview(reorgTemplate.value, ids, 100)
+    reorgPreviewRows.value = data?.items || data || []
+  } catch {
+    reorgPreviewRows.value = []
+  } finally {
+    reorgPreviewing.value = false
+  }
+}
+
+async function applyReorganize() {
+  reorgApplying.value = true
+  try {
+    const ids = [...selectedIds.value]
+    const result = await api.reorganize(reorgTemplate.value, ids)
+    reorgResult.value = result
+    if (selectedReorgPreset.value) api.useTemplate(selectedReorgPreset.value).catch(() => {})
+    showBulkSuccess(`Reorganized: ${result?.moved ?? '?'} moved, ${result?.skipped ?? 0} skipped, ${result?.failed ?? 0} failed`)
+    showReorgModal.value = false
+    selectedIds.value = new Set()
+    await fetchModels()
+  } catch {
+    // error shown by api.error
+  } finally {
+    reorgApplying.value = false
+  }
+}
+
+async function saveReorgPresetFn() {
+  if (!saveReorgPresetName.value.trim()) return
+  try {
+    await api.createTemplate({ name: saveReorgPresetName.value.trim(), template: reorgTemplate.value, type: 'reorganize' })
+    saveReorgPresetName.value = ''
+    showSaveReorgPreset.value = false
+    await loadReorgPresets()
+  } catch { /* error shown by api.error */ }
+}
+
+// ─ Parse from Filename functions ─────────────────────
+async function openParseModal() {
+  parsePreviewRows.value = []
+  parseResult.value = null
+  showSaveParsePreset.value = false
+  await loadParsePresets()
+  showParseModal.value = true
+  await runParsePreview()
+}
+
+async function runParsePreview() {
+  if (!parseTemplate.value) return
+  parsePreviewing.value = true
+  try {
+    const ids = [...selectedIds.value]
+    const data = await api.parseFilenamePreview(parseTemplate.value, ids, 100)
+    parsePreviewRows.value = data?.items || data || []
+  } catch {
+    parsePreviewRows.value = []
+  } finally {
+    parsePreviewing.value = false
+  }
+}
+
+async function applyParseFN() {
+  parseApplying.value = true
+  try {
+    const ids = [...selectedIds.value]
+    const result = await api.parseFilenameApply(parseTemplate.value, ids)
+    parseResult.value = result
+    if (selectedParsePreset.value) api.useTemplate(selectedParsePreset.value).catch(() => {})
+    const updated = result?.updated ?? result?.applied ?? '?'
+    showBulkSuccess(`Parsed filenames: ${updated} updated`)
+    showParseModal.value = false
+    selectedIds.value = new Set()
+    await fetchModels()
+  } catch {
+    // error shown by api.error
+  } finally {
+    parseApplying.value = false
+  }
+}
+
+async function saveParseFn() {
+  if (!saveParsePresetName.value.trim()) return
+  try {
+    await api.createTemplate({ name: saveParsePresetName.value.trim(), template: parseTemplate.value, type: 'parse' })
+    saveParsePresetName.value = ''
+    showSaveParsePreset.value = false
+    await loadParsePresets()
+  } catch { /* error shown by api.error */ }
+}
+
+// ─ Move to Creator functions ─────────────────────────
+async function applyMoveCreator() {
+  if (!moveCreatorName.value) return
+  moveCreatorApplying.value = true
+  try {
+    const ids = [...selectedIds.value]
+    await api.bulkCreatorReassign({ modelIds: ids, creatorName: moveCreatorName.value })
+    showBulkSuccess(`Moved ${ids.length} model${ids.length === 1 ? '' : 's'} to ${moveCreatorName.value}`)
+    moveCreatorName.value = ''
+    selectedIds.value = new Set()
+    bulkActionType.value = ''
+    await fetchModels()
+  } catch {
+    // error shown by api.error
+  } finally {
+    moveCreatorApplying.value = false
+  }
+}
+
 // ─── Fetch + Query Sync ──────────────────────────────────
 async function fetchModels() {
   try {
@@ -414,6 +600,7 @@ onMounted(fetchModels)
               { id: 'metadata', label: '📋 Metadata' },
               { id: 'status', label: '📊 Status' },
               { id: 'organization', label: '🗂 Organization' },
+              { id: 'actions', label: '⚡ Actions' },
             ]"
             :key="tab.id"
             @click="bulkActiveTab = tab.id"
@@ -594,6 +781,179 @@ onMounted(fetchModels)
               </span>
             </div>
           </div>
+        </div>
+
+        <!-- Tab: Actions -->
+        <div v-if="bulkActiveTab === 'actions'" class="p-4 space-y-4">
+          <!-- Action selector -->
+          <div>
+            <label class="block text-xs font-medium text-forge-text-muted mb-1">Action</label>
+            <select
+              v-model="bulkActionType"
+              class="w-full sm:w-72 bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+            >
+              <option value="">— select an action —</option>
+              <option value="reorganize">Reorganize Directories...</option>
+              <option value="parseFilename">Parse from Filename...</option>
+              <option value="moveCreator">Move to Creator...</option>
+            </select>
+          </div>
+
+          <!-- Reorganize config -->
+          <div v-if="bulkActionType === 'reorganize'" class="space-y-3">
+            <div class="flex flex-wrap gap-2 items-end">
+              <div class="flex-1 min-w-48">
+                <label class="block text-xs font-medium text-forge-text-muted mb-1">Template</label>
+                <input
+                  v-model="reorgTemplate"
+                  type="text"
+                  placeholder="{source}/{creator}/{name}"
+                  class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent font-mono"
+                />
+              </div>
+              <div v-if="reorgPresets.length" class="w-48">
+                <label class="block text-xs font-medium text-forge-text-muted mb-1">Saved Presets</label>
+                <select
+                  v-model="selectedReorgPreset"
+                  @change="applyReorgPreset(selectedReorgPreset)"
+                  class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+                >
+                  <option value="">— choose preset —</option>
+                  <option v-for="p in reorgPresets" :key="p.id" :value="String(p.id)">
+                    {{ p.name }}
+                  </option>
+                </select>
+              </div>
+            </div>
+            <p class="text-xs text-forge-text-muted">
+              Available tokens: <code class="bg-forge-bg px-1 rounded">{source}</code>
+              <code class="bg-forge-bg px-1 rounded ml-1">{creator}</code>
+              <code class="bg-forge-bg px-1 rounded ml-1">{name}</code>
+              <code class="bg-forge-bg px-1 rounded ml-1">{category}</code>
+            </p>
+            <div class="flex gap-2">
+              <button
+                @click="openReorgModal"
+                :disabled="!reorgTemplate || !selectedIds.size"
+                class="px-4 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Preview &amp; Apply →
+              </button>
+              <button
+                @click="showSaveReorgPreset = !showSaveReorgPreset"
+                class="px-3 py-1.5 bg-forge-card border border-forge-border rounded-lg text-sm text-forge-text-muted hover:text-forge-text transition-colors"
+              >
+                Save as Preset
+              </button>
+            </div>
+            <div v-if="showSaveReorgPreset" class="flex gap-2 items-center">
+              <input
+                v-model="saveReorgPresetName"
+                type="text"
+                placeholder="Preset name..."
+                class="flex-1 bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
+                @keydown.enter="saveReorgPresetFn"
+              />
+              <button
+                @click="saveReorgPresetFn"
+                :disabled="!saveReorgPresetName.trim()"
+                class="px-3 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-40"
+              >
+                Save
+              </button>
+              <button @click="showSaveReorgPreset = false" class="text-sm text-forge-text-muted hover:text-forge-text">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Parse from Filename config -->
+          <div v-if="bulkActionType === 'parseFilename'" class="space-y-3">
+            <div class="flex flex-wrap gap-2 items-end">
+              <div class="flex-1 min-w-48">
+                <label class="block text-xs font-medium text-forge-text-muted mb-1">Template</label>
+                <input
+                  v-model="parseTemplate"
+                  type="text"
+                  placeholder="{creator} - {name}"
+                  class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent font-mono"
+                />
+              </div>
+              <div v-if="parsePresets.length" class="w-48">
+                <label class="block text-xs font-medium text-forge-text-muted mb-1">Saved Presets</label>
+                <select
+                  v-model="selectedParsePreset"
+                  @change="applyParsePreset(selectedParsePreset)"
+                  class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+                >
+                  <option value="">— choose preset —</option>
+                  <option v-for="p in parsePresets" :key="p.id" :value="String(p.id)">
+                    {{ p.name }}
+                  </option>
+                </select>
+              </div>
+            </div>
+            <p class="text-xs text-forge-text-muted">
+              Extract from directory names. Tokens:
+              <code class="bg-forge-bg px-1 rounded">{creator}</code>
+              <code class="bg-forge-bg px-1 rounded ml-1">{name}</code>
+              <code class="bg-forge-bg px-1 rounded ml-1">{category}</code>
+              — use any separator between them.
+            </p>
+            <div class="flex gap-2">
+              <button
+                @click="openParseModal"
+                :disabled="!parseTemplate || !selectedIds.size"
+                class="px-4 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Preview &amp; Apply →
+              </button>
+              <button
+                @click="showSaveParsePreset = !showSaveParsePreset"
+                class="px-3 py-1.5 bg-forge-card border border-forge-border rounded-lg text-sm text-forge-text-muted hover:text-forge-text transition-colors"
+              >
+                Save as Preset
+              </button>
+            </div>
+            <div v-if="showSaveParsePreset" class="flex gap-2 items-center">
+              <input
+                v-model="saveParsePresetName"
+                type="text"
+                placeholder="Preset name..."
+                class="flex-1 bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
+                @keydown.enter="saveParseFn"
+              />
+              <button
+                @click="saveParseFn"
+                :disabled="!saveParsePresetName.trim()"
+                class="px-3 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-40"
+              >
+                Save
+              </button>
+              <button @click="showSaveParsePreset = false" class="text-sm text-forge-text-muted hover:text-forge-text">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Move to Creator config -->
+          <div v-if="bulkActionType === 'moveCreator'" class="space-y-3">
+            <div class="max-w-sm">
+              <label class="block text-xs font-medium text-forge-text-muted mb-1">Target Creator</label>
+              <CreatorAutocomplete
+                v-model="moveCreatorName"
+                placeholder="Search creators..."
+              />
+            </div>
+            <button
+              @click="applyMoveCreator"
+              :disabled="!moveCreatorName || moveCreatorApplying || !selectedIds.size"
+              class="px-4 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {{ moveCreatorApplying ? 'Moving…' : `Move ${selectedIds.size} model${selectedIds.size === 1 ? '' : 's'} →` }}
+            </button>
+          </div>
+
+          <!-- Empty state when no action selected -->
+          <p v-if="!bulkActionType" class="text-xs text-forge-text-muted italic">
+            Select an action above to get started.
+          </p>
         </div>
 
         <!-- Footer: Apply / Summary -->
@@ -801,6 +1161,282 @@ onMounted(fetchModels)
     >
       {{ api.error.value }}
     </div>
+
+    <!-- ─── Reorganize Modal ───────────────────────────────── -->
+    <transition name="fade">
+      <div
+        v-if="showReorgModal"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+        @click.self="showReorgModal = false"
+      >
+        <div class="bg-forge-card border border-forge-border rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+          <!-- Header -->
+          <div class="flex items-center justify-between px-5 py-4 border-b border-forge-border">
+            <h2 class="text-base font-semibold text-forge-text">Reorganize Directories</h2>
+            <button @click="showReorgModal = false" class="text-forge-text-muted hover:text-forge-danger text-lg leading-none">×</button>
+          </div>
+
+          <!-- Body -->
+          <div class="overflow-y-auto flex-1 p-5 space-y-4">
+            <!-- Template + presets row -->
+            <div class="flex flex-wrap gap-3 items-end">
+              <div class="flex-1 min-w-48">
+                <label class="block text-xs font-medium text-forge-text-muted mb-1">Template</label>
+                <input
+                  v-model="reorgTemplate"
+                  type="text"
+                  class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent font-mono"
+                />
+              </div>
+              <div v-if="reorgPresets.length" class="w-52">
+                <label class="block text-xs font-medium text-forge-text-muted mb-1">Preset</label>
+                <select
+                  v-model="selectedReorgPreset"
+                  @change="applyReorgPreset(selectedReorgPreset)"
+                  class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+                >
+                  <option value="">— choose preset —</option>
+                  <option v-for="p in reorgPresets" :key="p.id" :value="String(p.id)">{{ p.name }}</option>
+                </select>
+              </div>
+              <button
+                @click="runReorgPreview"
+                :disabled="reorgPreviewing"
+                class="px-3 py-1.5 bg-forge-card border border-forge-border rounded-lg text-sm text-forge-text-muted hover:text-forge-accent transition-colors disabled:opacity-50"
+              >
+                {{ reorgPreviewing ? 'Loading…' : '🔄 Refresh Preview' }}
+              </button>
+            </div>
+
+            <!-- Save as Preset -->
+            <div class="flex items-center gap-2">
+              <button
+                @click="showSaveReorgPreset = !showSaveReorgPreset"
+                class="text-xs text-forge-text-muted hover:text-forge-accent transition-colors"
+              >
+                + Save as Preset
+              </button>
+              <template v-if="showSaveReorgPreset">
+                <input
+                  v-model="saveReorgPresetName"
+                  type="text"
+                  placeholder="Preset name..."
+                  class="flex-1 max-w-xs bg-forge-bg border border-forge-border rounded-lg px-3 py-1 text-xs text-forge-text focus:outline-none focus:border-forge-accent"
+                  @keydown.enter="saveReorgPresetFn"
+                />
+                <button @click="saveReorgPresetFn" :disabled="!saveReorgPresetName.trim()" class="px-2 py-1 bg-forge-accent text-forge-bg rounded text-xs font-medium disabled:opacity-40">Save</button>
+                <button @click="showSaveReorgPreset = false" class="text-xs text-forge-text-muted hover:text-forge-text">Cancel</button>
+              </template>
+            </div>
+
+            <!-- Preview table -->
+            <div v-if="reorgPreviewing" class="flex justify-center py-8">
+              <div class="w-6 h-6 border-2 border-forge-accent border-t-transparent rounded-full animate-spin"></div>
+            </div>
+            <div v-else-if="reorgPreviewRows.length" class="overflow-x-auto rounded-lg border border-forge-border">
+              <table class="w-full text-xs">
+                <thead class="bg-forge-bg text-forge-text-muted">
+                  <tr>
+                    <th class="px-3 py-2 text-left font-medium">Model</th>
+                    <th class="px-3 py-2 text-left font-medium">Current Path</th>
+                    <th class="px-3 py-2 text-left font-medium">→ New Path</th>
+                    <th class="px-3 py-2 text-left font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-forge-border">
+                  <tr
+                    v-for="row in reorgPreviewRows"
+                    :key="row.modelId || row.id"
+                    :class="row.willMove === false ? 'bg-forge-bg/30 text-forge-text-muted' : ''"
+                  >
+                    <td class="px-3 py-2 font-medium text-forge-text truncate max-w-[12rem]">{{ row.modelName || row.name }}</td>
+                    <td class="px-3 py-2 font-mono text-forge-text-muted truncate max-w-[16rem]" :title="row.currentPath">{{ row.currentPath }}</td>
+                    <td class="px-3 py-2 font-mono truncate max-w-[16rem]" :class="row.willMove !== false ? 'text-emerald-400' : 'text-forge-text-muted'" :title="row.newPath">{{ row.newPath }}</td>
+                    <td class="px-3 py-2">
+                      <span v-if="row.willMove === false" class="text-forge-text-muted">no change</span>
+                      <span v-else class="text-emerald-400">✓ move</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else-if="!reorgPreviewing" class="text-sm text-forge-text-muted text-center py-4">
+              No preview data — click Refresh Preview.
+            </p>
+          </div>
+
+          <!-- Footer -->
+          <div class="px-5 py-4 border-t border-forge-border flex items-center justify-between gap-3">
+            <span class="text-xs text-forge-text-muted">
+              {{ selectedIds.size }} model{{ selectedIds.size === 1 ? '' : 's' }} selected
+              <template v-if="reorgPreviewRows.length">· {{ reorgPreviewRows.filter(r => r.willMove !== false).length }} will move</template>
+            </span>
+            <div class="flex gap-2">
+              <button
+                @click="showReorgModal = false"
+                class="px-4 py-1.5 text-sm text-forge-text-muted hover:text-forge-text transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                @click="applyReorganize"
+                :disabled="reorgApplying || !reorgPreviewRows.length"
+                class="px-4 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {{ reorgApplying ? 'Reorganizing…' : 'Apply Reorganize' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- ─── Parse from Filename Modal ────────────────────────── -->
+    <transition name="fade">
+      <div
+        v-if="showParseModal"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
+        @click.self="showParseModal = false"
+      >
+        <div class="bg-forge-card border border-forge-border rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+          <!-- Header -->
+          <div class="flex items-center justify-between px-5 py-4 border-b border-forge-border">
+            <h2 class="text-base font-semibold text-forge-text">Parse from Filename</h2>
+            <button @click="showParseModal = false" class="text-forge-text-muted hover:text-forge-danger text-lg leading-none">×</button>
+          </div>
+
+          <!-- Body -->
+          <div class="overflow-y-auto flex-1 p-5 space-y-4">
+            <!-- Template + presets -->
+            <div class="flex flex-wrap gap-3 items-end">
+              <div class="flex-1 min-w-48">
+                <label class="block text-xs font-medium text-forge-text-muted mb-1">Template</label>
+                <input
+                  v-model="parseTemplate"
+                  type="text"
+                  class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent font-mono"
+                />
+              </div>
+              <div v-if="parsePresets.length" class="w-52">
+                <label class="block text-xs font-medium text-forge-text-muted mb-1">Preset</label>
+                <select
+                  v-model="selectedParsePreset"
+                  @change="applyParsePreset(selectedParsePreset)"
+                  class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text focus:outline-none focus:border-forge-accent"
+                >
+                  <option value="">— choose preset —</option>
+                  <option v-for="p in parsePresets" :key="p.id" :value="String(p.id)">{{ p.name }}</option>
+                </select>
+              </div>
+              <button
+                @click="runParsePreview"
+                :disabled="parsePreviewing"
+                class="px-3 py-1.5 bg-forge-card border border-forge-border rounded-lg text-sm text-forge-text-muted hover:text-forge-accent transition-colors disabled:opacity-50"
+              >
+                {{ parsePreviewing ? 'Loading…' : '🔄 Refresh Preview' }}
+              </button>
+            </div>
+
+            <!-- Save as Preset -->
+            <div class="flex items-center gap-2">
+              <button
+                @click="showSaveParsePreset = !showSaveParsePreset"
+                class="text-xs text-forge-text-muted hover:text-forge-accent transition-colors"
+              >
+                + Save as Preset
+              </button>
+              <template v-if="showSaveParsePreset">
+                <input
+                  v-model="saveParsePresetName"
+                  type="text"
+                  placeholder="Preset name..."
+                  class="flex-1 max-w-xs bg-forge-bg border border-forge-border rounded-lg px-3 py-1 text-xs text-forge-text focus:outline-none focus:border-forge-accent"
+                  @keydown.enter="saveParseFn"
+                />
+                <button @click="saveParseFn" :disabled="!saveParsePresetName.trim()" class="px-2 py-1 bg-forge-accent text-forge-bg rounded text-xs font-medium disabled:opacity-40">Save</button>
+                <button @click="showSaveParsePreset = false" class="text-xs text-forge-text-muted hover:text-forge-text">Cancel</button>
+              </template>
+            </div>
+
+            <!-- Match stats bar -->
+            <div v-if="parsePreviewRows.length && !parsePreviewing" class="flex items-center gap-3">
+              <span class="text-xs text-forge-text-muted">Match rate:</span>
+              <div class="flex-1 bg-forge-bg rounded-full h-2 overflow-hidden">
+                <div
+                  class="h-2 rounded-full transition-all"
+                  :class="parseMatchPct >= 70 ? 'bg-emerald-500' : parseMatchPct >= 40 ? 'bg-yellow-500' : 'bg-forge-danger'"
+                  :style="{ width: parseMatchPct + '%' }"
+                />
+              </div>
+              <span class="text-xs font-semibold" :class="parseMatchPct >= 70 ? 'text-emerald-400' : parseMatchPct >= 40 ? 'text-yellow-400' : 'text-forge-danger'">
+                {{ parseMatchPct }}%
+              </span>
+              <span class="text-xs text-forge-text-muted">({{ parseMatchCount }}/{{ parsePreviewRows.length }} matched)</span>
+            </div>
+
+            <!-- Preview table -->
+            <div v-if="parsePreviewing" class="flex justify-center py-8">
+              <div class="w-6 h-6 border-2 border-forge-accent border-t-transparent rounded-full animate-spin"></div>
+            </div>
+            <div v-else-if="parsePreviewRows.length" class="overflow-x-auto rounded-lg border border-forge-border">
+              <table class="w-full text-xs">
+                <thead class="bg-forge-bg text-forge-text-muted">
+                  <tr>
+                    <th class="px-3 py-2 text-left font-medium">Directory Name</th>
+                    <th class="px-3 py-2 text-left font-medium">Creator</th>
+                    <th class="px-3 py-2 text-left font-medium">Name</th>
+                    <th class="px-3 py-2 text-left font-medium">Category</th>
+                    <th class="px-3 py-2 text-left font-medium">Match</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-forge-border">
+                  <tr
+                    v-for="row in parsePreviewRows"
+                    :key="row.modelId || row.id"
+                    :class="row.matched ? 'bg-emerald-900/10' : 'bg-red-900/10'"
+                  >
+                    <td class="px-3 py-2 font-mono text-forge-text-muted truncate max-w-[14rem]" :title="row.directoryName">{{ row.directoryName }}</td>
+                    <td class="px-3 py-2 truncate max-w-[10rem]">{{ row.extractedCreator || '—' }}</td>
+                    <td class="px-3 py-2 truncate max-w-[12rem]">{{ row.extractedName || '—' }}</td>
+                    <td class="px-3 py-2">{{ row.extractedCategory || '—' }}</td>
+                    <td class="px-3 py-2">
+                      <span v-if="row.matched" class="text-emerald-400">✓ match</span>
+                      <span v-else class="text-forge-danger">✕ no match</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else-if="!parsePreviewing" class="text-sm text-forge-text-muted text-center py-4">
+              No preview data — click Refresh Preview.
+            </p>
+          </div>
+
+          <!-- Footer -->
+          <div class="px-5 py-4 border-t border-forge-border flex items-center justify-between gap-3">
+            <span class="text-xs text-forge-text-muted">
+              {{ selectedIds.size }} model{{ selectedIds.size === 1 ? '' : 's' }} selected
+              <template v-if="parsePreviewRows.length">· {{ parseMatchCount }} will be updated</template>
+            </span>
+            <div class="flex gap-2">
+              <button
+                @click="showParseModal = false"
+                class="px-4 py-1.5 text-sm text-forge-text-muted hover:text-forge-text transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                @click="applyParseFN"
+                :disabled="parseApplying || !parseMatchCount"
+                class="px-4 py-1.5 bg-forge-accent hover:bg-forge-accent-hover text-forge-bg rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {{ parseApplying ? 'Applying…' : `Apply to ${parseMatchCount} Matched` }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
 

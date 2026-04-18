@@ -188,6 +188,23 @@ export function useApi() {
     })
   }
 
+  // ─── Saved Templates / Presets ─────────────────────────
+  /** GET /templates?type=<type> — list saved templates for a given type */
+  function getSavedTemplates(type) {
+    const qs = type ? `?type=${encodeURIComponent(type)}` : ''
+    return get(`/templates${qs}`)
+  }
+
+  /** POST /templates — create a new saved template */
+  function createTemplate(data) {
+    return post('/templates', data)
+  }
+
+  /** POST /templates/:id/use — record usage of a template */
+  function useTemplate(id) {
+    return post(`/templates/${id}/use`)
+  }
+
   // ─── Import ────────────────────────────────────────────
   function processUnsorted() {
     return post('/import/process')
@@ -448,6 +465,10 @@ export function useApi() {
     getSettings,
     // Files
     browseFiles,
+    // Templates / Presets
+    getSavedTemplates,
+    createTemplate,
+    useTemplate,
   }
 }
 
