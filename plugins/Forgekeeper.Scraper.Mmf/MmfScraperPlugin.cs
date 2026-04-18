@@ -255,41 +255,68 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 }
                 else
                 {
-                    context.Logger.LogDebug("[MMF] API {Status} for model {Id} ({Name})", response.StatusCode, model.ExternalId, model.Name);
+                    context.Logger.LogWarning("[MMF] API {Status} for model {Id} ({Name}) — will try archive fallback", response.StatusCode, model.ExternalId, model.Name);
+                    // Non-404 failure — still try archive_download_url below
                 }
                 await Task.Delay(delayMs, ct);
 
-                // ── Step 2: Fetch file download URLs (if inline was empty) ──
+                // ── Step 2: Fetch file download URLs with pagination (if inline was empty) ──
                 if (details != null && (details.Files == null || details.Files.Count == 0))
                 {
-                    var filesResponse = await apiClient.GetAsync($"/api/v2/objects/{numericId}/files?per_page=100", ct);
-                    if (filesResponse.IsSuccessStatusCode)
+                    var allFiles = new List<MmfFile>();
+                    int page = 1;
+                    bool hasMore = true;
+                    while (hasMore)
                     {
+                        var filesResponse = await apiClient.GetAsync($"/api/v2/objects/{numericId}/files?per_page=100&page={page}", ct);
+                        if (!filesResponse.IsSuccessStatusCode) break;
+
                         var filesJson = await filesResponse.Content.ReadAsStringAsync(ct);
-                        if (!filesJson.TrimStart().StartsWith("<")) // HTML guard
+                        if (filesJson.TrimStart().StartsWith("<")) break; // HTML guard
+
+                        using var filesDoc = JsonDocument.Parse(filesJson);
+                        if (filesDoc.RootElement.TryGetProperty("items", out var fileItems)
+                            && fileItems.ValueKind == JsonValueKind.Array)
                         {
-                            using var filesDoc = JsonDocument.Parse(filesJson);
-                            if (filesDoc.RootElement.TryGetProperty("items", out var fileItems)
-                                && fileItems.ValueKind == JsonValueKind.Array)
-                            {
-                                details.Files = ParseFiles(fileItems);
-                            }
+                            var parsed = ParseFiles(fileItems);
+                            allFiles.AddRange(parsed);
+                            // Check if there are more pages
+                            var totalCount = filesDoc.RootElement.TryGetProperty("total_count", out var tc) ? tc.GetInt32() : 0;
+                            hasMore = totalCount > allFiles.Count && parsed.Count > 0;
+                            page++;
                         }
+                        else break;
+
+                        if (hasMore) await Task.Delay(delayMs, ct);
                     }
+                    if (allFiles.Count > 0)
+                        details.Files = allFiles;
                     await Task.Delay(delayMs, ct);
                 }
 
-                // ── Step 3: Fallback to archive_download_url ──
+                // ── Step 3: Fallback to archive_download_url (when no individual files found) ──
                 if (details != null && (details.Files == null || details.Files.Count == 0) && !string.IsNullOrEmpty(archiveDownloadUrl))
                 {
                     var archiveName = $"{SanitizeFilename(model.Name)}.zip";
                     details.Files = [new MmfFile { Filename = archiveName, DownloadUrl = archiveDownloadUrl, Size = 0 }];
-                    context.Logger.LogDebug("[MMF] Using archive_download_url for {Name}", model.Name);
+                    context.Logger.LogInformation("[MMF] Using archive_download_url for {Name} (no individual files)", model.Name);
                 }
             }
             else
             {
                 context.Logger.LogWarning("[MMF] No bearer token — skipping API details for {Model}", model.Name);
+            }
+
+            // ── Step 3b: Last resort — try archive URL even if details call failed entirely ──
+            // The archive_download_url from the objectPreviews manifest might work even when
+            // the v2 API details call fails (different auth/CDN path)
+            if (details == null || (details.Files == null || details.Files.Count == 0))
+            {
+                // Try constructing archive URL from known MMF patterns
+                var fallbackArchiveUrl = $"https://www.myminifactory.com/download/object-{numericId}";
+                context.Logger.LogInformation("[MMF] Trying fallback archive URL for {Name}", model.Name);
+                details ??= new MmfModelDetails();
+                details.Files = [new MmfFile { Filename = $"{SanitizeFilename(model.Name)}.zip", DownloadUrl = fallbackArchiveUrl, Size = 0 }];
             }
 
             // ── Step 4: Download files ──
@@ -485,6 +512,42 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
                     // Use download-specific delay (configurable, default 5s) for inter-file gaps
                     await Task.Delay(downloadDelayMs, ct);
+                }
+            }
+
+            // ── Step 4b: If ALL individual file downloads failed, try archive as last resort ──
+            if (filesDownloaded == 0 && filesFailed > 0 && !string.IsNullOrEmpty(archiveDownloadUrl))
+            {
+                context.Logger.LogInformation("[MMF] All {Failed} individual downloads failed for {Name} — trying archive URL", filesFailed, model.Name);
+                var archiveName = $"{SanitizeFilename(model.Name)}.zip";
+                var archivePath = Path.Combine(modelDir, archiveName);
+                try
+                {
+                    using var archClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                    if (!string.IsNullOrEmpty(bearerToken))
+                        archClient.DefaultRequestHeaders.Authorization =
+                            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
+                    archClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+                    var archResp = await archClient.GetAsync(archiveDownloadUrl, ct);
+                    if (archResp.IsSuccessStatusCode)
+                    {
+                        await using var fs = File.Create(archivePath);
+                        await archResp.Content.CopyToAsync(fs, ct);
+                        downloadedFiles.Add(new DownloadedFile
+                        {
+                            Filename = archiveName, LocalPath = archivePath,
+                            Size = new FileInfo(archivePath).Length,
+                            Variant = "archive", IsArchive = true,
+                        });
+                        filesDownloaded++;
+                        filesFailed = 0; // Archive covers all files
+                        context.Logger.LogInformation("[MMF] Archive download succeeded for {Name}", model.Name);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    context.Logger.LogWarning("[MMF] Archive fallback also failed for {Name}: {Error}", model.Name, ex.Message);
                 }
             }
 

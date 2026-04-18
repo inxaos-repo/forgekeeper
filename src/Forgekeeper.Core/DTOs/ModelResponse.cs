@@ -331,3 +331,14 @@ public class FileRenamePreview
     public string From { get; set; } = string.Empty;
     public string To { get; set; } = string.Empty;
 }
+
+/// <summary>Request body for bulk directory reorganize endpoints.</summary>
+public class ReorganizeRequest
+{
+    /// <summary>Path template. Available variables: {source}, {creator}, {name}, {category}, {gameSystem}, {externalId}</summary>
+    public string Template { get; set; } = "{source}/{creator}/{name}";
+    /// <summary>Subset of model IDs to reorganize. Null = all models.</summary>
+    public List<Guid>? ModelIds { get; set; }
+    /// <summary>Max results (preview only).</summary>
+    public int? Limit { get; set; }
+}

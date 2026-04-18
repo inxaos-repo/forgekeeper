@@ -12,6 +12,7 @@ const routes = [
   { path: '/stats', name: 'Stats', component: () => import('./views/StatsView.vue') },
   { path: '/plugins', name: 'Plugins', component: () => import('./views/PluginsView.vue') },
   { path: '/sources', name: 'Sources', component: () => import('./views/SourcesView.vue') },
+  { path: '/health', name: 'Health', component: () => import('./views/LibraryHealthView.vue') },
 ]
 
 const router = createRouter({

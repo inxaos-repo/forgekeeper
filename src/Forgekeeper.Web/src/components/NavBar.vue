@@ -52,6 +52,7 @@ const navLinks = [
   { to: '/', label: 'Models', name: 'Models' },
   { to: '/creators', label: 'Creators', name: 'Creators' },
   { to: '/stats', label: 'Stats', name: 'Stats' },
+  { to: '/health', label: 'Health', name: 'Health' },
   { to: '/import', label: 'Import', name: 'Import', badge: 'import' },
   { to: '/sources', label: 'Sources', name: 'Sources' },
   { to: '/plugins', label: 'Plugins', name: 'Plugins', badge: 'plugins' },

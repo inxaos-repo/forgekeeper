@@ -42,6 +42,55 @@ public static class ScanEndpoints
             .WithName("GetUntrackedFiles");
 
         // POST /api/v1/scan/verify — integrity check: verify models and files exist on disk
+        // GET /api/v1/scan/health — combined library health report
+        group.MapGet("/health", async (
+            ForgeDbContext db,
+            IConfiguration config,
+            CancellationToken ct) =>
+        {
+            var basePaths = config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
+
+            var totalModels = await db.Models.CountAsync(ct);
+            var totalFiles = await db.Variants.CountAsync(ct);
+            var zeroFileModels = await db.Models.CountAsync(m => m.FileCount == 0, ct);
+            var unknownCreatorModels = await db.Models
+                .Include(m => m.Creator)
+                .CountAsync(m => m.Creator.Name == "unknown", ct);
+
+            // Models by creator status (in-memory groupby for EF Core compat)
+            var creatorData = await db.Models
+                .Include(m => m.Creator)
+                .Select(m => new { CreatorName = m.Creator.Name, m.FileCount })
+                .ToListAsync(ct);
+
+            var creatorBreakdown = creatorData
+                .GroupBy(m => m.CreatorName == "unknown" ? "unknown" : "known")
+                .Select(g => new
+                {
+                    Status = g.Key,
+                    Count = g.Count(),
+                    WithFiles = g.Count(m => m.FileCount > 0),
+                    WithoutFiles = g.Count(m => m.FileCount == 0),
+                })
+                .ToList();
+
+            var totalSizeBytes = await db.Models.SumAsync(m => m.TotalSizeBytes, ct);
+
+            return Results.Ok(new
+            {
+                totalModels,
+                totalFiles,
+                totalSizeBytes,
+                zeroFileModels,
+                unknownCreatorModels,
+                modelsWithFiles = totalModels - zeroFileModels,
+                creatorBreakdown,
+                downloadCompletionPercent = totalModels > 0
+                    ? Math.Round((double)(totalModels - zeroFileModels) / totalModels * 100, 1)
+                    : 0,
+            });
+        }).WithName("GetLibraryHealth");
+
         group.MapPost("/verify", async (ForgeDbContext db, CancellationToken ct) =>
         {
             var models = await db.Models

@@ -150,6 +150,27 @@ export function useApi() {
     return get('/scan/status')
   }
 
+  function getLibraryHealth() {
+    return get('/scan/health')
+  }
+
+  function getUntrackedFiles(source) {
+    const qs = source ? `?source=${encodeURIComponent(source)}` : ''
+    return get(`/scan/untracked${qs}`)
+  }
+
+  function verifyIntegrity() {
+    return post('/scan/verify')
+  }
+
+  function reorganizePreview(template, modelIds, limit) {
+    return post('/models/reorganize/preview', { template, modelIds: modelIds || null, limit: limit || null })
+  }
+
+  function reorganize(template, modelIds) {
+    return post('/models/reorganize', { template, modelIds: modelIds || null })
+  }
+
   // ─── Import ────────────────────────────────────────────
   function processUnsorted() {
     return post('/import/process')
@@ -358,6 +379,11 @@ export function useApi() {
     triggerScan,
     triggerIncrementalScan,
     getScanStatus,
+    getLibraryHealth,
+    getUntrackedFiles,
+    verifyIntegrity,
+    reorganizePreview,
+    reorganize,
     // Import
     processUnsorted,
     processAllImports,

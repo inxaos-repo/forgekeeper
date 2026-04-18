@@ -971,9 +971,112 @@ public static class ModelEndpoints
                 Errors = errors,
             });
         }).WithName("BulkMetadata");
+
+        // --- Bulk Reorganize ---
+
+        group.MapPost("/reorganize/preview", async (
+            [FromBody] ReorganizeRequest request,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            var models = await db.Models
+                .Include(m => m.Creator)
+                .Include(m => m.SourceEntity)
+                .Where(m => request.ModelIds == null || request.ModelIds.Contains(m.Id))
+                .Take(request.Limit ?? 100)
+                .ToListAsync(ct);
+
+            var preview = models.Select(m =>
+            {
+                var newPath = ApplyTemplate(request.Template, m);
+                return new
+                {
+                    m.Id,
+                    m.Name,
+                    CurrentPath = m.BasePath,
+                    NewPath = newPath,
+                    WouldMove = m.BasePath != newPath,
+                };
+            }).ToList();
+
+            return Results.Ok(new
+            {
+                total = preview.Count,
+                wouldMove = preview.Count(p => p.WouldMove),
+                items = preview,
+            });
+        }).WithName("ReorganizePreview");
+
+        group.MapPost("/reorganize", async (
+            [FromBody] ReorganizeRequest request,
+            ForgeDbContext db,
+            IConfiguration config,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
+        {
+            var logger = loggerFactory.CreateLogger("ModelEndpoints.Reorganize");
+            var basePaths = config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
+            var basePath = basePaths[0];
+
+            var models = await db.Models
+                .Include(m => m.Creator)
+                .Include(m => m.SourceEntity)
+                .Where(m => request.ModelIds == null || request.ModelIds.Contains(m.Id))
+                .ToListAsync(ct);
+
+            int moved = 0, failed = 0, skipped = 0;
+            var errors = new List<string>();
+
+            foreach (var model in models)
+            {
+                var newPath = ApplyTemplate(request.Template, model);
+                if (newPath == model.BasePath) { skipped++; continue; }
+
+                var fullNewPath = Path.IsPathRooted(newPath)
+                    ? newPath
+                    : Path.Combine(basePath, "sources", newPath);
+
+                try
+                {
+                    if (Directory.Exists(model.BasePath))
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(fullNewPath)!);
+                        Directory.Move(model.BasePath, fullNewPath);
+                        model.BasePath = fullNewPath;
+                        model.UpdatedAt = DateTime.UtcNow;
+                        moved++;
+                    }
+                    else
+                    {
+                        skipped++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to move {Model} from {Old} to {New}", model.Name, model.BasePath, fullNewPath);
+                    errors.Add($"{model.Name}: {ex.Message}");
+                    failed++;
+                }
+            }
+
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new { moved, failed, skipped, errors });
+        }).WithName("ReorganizeModels");
     }
 
     // -------- private helpers --------
+
+    private static string ApplyTemplate(string template, Model3D model)
+    {
+        return template
+            .Replace("{source}", model.SourceEntity?.Slug ?? model.Source.ToString().ToLowerInvariant())
+            .Replace("{creator}", SanitizeName(model.Creator?.Name ?? "unknown"))
+            .Replace("{name}", SanitizeName(model.Name))
+            .Replace("{category}", SanitizeName(model.Category ?? "uncategorized"))
+            .Replace("{gameSystem}", SanitizeName(model.GameSystem ?? "general"))
+            .Replace("{externalId}", model.SourceId ?? model.Id.ToString());
+    }
 
     private static string SanitizeName(string name)
     {
