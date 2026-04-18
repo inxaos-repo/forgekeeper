@@ -163,15 +163,38 @@ public class PluginHostService : BackgroundService
             status.TotalModels = manifest.Count;
             _logger.LogInformation("[{Slug}] Manifest has {Count} models", slug, manifest.Count);
 
+            // Load skip list from config
+            var skipCreators = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (loaded.Scraper is ILibraryScraper scraper)
+            {
+                var ctx = await BuildPluginContextAsync(slug, scraper, ct);
+                if (ctx.Config.TryGetValue("SKIP_CREATORS", out var skipList) && !string.IsNullOrEmpty(skipList))
+                {
+                    foreach (var s in skipList.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        skipCreators.Add(s);
+                }
+            }
+
             // Scrape each model
-            int scraped = 0, failed = 0;
+            int scraped = 0, failed = 0, skipped = 0;
             foreach (var model in manifest)
             {
                 if (ct.IsCancellationRequested) break;
 
-                var modelDir = Path.Combine(context.SourceDirectory,
-                    SanitizePath(model.CreatorName ?? "unknown"),
-                    SanitizePath(model.Name));
+                // Skip creators in the skip list
+                if (!string.IsNullOrEmpty(model.CreatorName) && skipCreators.Contains(model.CreatorName))
+                {
+                    skipped++;
+                    status.ScrapedModels = scraped;
+                    continue;
+                }
+
+                var creatorDir = SanitizePath(model.CreatorName ?? "unknown");
+                var modelName = SanitizePath(model.Name);
+
+                // Fuzzy match: find existing directory that matches (handles name variations)
+                var modelDir = FindExistingModelDir(context.SourceDirectory, creatorDir, modelName)
+                    ?? Path.Combine(context.SourceDirectory, creatorDir, modelName);
                 Directory.CreateDirectory(modelDir);
                 context.ModelDirectory = modelDir;
 
@@ -189,8 +212,8 @@ public class PluginHostService : BackgroundService
                 status.FailedModels = failed;
             }
 
-            _logger.LogInformation("[{Slug}] Sync complete: {Scraped} scraped, {Failed} failed",
-                slug, scraped, failed);
+            _logger.LogInformation("[{Slug}] Sync complete: {Scraped} scraped, {Failed} failed, {Skipped} skipped",
+                slug, scraped, failed, skipped);
         }
         catch (Exception ex)
         {
@@ -303,6 +326,73 @@ public class PluginHostService : BackgroundService
     {
         var invalid = Path.GetInvalidFileNameChars();
         return new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim();
+    }
+
+    /// <summary>
+    /// Fuzzy-match a model directory on disk. Handles name variations between
+    /// manifest names and existing folder names (e.g., from MiniDownloader).
+    /// Returns the existing path if found, null otherwise.
+    /// </summary>
+    private static string? FindExistingModelDir(string sourceDir, string creatorDir, string modelName)
+    {
+        // Exact match first
+        var exactPath = Path.Combine(sourceDir, creatorDir, modelName);
+        if (Directory.Exists(exactPath)) return exactPath;
+
+        // Find creator directory (fuzzy)
+        var creatorPath = FindFuzzyDir(sourceDir, creatorDir);
+        if (creatorPath == null) return null;
+
+        // Find model directory within creator (fuzzy)
+        var modelPath = FindFuzzyDir(creatorPath, modelName);
+        return modelPath;
+    }
+
+    /// <summary>
+    /// Find a subdirectory by fuzzy matching: exact, case-insensitive,
+    /// stripped punctuation/spaces, or prefix match.
+    /// </summary>
+    private static string? FindFuzzyDir(string parent, string targetName)
+    {
+        if (!Directory.Exists(parent)) return null;
+
+        var normalized = NormalizeName(targetName);
+
+        foreach (var dir in Directory.GetDirectories(parent))
+        {
+            var dirName = Path.GetFileName(dir);
+
+            // Exact match
+            if (dirName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
+                return dir;
+
+            // Normalized match (strip punctuation, collapse spaces)
+            if (NormalizeName(dirName).Equals(normalized, StringComparison.OrdinalIgnoreCase))
+                return dir;
+
+            // Prefix match (handles "Creator - Model Name" vs "Model Name")
+            var dashIdx = dirName.IndexOf(" - ");
+            if (dashIdx > 0)
+            {
+                var afterDash = dirName[(dashIdx + 3)..];
+                if (NormalizeName(afterDash).Equals(normalized, StringComparison.OrdinalIgnoreCase))
+                    return dir;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Normalize a name for comparison: lowercase, strip non-alphanumeric, collapse spaces.</summary>
+    private static string NormalizeName(string name)
+    {
+        var sb = new System.Text.StringBuilder(name.Length);
+        foreach (var c in name)
+        {
+            if (char.IsLetterOrDigit(c))
+                sb.Append(char.ToLowerInvariant(c));
+        }
+        return sb.ToString();
     }
 }
 

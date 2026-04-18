@@ -87,6 +87,14 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         },
         new PluginConfigField
         {
+            Key = "SKIP_CREATORS",
+            Label = "Skip Creators",
+            Type = PluginConfigFieldType.String,
+            Required = false,
+            HelpText = "Comma-separated list of creator names to skip during sync.",
+        },
+        new PluginConfigField
+        {
             Key = "CALLBACK_URL",
             Label = "OAuth Callback URL",
             Type = PluginConfigFieldType.Url,
