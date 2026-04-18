@@ -677,6 +677,10 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("files_downloaded");
 
+                    b.Property<int>("LastProcessedIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("last_processed_index");
+
                     b.Property<string>("PluginSlug")
                         .IsRequired()
                         .HasColumnType("text")

@@ -224,8 +224,13 @@ app.MapPluginEndpoints();
 // Export endpoint — full library metadata dump for backup/restore
 app.MapGet("/api/v1/export", async (
     ForgeDbContext db,
+    HttpContext httpContext,
     CancellationToken ct) =>
 {
+    var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+    var filename = $"forgekeeper-export-{timestamp}.json";
+    httpContext.Response.Headers["Content-Disposition"] = $"attachment; filename=\"{filename}\"";
+
     var data = new
     {
         ExportedAt = DateTime.UtcNow,
@@ -234,12 +239,239 @@ app.MapGet("/api/v1/export", async (
         Models = await db.Models
             .Include(m => m.Tags)
             .Include(m => m.Variants)
+            .Include(m => m.RelationsFrom)
             .ToListAsync(ct),
         Tags = await db.Tags.ToListAsync(ct),
         Sources = await db.Sources.ToListAsync(ct),
+        SyncRuns = await db.SyncRuns
+            .OrderByDescending(r => r.StartedAt)
+            .Take(100)
+            .ToListAsync(ct),
+        PluginConfigs = await db.PluginConfigs
+            .Where(c => !c.IsEncrypted) // Never export secrets
+            .ToListAsync(ct),
     };
     return Results.Ok(data);
 }).WithTags("Export").WithName("ExportLibrary");
+
+// Import/Restore endpoint — upsert library data from an export JSON
+app.MapPost("/api/v1/import/restore", async (
+    ForgeDbContext db,
+    ImportRestoreRequest request,
+    CancellationToken ct) =>
+{
+    int created = 0, updated = 0, skipped = 0;
+
+    // 1. Upsert Creators (match by Name + Source)
+    var creatorIdMap = new Dictionary<Guid, Guid>(); // export ID -> local ID
+    if (request.Creators != null)
+    {
+        foreach (var c in request.Creators)
+        {
+            var existing = await db.Creators
+                .FirstOrDefaultAsync(x => x.Name == c.Name && x.Source == c.Source, ct);
+            if (existing is null)
+            {
+                var newCreator = new Forgekeeper.Core.Models.Creator
+                {
+                    Id = Guid.NewGuid(),
+                    Name = c.Name,
+                    Source = c.Source,
+                    SourceUrl = c.SourceUrl,
+                    ExternalId = c.ExternalId,
+                    AvatarUrl = c.AvatarUrl,
+                    ModelCount = c.ModelCount,
+                    CreatedAt = c.CreatedAt,
+                    UpdatedAt = c.UpdatedAt,
+                };
+                db.Creators.Add(newCreator);
+                creatorIdMap[c.Id] = newCreator.Id;
+                created++;
+            }
+            else
+            {
+                existing.SourceUrl = c.SourceUrl ?? existing.SourceUrl;
+                existing.ExternalId = c.ExternalId ?? existing.ExternalId;
+                existing.AvatarUrl = c.AvatarUrl ?? existing.AvatarUrl;
+                existing.UpdatedAt = DateTime.UtcNow;
+                creatorIdMap[c.Id] = existing.Id;
+                updated++;
+            }
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    // 2. Upsert Tags (match by Name)
+    var tagIdMap = new Dictionary<Guid, Guid>();
+    if (request.Tags != null)
+    {
+        foreach (var t in request.Tags)
+        {
+            var existing = await db.Tags.FirstOrDefaultAsync(x => x.Name == t.Name, ct);
+            if (existing is null)
+            {
+                var newTag = new Forgekeeper.Core.Models.Tag
+                {
+                    Id = Guid.NewGuid(),
+                    Name = t.Name,
+                    Source = t.Source,
+                };
+                db.Tags.Add(newTag);
+                tagIdMap[t.Id] = newTag.Id;
+                created++;
+            }
+            else
+            {
+                tagIdMap[t.Id] = existing.Id;
+                skipped++;
+            }
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    // 3. Upsert Models (match by SourceId + Source, or BasePath)
+    var modelIdMap = new Dictionary<Guid, Guid>();
+    if (request.Models != null)
+    {
+        foreach (var m in request.Models)
+        {
+            // Resolve creator ID
+            if (!creatorIdMap.TryGetValue(m.CreatorId, out var localCreatorId))
+            {
+                // Try to find by existing ID (if same DB)
+                var creatorExists = await db.Creators.AnyAsync(c => c.Id == m.CreatorId, ct);
+                localCreatorId = creatorExists ? m.CreatorId : Guid.Empty;
+            }
+            if (localCreatorId == Guid.Empty)
+            {
+                skipped++;
+                continue; // Can't restore without a valid creator
+            }
+
+            Forgekeeper.Core.Models.Model3D? existing = null;
+            if (!string.IsNullOrEmpty(m.SourceId))
+                existing = await db.Models
+                    .Include(x => x.Tags)
+                    .FirstOrDefaultAsync(x => x.SourceId == m.SourceId && x.Source == m.Source, ct);
+
+            if (existing is null)
+                existing = await db.Models
+                    .Include(x => x.Tags)
+                    .FirstOrDefaultAsync(x => x.BasePath == m.BasePath, ct);
+
+            if (existing is null)
+            {
+                var newModel = new Forgekeeper.Core.Models.Model3D
+                {
+                    Id = Guid.NewGuid(),
+                    CreatorId = localCreatorId,
+                    Name = m.Name,
+                    SourceId = m.SourceId,
+                    Source = m.Source,
+                    SourceUrl = m.SourceUrl,
+                    Description = m.Description,
+                    Category = m.Category,
+                    Scale = m.Scale,
+                    GameSystem = m.GameSystem,
+                    FileCount = m.FileCount,
+                    TotalSizeBytes = m.TotalSizeBytes,
+                    ThumbnailPath = m.ThumbnailPath,
+                    PreviewImages = m.PreviewImages ?? [],
+                    BasePath = m.BasePath,
+                    Rating = m.Rating,
+                    Notes = m.Notes,
+                    Extra = m.Extra,
+                    LicenseType = m.LicenseType,
+                    CollectionName = m.CollectionName,
+                    PublishedAt = m.PublishedAt,
+                    AcquisitionMethod = m.AcquisitionMethod,
+                    PrintStatus = m.PrintStatus,
+                    AcquisitionOrderId = m.AcquisitionOrderId,
+                    ExternalCreatedAt = m.ExternalCreatedAt,
+                    ExternalUpdatedAt = m.ExternalUpdatedAt,
+                    DownloadedAt = m.DownloadedAt,
+                    CreatedAt = m.CreatedAt,
+                    UpdatedAt = m.UpdatedAt,
+                };
+
+                // Resolve and attach tags
+                if (m.Tags != null)
+                {
+                    foreach (var t in m.Tags)
+                    {
+                        Forgekeeper.Core.Models.Tag? localTag = null;
+                        if (tagIdMap.TryGetValue(t.Id, out var localTagId))
+                            localTag = await db.Tags.FindAsync([localTagId], ct);
+                        localTag ??= await db.Tags.FirstOrDefaultAsync(x => x.Name == t.Name, ct);
+                        if (localTag != null)
+                            newModel.Tags.Add(localTag);
+                    }
+                }
+
+                db.Models.Add(newModel);
+                modelIdMap[m.Id] = newModel.Id;
+                created++;
+            }
+            else
+            {
+                // Update mutable fields
+                existing.Name = m.Name;
+                existing.Description = m.Description ?? existing.Description;
+                existing.Category = m.Category ?? existing.Category;
+                existing.GameSystem = m.GameSystem ?? existing.GameSystem;
+                existing.ThumbnailPath = m.ThumbnailPath ?? existing.ThumbnailPath;
+                existing.Rating = m.Rating ?? existing.Rating;
+                existing.Notes = m.Notes ?? existing.Notes;
+                existing.Extra = m.Extra ?? existing.Extra;
+                existing.UpdatedAt = DateTime.UtcNow;
+                modelIdMap[m.Id] = existing.Id;
+                updated++;
+            }
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    // 4. Upsert Variants (match by ModelId + FilePath)
+    if (request.Models != null)
+    {
+        foreach (var m in request.Models)
+        {
+            if (m.Variants == null || m.Variants.Count == 0) continue;
+            if (!modelIdMap.TryGetValue(m.Id, out var localModelId)) continue;
+
+            foreach (var v in m.Variants)
+            {
+                var existing = await db.Variants
+                    .FirstOrDefaultAsync(x => x.ModelId == localModelId && x.FilePath == v.FilePath, ct);
+
+                if (existing is null)
+                {
+                    db.Variants.Add(new Forgekeeper.Core.Models.Variant
+                    {
+                        Id = Guid.NewGuid(),
+                        ModelId = localModelId,
+                        VariantType = v.VariantType,
+                        FilePath = v.FilePath,
+                        FileName = v.FileName,
+                        FileType = v.FileType,
+                        FileSizeBytes = v.FileSizeBytes,
+                        ThumbnailPath = v.ThumbnailPath,
+                        FileHash = v.FileHash,
+                        CreatedAt = v.CreatedAt,
+                    });
+                    created++;
+                }
+                else
+                {
+                    skipped++;
+                }
+            }
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    return Results.Ok(new { created, updated, skipped });
+}).WithTags("Export").WithName("ImportRestore");
 
 // --- MCP Endpoints ---
 app.MapGet("/mcp/tools", () =>
@@ -262,3 +494,12 @@ app.Run();
 
 // Needed for WebApplicationFactory<Program> in integration tests
 public partial class Program { }
+
+/// <summary>Request body for POST /api/v1/import/restore matching the export format.</summary>
+public class ImportRestoreRequest
+{
+    public List<Forgekeeper.Core.Models.Creator>? Creators { get; set; }
+    public List<Forgekeeper.Core.Models.Model3D>? Models { get; set; }
+    public List<Forgekeeper.Core.Models.Tag>? Tags { get; set; }
+    public List<Forgekeeper.Core.Models.Source>? Sources { get; set; }
+}

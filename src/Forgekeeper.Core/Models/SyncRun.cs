@@ -15,4 +15,5 @@ public class SyncRun
     public long BytesDownloaded { get; set; }
     public string? Error { get; set; }
     public double? DurationSeconds { get; set; }
+    public int LastProcessedIndex { get; set; }
 }

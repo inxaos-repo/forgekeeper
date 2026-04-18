@@ -95,6 +95,24 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         },
         new PluginConfigField
         {
+            Key = "RESTORE_MODE",
+            Label = "Restore Mode",
+            Type = PluginConfigFieldType.String,
+            Required = false,
+            DefaultValue = "false",
+            HelpText = "Set to 'true' to enable restore mode. Skips the lastSynced timestamp check so all models are re-scraped. Files already on disk are still skipped (gap-only restore).",
+        },
+        new PluginConfigField
+        {
+            Key = "DOWNLOAD_DELAY_MS",
+            Label = "Download Delay (ms)",
+            Type = PluginConfigFieldType.Number,
+            Required = false,
+            DefaultValue = "5000",
+            HelpText = "Delay between file downloads in milliseconds. Increase to avoid rate-limiting during large restores. Default 5000ms.",
+        },
+        new PluginConfigField
+        {
             Key = "CALLBACK_URL",
             Label = "OAuth Callback URL",
             Type = PluginConfigFieldType.Url,
@@ -164,6 +182,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             ?? throw new InvalidOperationException("ModelDirectory not set in context");
 
         var delayMs = GetDelayMs(context);
+        var downloadDelayMs = GetDownloadDelayMs(context);
+        var restoreMode = IsRestoreMode(context);
         
         // Get auth tokens — try download_token (MiniDownloader) or access_token (OAuth)
         var bearerToken = await context.TokenStore.GetTokenAsync("download_token", ct)
@@ -456,7 +476,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                         filesFailed++;
                     }
 
-                    await Task.Delay(delayMs, ct);
+                    // Use download-specific delay (configurable, default 5s) for inter-file gaps
+                    await Task.Delay(downloadDelayMs, ct);
                 }
             }
 
@@ -497,7 +518,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             }
 
             // Check if source has been updated since last sync
-            if (existingMetadata != null && details?.UpdatedAt != null)
+            // In restore mode, skip this check so all models are processed (gap-only restore via FindExistingFile)
+            if (!restoreMode && existingMetadata != null && details?.UpdatedAt != null)
             {
                 var lastSynced = GetDateFromMetadata(existingMetadata, "lastSynced");
                 var sourceUpdated = details.UpdatedAt;
@@ -1233,6 +1255,20 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         if (context.Config.TryGetValue("DELAY_MS", out var val) && int.TryParse(val, out var ms))
             return Math.Max(100, ms);
         return 1000;
+    }
+
+    private static int GetDownloadDelayMs(PluginContext context)
+    {
+        if (context.Config.TryGetValue("DOWNLOAD_DELAY_MS", out var val) && int.TryParse(val, out var ms))
+            return Math.Max(0, ms);
+        return 5000;
+    }
+
+    private static bool IsRestoreMode(PluginContext context)
+    {
+        if (context.Config.TryGetValue("RESTORE_MODE", out var val))
+            return val.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+        return false;
     }
 
     internal static string SanitizeFilename(string? name)

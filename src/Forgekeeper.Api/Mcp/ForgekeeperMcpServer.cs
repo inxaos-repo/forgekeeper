@@ -413,7 +413,7 @@ public class ForgekeeperMcpServer
     {
         var pluginHost = services.GetRequiredService<PluginHostService>();
         var slug = GetString(args, "pluginSlug") ?? throw new ArgumentException("pluginSlug is required");
-        await pluginHost.TriggerSyncAsync(slug, ct);
+        await pluginHost.TriggerSyncAsync(slug, false, ct);
         return new { success = true, message = $"Sync triggered for plugin '{slug}'" };
     }
 

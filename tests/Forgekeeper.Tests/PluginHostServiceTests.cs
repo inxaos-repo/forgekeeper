@@ -98,7 +98,7 @@ public class PluginHostServiceTests : IDisposable
         var service = CreateService(sp);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => service.TriggerSyncAsync("nonexistent", CancellationToken.None));
+            () => service.TriggerSyncAsync("nonexistent", false, CancellationToken.None));
     }
 
     [Fact]

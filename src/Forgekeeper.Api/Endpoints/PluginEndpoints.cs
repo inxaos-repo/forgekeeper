@@ -118,15 +118,18 @@ public static class PluginEndpoints
         }).WithName("UpdatePluginConfig");
 
         // POST /api/v1/plugins/{slug}/sync — trigger sync for a plugin
+        // ?resume=true to resume the last incomplete sync from its saved index
         group.MapPost("/{slug}/sync", async (
             string slug,
+            [FromQuery] bool? resume,
             PluginHostService pluginHost,
             CancellationToken ct) =>
         {
             try
             {
-                await pluginHost.TriggerSyncAsync(slug, ct);
-                return Results.Accepted(value: new { message = $"Sync started for '{slug}'" });
+                await pluginHost.TriggerSyncAsync(slug, resume == true, ct);
+                var mode = resume == true ? "resumed" : "started";
+                return Results.Accepted(value: new { message = $"Sync {mode} for '{slug}'" });
             }
             catch (InvalidOperationException ex)
             {

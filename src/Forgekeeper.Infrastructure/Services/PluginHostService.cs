@@ -86,13 +86,16 @@ public class PluginHostService : BackgroundService
 
                 if (DateTime.UtcNow - status.LastSyncAt < interval) continue;
 
-                _ = Task.Run(() => RunSyncAsync(slug, stoppingToken), stoppingToken);
+                _ = Task.Run(() => RunSyncAsync(slug, stoppingToken, 0), stoppingToken);
             }
         }
     }
 
     /// <summary>Trigger a manual sync for a plugin.</summary>
-    public async Task TriggerSyncAsync(string slug, CancellationToken ct)
+    /// <param name="slug">Plugin slug.</param>
+    /// <param name="resume">If true, resumes the last incomplete sync from its LastProcessedIndex.</param>
+    /// <param name="ct">Cancellation token for the HTTP request (short-lived).</param>
+    public async Task TriggerSyncAsync(string slug, bool resume, CancellationToken ct)
     {
         if (!_plugins.ContainsKey(slug))
             throw new InvalidOperationException($"Plugin '{slug}' not found");
@@ -111,10 +114,27 @@ public class PluginHostService : BackgroundService
         status.IsRunning = true; // Set while holding the lock
         semaphore.Release();     // Release before starting background task
 
+        // If resuming, find the last incomplete SyncRun and use its LastProcessedIndex
+        int startIndex = 0;
+        if (resume)
+        {
+            var dbFactory = _services.GetRequiredService<IDbContextFactory<ForgeDbContext>>();
+            await using var db = await dbFactory.CreateDbContextAsync(ct);
+            var lastRun = await db.SyncRuns
+                .Where(r => r.PluginSlug == slug && (r.Status == "running" || r.Status == "failed") && r.LastProcessedIndex > 0)
+                .OrderByDescending(r => r.StartedAt)
+                .FirstOrDefaultAsync(ct);
+            if (lastRun != null)
+            {
+                startIndex = lastRun.LastProcessedIndex;
+                _logger.LogInformation("[{Slug}] Resuming sync from index {Index} (last run: {Id})", slug, startIndex, lastRun.Id);
+            }
+        }
+
         // Use a long-lived token (not the HTTP request's CT which times out with nginx)
         // The sync runs in the background and can take minutes for FlareSolverr CF solve + login
         var syncCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
-        _ = Task.Run(() => RunSyncAsync(slug, syncCts.Token));
+        _ = Task.Run(() => RunSyncAsync(slug, syncCts.Token, startIndex));
     }
 
     /// <summary>Handle an auth callback routed from the web server.</summary>
@@ -127,7 +147,7 @@ public class PluginHostService : BackgroundService
         return await loaded.Scraper.HandleAuthCallbackAsync(context, callbackParams, ct);
     }
 
-    private async Task RunSyncAsync(string slug, CancellationToken ct)
+    private async Task RunSyncAsync(string slug, CancellationToken ct, int startIndex = 0)
     {
         if (!_plugins.TryGetValue(slug, out var loaded)) return;
 
@@ -157,6 +177,7 @@ public class PluginHostService : BackgroundService
                 PluginSlug = slug,
                 StartedAt = startedAt,
                 Status = "running",
+                LastProcessedIndex = startIndex,
             });
             await db.SaveChangesAsync(ct);
         }
@@ -234,9 +255,16 @@ public class PluginHostService : BackgroundService
 
             // Scrape each model
             int processedSinceLastUpdate = 0;
+            int manifestIndex = 0;
             foreach (var model in manifest)
             {
                 if (ct.IsCancellationRequested) break;
+
+                var currentIndex = manifestIndex++;
+
+                // Skip entries before startIndex (resume support)
+                if (currentIndex < startIndex)
+                    continue;
 
                 // Skip creators in the skip list
                 if (!string.IsNullOrEmpty(model.CreatorName) && skipCreators.Contains(model.CreatorName))
@@ -270,8 +298,8 @@ public class PluginHostService : BackgroundService
                 status.FailedModels = failed;
                 processedSinceLastUpdate++;
 
-                // Persist progress every 50 models
-                if (processedSinceLastUpdate >= 50)
+                // Persist progress every 10 models (also tracks LastProcessedIndex for resume)
+                if (processedSinceLastUpdate >= 10)
                 {
                     processedSinceLastUpdate = 0;
                     try
@@ -283,6 +311,7 @@ public class PluginHostService : BackgroundService
                             run.ScrapedModels = scraped;
                             run.FailedModels = failed;
                             run.SkippedModels = skipped;
+                            run.LastProcessedIndex = currentIndex + 1; // next index to process
                             await db.SaveChangesAsync(ct);
                         }
                     }
