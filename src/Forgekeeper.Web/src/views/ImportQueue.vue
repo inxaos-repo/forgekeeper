@@ -52,17 +52,17 @@ const STATUS_TABS = [
 
 const pendingItems = computed(() =>
   items.value.filter(i => {
-    const s = (i.status || '').toLowerCase()
+    const s = String(i.status || '').toLowerCase()
     return s !== 'autosorted' && s !== 'confirmed' && s !== 'failed'
   })
 )
 
 const autoSortedItems = computed(() =>
-  items.value.filter(i => (i.status || '').toLowerCase() === 'autosorted')
+  items.value.filter(i => String(i.status || '').toLowerCase() === 'autosorted')
 )
 
 const failedItems = computed(() =>
-  items.value.filter(i => (i.status || '').toLowerCase() === 'failed')
+  items.value.filter(i => String(i.status || '').toLowerCase() === 'failed')
 )
 
 const highConfidenceItems = computed(() =>

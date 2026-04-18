@@ -97,6 +97,12 @@ builder.Services.AddCors(options =>
     });
 });
 
+// Serialize enums as strings in all JSON responses
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+});
+
 var app = builder.Build();
 
 // Apply migrations on startup (skip for InMemory/testing)

@@ -30,7 +30,7 @@ async function pollImportCount() {
     // Count only pending/awaiting-review items
     importPendingCount.value = Array.isArray(items)
       ? items.filter(i => {
-          const s = (i.status || '').toLowerCase()
+          const s = String(i.status || '').toLowerCase()
           return s !== 'autosorted' && s !== 'confirmed' && s !== 'failed'
         }).length
       : (result?.totalCount ?? 0)
