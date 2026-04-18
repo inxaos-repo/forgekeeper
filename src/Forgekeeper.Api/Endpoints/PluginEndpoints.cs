@@ -347,6 +347,17 @@ public static class PluginEndpoints
             return result != null ? Results.Ok(result) : Results.NotFound(new { message = $"Plugin '{slug}' not found" });
         }).WithName("ReloadPlugin");
 
+        // POST /api/v1/plugins/{slug}/sync/cancel — cancel a running sync
+        group.MapPost("/{slug}/sync/cancel", (
+            string slug,
+            PluginHostService pluginHost) =>
+        {
+            var cancelled = pluginHost.CancelSync(slug);
+            return cancelled
+                ? Results.Ok(new { message = $"Sync cancellation requested for '{slug}'" })
+                : Results.BadRequest(new { message = $"No running sync for '{slug}' to cancel" });
+        }).WithName("CancelPluginSync");
+
         // GET /api/v1/plugins/registry — browse available plugins from the community registry
         group.MapGet("/registry", async (
             [FromQuery] string? search,

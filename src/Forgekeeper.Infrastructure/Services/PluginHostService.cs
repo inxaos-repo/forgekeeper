@@ -169,13 +169,23 @@ public class PluginHostService : BackgroundService
 
         // Use a long-lived token (not the HTTP request's CT which times out with nginx)
         // The sync runs in the background and can take minutes for FlareSolverr CF solve + login
-        // No timeout — syncs run until complete, cancelled, or app shutdown.
-        // A full library restore (7,230+ models) can take days.
-        // Uses the application's stopping token, not the HTTP request's short-lived token.
-        _ = Task.Run(() => RunSyncAsync(slug, _appStoppingToken, startIndex));
+        // Create a linked CTS: cancels on app shutdown OR user cancel request
+        var syncCts = CancellationTokenSource.CreateLinkedTokenSource(_appStoppingToken);
+        status.SyncCts = syncCts;
+        _ = Task.Run(() => RunSyncAsync(slug, syncCts.Token, startIndex));
     }
 
     /// <summary>Handle an auth callback routed from the web server.</summary>
+    /// <summary>Cancel a running sync for a plugin.</summary>
+    public bool CancelSync(string slug)
+    {
+        var status = _syncStatuses.GetOrAdd(slug, _ => new PluginSyncStatus());
+        if (!status.IsRunning || status.SyncCts == null) return false;
+        _logger.LogInformation("[{Slug}] Sync cancellation requested", slug);
+        status.SyncCts.Cancel();
+        return true;
+    }
+
     public async Task<AuthResult> HandleAuthCallbackAsync(string slug, IDictionary<string, string> callbackParams, CancellationToken ct)
     {
         if (!_plugins.TryGetValue(slug, out var loaded))
@@ -374,6 +384,8 @@ public class PluginHostService : BackgroundService
         {
             status.IsRunning = false;
             status.CurrentProgress = null;
+            status.SyncCts?.Dispose();
+            status.SyncCts = null;
             semaphore.Release();
 
             // Finalize SyncRun record
@@ -790,6 +802,9 @@ public class PluginSyncStatus
     public int FailedModels { get; set; }
     public string? Error { get; set; }
     public ScrapeProgress? CurrentProgress { get; set; }
+    
+    /// <summary>CTS for cancelling the current sync. Set when sync starts, cleared when it ends.</summary>
+    public CancellationTokenSource? SyncCts { get; set; }
 }
 
 /// <summary>Isolated assembly load context for plugin isolation.</summary>
