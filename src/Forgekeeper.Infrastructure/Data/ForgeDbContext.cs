@@ -16,6 +16,7 @@ public class ForgeDbContext : DbContext
     public DbSet<ScanState> ScanStates => Set<ScanState>();
     public DbSet<ModelRelation> ModelRelations => Set<ModelRelation>();
     public DbSet<PluginConfig> PluginConfigs => Set<PluginConfig>();
+    public DbSet<SyncRun> SyncRuns => Set<SyncRun>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -223,6 +224,15 @@ public class ForgeDbContext : DbContext
             entity.Property(e => e.Key).HasMaxLength(200).IsRequired();
             entity.Property(e => e.Value).HasColumnType("text").IsRequired();
             entity.HasIndex(e => new { e.PluginSlug, e.Key }).IsUnique();
+        });
+
+        // SyncRun
+        modelBuilder.Entity<SyncRun>(entity =>
+        {
+            entity.ToTable("sync_runs");
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.PluginSlug);
+            entity.HasIndex(e => e.StartedAt);
         });
 
         // ScanState

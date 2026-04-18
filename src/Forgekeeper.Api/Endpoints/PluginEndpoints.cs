@@ -240,6 +240,34 @@ public static class PluginEndpoints
             }
         }).WithName("GetPluginSyncProgress").Produces(200);
 
+        // GET /api/v1/plugins/history — all sync run history
+        group.MapGet("/history", async (
+            [FromQuery] int? limit,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            var runs = await db.SyncRuns
+                .OrderByDescending(r => r.StartedAt)
+                .Take(limit ?? 50)
+                .ToListAsync(ct);
+            return Results.Ok(runs);
+        }).WithName("GetAllSyncHistory");
+
+        // GET /api/v1/plugins/{slug}/history — sync run history for a plugin
+        group.MapGet("/{slug}/history", async (
+            string slug,
+            [FromQuery] int? limit,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            var runs = await db.SyncRuns
+                .Where(r => r.PluginSlug == slug)
+                .OrderByDescending(r => r.StartedAt)
+                .Take(limit ?? 20)
+                .ToListAsync(ct);
+            return Results.Ok(runs);
+        }).WithName("GetPluginSyncHistory");
+
         // GET /api/v1/plugins/{slug}/status — get sync status
         group.MapGet("/{slug}/status", (
             string slug,

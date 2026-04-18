@@ -646,6 +646,75 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                     b.ToTable("variants", (string)null);
                 });
 
+            modelBuilder.Entity("Forgekeeper.Core.Models.SyncRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("BytesDownloaded")
+                        .HasColumnType("bigint")
+                        .HasColumnName("bytes_downloaded");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<double?>("DurationSeconds")
+                        .HasColumnType("double precision")
+                        .HasColumnName("duration_seconds");
+
+                    b.Property<string>("Error")
+                        .HasColumnType("text")
+                        .HasColumnName("error");
+
+                    b.Property<int>("FailedModels")
+                        .HasColumnType("integer")
+                        .HasColumnName("failed_models");
+
+                    b.Property<int>("FilesDownloaded")
+                        .HasColumnType("integer")
+                        .HasColumnName("files_downloaded");
+
+                    b.Property<string>("PluginSlug")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("plugin_slug");
+
+                    b.Property<int>("ScrapedModels")
+                        .HasColumnType("integer")
+                        .HasColumnName("scraped_models");
+
+                    b.Property<int>("SkippedModels")
+                        .HasColumnType("integer")
+                        .HasColumnName("skipped_models");
+
+                    b.Property<DateTime>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("status");
+
+                    b.Property<int>("TotalModels")
+                        .HasColumnType("integer")
+                        .HasColumnName("total_models");
+
+                    b.HasKey("Id")
+                        .HasName("pk_sync_runs");
+
+                    b.HasIndex("PluginSlug")
+                        .HasDatabaseName("ix_sync_runs_plugin_slug");
+
+                    b.HasIndex("StartedAt")
+                        .HasDatabaseName("ix_sync_runs_started_at");
+
+                    b.ToTable("sync_runs", (string)null);
+                });
+
             modelBuilder.Entity("model_tags", b =>
                 {
                     b.Property<Guid>("ModelId")

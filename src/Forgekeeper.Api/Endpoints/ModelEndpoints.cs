@@ -229,6 +229,23 @@ public static class ModelEndpoints
             return Results.Created($"/api/v1/models/{id}/prints/{entry.Id}", entry);
         }).WithName("AddPrint");
 
+        group.MapDelete("/{id:guid}/prints/{printId:guid}", async (
+            Guid id,
+            Guid printId,
+            IModelRepository repo,
+            CancellationToken ct) =>
+        {
+            var model = await repo.GetByIdAsync(id, ct);
+            if (model == null) return Results.NotFound();
+
+            var entry = model.PrintHistory?.FirstOrDefault(p => p.Id == printId);
+            if (entry == null) return Results.NotFound();
+
+            model.PrintHistory!.Remove(entry);
+            await repo.UpdateAsync(model, ct);
+            return Results.NoContent();
+        }).WithName("DeletePrint");
+
         // --- Components ---
 
         group.MapPut("/{id:guid}/components", async (

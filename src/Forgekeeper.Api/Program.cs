@@ -97,6 +97,17 @@ app.UseStaticFiles();
 // Health check
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
 
+// Version info
+app.MapGet("/version", () => Results.Ok(new
+{
+    Name = "Forgekeeper",
+    Version = "1.0.0",
+    BuildTime = File.Exists("/app/build-info.txt")
+        ? File.ReadAllText("/app/build-info.txt").Trim()
+        : "dev",
+    DotNetVersion = Environment.Version.ToString(),
+})).WithTags("System").WithName("GetVersion");
+
 // Prometheus metrics endpoint
 app.MapGet("/metrics", async (IServiceProvider services, PluginHostService pluginHost, CancellationToken ct) =>
 {
@@ -209,6 +220,26 @@ app.MapStatsEndpoints();
 app.MapVariantEndpoints();
 app.MapSourceEndpoints();
 app.MapPluginEndpoints();
+
+// Export endpoint — full library metadata dump for backup/restore
+app.MapGet("/api/v1/export", async (
+    ForgeDbContext db,
+    CancellationToken ct) =>
+{
+    var data = new
+    {
+        ExportedAt = DateTime.UtcNow,
+        Version = "1.0",
+        Creators = await db.Creators.ToListAsync(ct),
+        Models = await db.Models
+            .Include(m => m.Tags)
+            .Include(m => m.Variants)
+            .ToListAsync(ct),
+        Tags = await db.Tags.ToListAsync(ct),
+        Sources = await db.Sources.ToListAsync(ct),
+    };
+    return Results.Ok(data);
+}).WithTags("Export").WithName("ExportLibrary");
 
 // --- MCP Endpoints ---
 app.MapGet("/mcp/tools", () =>

@@ -144,6 +144,27 @@ public class PluginHostService : BackgroundService
         status.LastSyncAt = DateTime.UtcNow;
         status.Error = null;
 
+        // Create SyncRun record
+        var syncRunId = Guid.NewGuid();
+        var startedAt = DateTime.UtcNow;
+        var dbFactory = _services.GetRequiredService<IDbContextFactory<ForgeDbContext>>();
+
+        await using (var db = await dbFactory.CreateDbContextAsync(ct))
+        {
+            db.SyncRuns.Add(new Core.Models.SyncRun
+            {
+                Id = syncRunId,
+                PluginSlug = slug,
+                StartedAt = startedAt,
+                Status = "running",
+            });
+            await db.SaveChangesAsync(ct);
+        }
+
+        int scraped = 0, failed = 0, skipped = 0;
+        string syncStatus = "completed";
+        string? syncError = null;
+
         try
         {
             var context = await BuildPluginContextAsync(slug, loaded.Scraper, ct);
@@ -175,6 +196,8 @@ public class PluginHostService : BackgroundService
                 if (string.IsNullOrEmpty(fallbackToken))
                 {
                     status.Error = $"Auth failed: {authResult.Message}";
+                    syncStatus = "failed";
+                    syncError = status.Error;
                     _logger.LogError("[{Slug}] No fallback tokens available. Authenticate via the Plugins page.", slug);
                     return;
                 }
@@ -185,6 +208,17 @@ public class PluginHostService : BackgroundService
             var manifest = await loaded.Scraper.FetchManifestAsync(context, null, ct);
             status.TotalModels = manifest.Count;
             _logger.LogInformation("[{Slug}] Manifest has {Count} models", slug, manifest.Count);
+
+            // Update SyncRun with total count
+            await using (var db = await dbFactory.CreateDbContextAsync(ct))
+            {
+                var run = await db.SyncRuns.FindAsync([syncRunId], ct);
+                if (run != null)
+                {
+                    run.TotalModels = manifest.Count;
+                    await db.SaveChangesAsync(ct);
+                }
+            }
 
             // Load skip list from config
             var skipCreators = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -199,7 +233,7 @@ public class PluginHostService : BackgroundService
             }
 
             // Scrape each model
-            int scraped = 0, failed = 0, skipped = 0;
+            int processedSinceLastUpdate = 0;
             foreach (var model in manifest)
             {
                 if (ct.IsCancellationRequested) break;
@@ -209,6 +243,7 @@ public class PluginHostService : BackgroundService
                 {
                     skipped++;
                     status.ScrapedModels = scraped;
+                    processedSinceLastUpdate++;
                     continue;
                 }
 
@@ -233,6 +268,29 @@ public class PluginHostService : BackgroundService
 
                 status.ScrapedModels = scraped;
                 status.FailedModels = failed;
+                processedSinceLastUpdate++;
+
+                // Persist progress every 50 models
+                if (processedSinceLastUpdate >= 50)
+                {
+                    processedSinceLastUpdate = 0;
+                    try
+                    {
+                        await using var db = await dbFactory.CreateDbContextAsync(ct);
+                        var run = await db.SyncRuns.FindAsync([syncRunId], ct);
+                        if (run != null)
+                        {
+                            run.ScrapedModels = scraped;
+                            run.FailedModels = failed;
+                            run.SkippedModels = skipped;
+                            await db.SaveChangesAsync(ct);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[{Slug}] Failed to update SyncRun progress", slug);
+                    }
+                }
             }
 
             _logger.LogInformation("[{Slug}] Sync complete: {Scraped} scraped, {Failed} failed, {Skipped} skipped",
@@ -241,6 +299,8 @@ public class PluginHostService : BackgroundService
         catch (Exception ex)
         {
             status.Error = ex.Message;
+            syncStatus = "failed";
+            syncError = ex.Message;
             _logger.LogError(ex, "[{Slug}] Sync error", slug);
         }
         finally
@@ -248,6 +308,29 @@ public class PluginHostService : BackgroundService
             status.IsRunning = false;
             status.CurrentProgress = null;
             semaphore.Release();
+
+            // Finalize SyncRun record
+            try
+            {
+                var completedAt = DateTime.UtcNow;
+                await using var db = await dbFactory.CreateDbContextAsync(CancellationToken.None);
+                var run = await db.SyncRuns.FindAsync(syncRunId);
+                if (run != null)
+                {
+                    run.Status = syncStatus;
+                    run.CompletedAt = completedAt;
+                    run.DurationSeconds = (completedAt - startedAt).TotalSeconds;
+                    run.ScrapedModels = scraped;
+                    run.FailedModels = failed;
+                    run.SkippedModels = skipped;
+                    run.Error = syncError;
+                    await db.SaveChangesAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[{Slug}] Failed to finalize SyncRun record", slug);
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 using Forgekeeper.Core.DTOs;
 using Forgekeeper.Core.Interfaces;
 using Forgekeeper.Infrastructure.Data;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace Forgekeeper.Api.Endpoints;
@@ -20,17 +21,21 @@ public static class StatsEndpoints
         }).WithName("GetStats");
 
         group.MapGet("/creators", async (
+            [FromQuery] int? limit,
             ForgeDbContext db,
             CancellationToken ct) =>
         {
             var stats = await db.Creators
                 .OrderByDescending(c => c.ModelCount)
-                .Select(c => new CreatorStatsItem
+                .Take(limit ?? 50)
+                .Select(c => new
                 {
-                    Id = c.Id,
-                    Name = c.Name,
-                    ModelCount = c.ModelCount,
-                    TotalSizeBytes = c.Models.Sum(m => m.TotalSizeBytes)
+                    c.Id,
+                    c.Name,
+                    c.ModelCount,
+                    TotalSizeBytes = c.Models.Sum(m => m.TotalSizeBytes),
+                    FileCount = c.Models.Sum(m => m.FileCount),
+                    Source = c.Source.ToString()
                 })
                 .ToListAsync(ct);
 
