@@ -342,3 +342,23 @@ public class ReorganizeRequest
     /// <summary>Max results (preview only).</summary>
     public int? Limit { get; set; }
 }
+
+/// <summary>
+/// Request body for parse-filename/preview and parse-filename/apply endpoints.
+/// Defines the template used to extract metadata from directory names.
+/// </summary>
+public class ParseFilenameRequest
+{
+    /// <summary>
+    /// Template with {variable} placeholders.
+    /// Supported: {name}, {creator}, {id}, {category}, {gameSystem}, {scale}, {source}, {ignore}
+    /// Example: "{id} - {creator} - {name}"
+    /// </summary>
+    public string Template { get; set; } = "{creator} - {name}";
+
+    /// <summary>Subset of model IDs to parse. Null = all models.</summary>
+    public List<Guid>? ModelIds { get; set; }
+
+    /// <summary>Max results returned (preview only). Defaults to 50.</summary>
+    public int? Limit { get; set; }
+}

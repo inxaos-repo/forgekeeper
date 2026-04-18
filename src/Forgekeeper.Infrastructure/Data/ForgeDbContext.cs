@@ -16,6 +16,7 @@ public class ForgeDbContext : DbContext
     public DbSet<ScanState> ScanStates => Set<ScanState>();
     public DbSet<ModelRelation> ModelRelations => Set<ModelRelation>();
     public DbSet<PluginConfig> PluginConfigs => Set<PluginConfig>();
+    public DbSet<SavedTemplate> SavedTemplates => Set<SavedTemplate>();
     public DbSet<SyncRun> SyncRuns => Set<SyncRun>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -224,6 +225,20 @@ public class ForgeDbContext : DbContext
             entity.Property(e => e.Key).HasMaxLength(200).IsRequired();
             entity.Property(e => e.Value).HasColumnType("text").IsRequired();
             entity.HasIndex(e => new { e.PluginSlug, e.Key }).IsUnique();
+        });
+
+        // Saved Templates (for filename parsing and directory reorganization)
+        modelBuilder.Entity<SavedTemplate>(entity =>
+        {
+            entity.ToTable("saved_templates");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Template).HasMaxLength(500).IsRequired();
+            entity.Property(e => e.Type).HasMaxLength(50).HasDefaultValue("parse");
+            entity.Property(e => e.CreatorName).HasMaxLength(200);
+            entity.Property(e => e.SourceSlug).HasMaxLength(100);
+            entity.HasIndex(e => e.Name);
+            entity.HasIndex(e => e.Type);
         });
 
         // SyncRun

@@ -56,6 +56,7 @@ const navLinks = [
   { to: '/import', label: 'Import', name: 'Import', badge: 'import' },
   { to: '/sources', label: 'Sources', name: 'Sources' },
   { to: '/plugins', label: 'Plugins', name: 'Plugins', badge: 'plugins' },
+  { to: '/settings', label: 'Settings', name: 'Settings', icon: '⚙️' },
 ]
 
 onMounted(() => {
@@ -89,11 +90,13 @@ onBeforeUnmount(() => {
               v-for="link in navLinks"
               :key="link.to"
               :to="link.to"
-              class="relative px-3 py-2 rounded-md text-sm font-medium text-forge-text-muted hover:text-forge-text hover:bg-forge-card transition-colors"
+              :class="link.icon ? 'relative px-2 py-2 rounded-md text-lg text-forge-text-muted hover:text-forge-text hover:bg-forge-card transition-colors' : 'relative px-3 py-2 rounded-md text-sm font-medium text-forge-text-muted hover:text-forge-text hover:bg-forge-card transition-colors'"
               active-class="!bg-forge-card !text-forge-accent"
               :exact="link.to === '/'"
+              :title="link.icon ? link.label : undefined"
             >
-              {{ link.label }}
+              <span v-if="link.icon">{{ link.icon }}</span>
+              <span v-else>{{ link.label }}</span>
               <span
                 v-if="link.badge === 'import' && importPendingCount > 0"
                 class="absolute -top-0.5 -right-1 min-w-[1.1rem] h-[1.1rem] flex items-center justify-center bg-forge-accent text-forge-bg text-[10px] font-bold rounded-full px-0.5"

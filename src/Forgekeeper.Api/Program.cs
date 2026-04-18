@@ -272,7 +272,9 @@ app.MapStatsEndpoints();
 app.MapVariantEndpoints();
 app.MapSourceEndpoints();
 app.MapPluginEndpoints();
+app.MapTemplateEndpoints();
 app.MapFileEndpoints();
+app.MapSettingsEndpoints();
 
 // Export endpoint — full library metadata dump for backup/restore
 app.MapGet("/api/v1/export", async (

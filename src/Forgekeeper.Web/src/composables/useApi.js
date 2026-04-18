@@ -171,6 +171,23 @@ export function useApi() {
     return post('/models/reorganize', { template, modelIds: modelIds || null })
   }
 
+  /** Preview what metadata would be extracted from directory names using a template (no writes) */
+  function parseFilenamePreview(template, modelIds, limit) {
+    return post('/models/parse-filename/preview', {
+      template,
+      modelIds: modelIds || null,
+      limit: limit || null,
+    })
+  }
+
+  /** Apply parsed metadata from directory names to models in the DB */
+  function parseFilenameApply(template, modelIds) {
+    return post('/models/parse-filename/apply', {
+      template,
+      modelIds: modelIds || null,
+    })
+  }
+
   // ─── Import ────────────────────────────────────────────
   function processUnsorted() {
     return post('/import/process')
@@ -252,6 +269,11 @@ export function useApi() {
 
   function deleteSource(slug) {
     return del(`/sources/${encodeURIComponent(slug)}`)
+  }
+
+  // ─── Settings ──────────────────────────────────────────
+  function getSettings() {
+    return get('/settings')
   }
 
   // ─── Stats ─────────────────────────────────────────────
@@ -384,6 +406,8 @@ export function useApi() {
     verifyIntegrity,
     reorganizePreview,
     reorganize,
+    parseFilenamePreview,
+    parseFilenameApply,
     // Import
     processUnsorted,
     processAllImports,
@@ -420,6 +444,8 @@ export function useApi() {
     getPluginRegistry,
     getPluginUpdates,
     removePlugin,
+    // Settings
+    getSettings,
     // Files
     browseFiles,
   }

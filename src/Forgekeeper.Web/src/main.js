@@ -13,6 +13,7 @@ const routes = [
   { path: '/plugins', name: 'Plugins', component: () => import('./views/PluginsView.vue') },
   { path: '/sources', name: 'Sources', component: () => import('./views/SourcesView.vue') },
   { path: '/health', name: 'Health', component: () => import('./views/LibraryHealthView.vue') },
+  { path: '/settings', name: 'Settings', component: () => import('./views/SettingsView.vue') },
 ]
 
 const router = createRouter({

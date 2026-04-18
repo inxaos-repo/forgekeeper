@@ -1063,6 +1063,121 @@ public static class ModelEndpoints
 
             return Results.Ok(new { moved, failed, skipped, errors });
         }).WithName("ReorganizeModels");
+
+        // --- Parse Filename (Guess from Filename) ---
+
+        group.MapPost("/parse-filename/preview", async (
+            [FromBody] ParseFilenameRequest request,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            var parser = new FilenameTemplateParser();
+
+            var query = db.Models.Include(m => m.Creator).AsQueryable();
+            if (request.ModelIds != null && request.ModelIds.Count > 0)
+                query = query.Where(m => request.ModelIds.Contains(m.Id));
+
+            var models = await query
+                .Take(request.Limit ?? 50)
+                .ToListAsync(ct);
+
+            var results = models.Select(m =>
+            {
+                var dirName = Path.GetFileName(m.BasePath.TrimEnd('/'));
+                var parsed = parser.Parse(request.Template, dirName);
+                return new
+                {
+                    m.Id,
+                    DirectoryName = dirName,
+                    CurrentName = m.Name,
+                    CurrentCreator = m.Creator?.Name,
+                    Parsed = parsed,
+                    Success = parsed != null,
+                    Changes = parsed != null ? new
+                    {
+                        Name = parsed.TryGetValue("name", out var n) ? n : null,
+                        Creator = parsed.TryGetValue("creator", out var c) ? c : null,
+                        Category = parsed.TryGetValue("category", out var cat) ? cat : null,
+                        GameSystem = parsed.TryGetValue("gameSystem", out var gs) ? gs : null,
+                        Scale = parsed.TryGetValue("scale", out var sc) ? sc : null,
+                    } : null,
+                };
+            }).ToList();
+
+            return Results.Ok(new
+            {
+                total = results.Count,
+                matched = results.Count(r => r.Success),
+                unmatched = results.Count(r => !r.Success),
+                items = results,
+            });
+        }).WithName("ParseFilenamePreview");
+
+        group.MapPost("/parse-filename/apply", async (
+            [FromBody] ParseFilenameRequest request,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Template))
+                return Results.BadRequest(new { message = "Template is required" });
+
+            var parser = new FilenameTemplateParser();
+
+            var query = db.Models.Include(m => m.Creator).AsQueryable();
+            if (request.ModelIds != null && request.ModelIds.Count > 0)
+                query = query.Where(m => request.ModelIds.Contains(m.Id));
+
+            var models = await query.ToListAsync(ct);
+
+            int updated = 0, skipped = 0, failed = 0;
+
+            foreach (var model in models)
+            {
+                var dirName = Path.GetFileName(model.BasePath.TrimEnd('/'));
+                var parsed = parser.Parse(request.Template, dirName);
+                if (parsed == null) { skipped++; continue; }
+
+                try
+                {
+                    if (parsed.TryGetValue("name", out var name) && !string.IsNullOrWhiteSpace(name))
+                        model.Name = name.Trim();
+                    if (parsed.TryGetValue("category", out var category) && !string.IsNullOrWhiteSpace(category))
+                        model.Category = category.Trim();
+                    if (parsed.TryGetValue("gameSystem", out var gs) && !string.IsNullOrWhiteSpace(gs))
+                        model.GameSystem = gs.Trim();
+                    if (parsed.TryGetValue("scale", out var scale) && !string.IsNullOrWhiteSpace(scale))
+                        model.Scale = scale.Trim();
+
+                    // Creator reassignment — find or create
+                    if (parsed.TryGetValue("creator", out var creatorName) && !string.IsNullOrWhiteSpace(creatorName))
+                    {
+                        creatorName = creatorName.Trim();
+                        var creator = await db.Creators.FirstOrDefaultAsync(
+                            c => c.Name.ToLower() == creatorName.ToLower(), ct);
+                        if (creator == null)
+                        {
+                            creator = new Creator
+                            {
+                                Id = Guid.NewGuid(),
+                                Name = creatorName,
+                                Source = model.Source,
+                                CreatedAt = DateTime.UtcNow,
+                                UpdatedAt = DateTime.UtcNow,
+                            };
+                            db.Creators.Add(creator);
+                        }
+                        model.CreatorId = creator.Id;
+                    }
+
+                    model.UpdatedAt = DateTime.UtcNow;
+                    updated++;
+                }
+                catch { failed++; }
+            }
+
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(new { updated, skipped, failed });
+        }).WithName("ParseFilenameApply");
     }
 
     // -------- private helpers --------
