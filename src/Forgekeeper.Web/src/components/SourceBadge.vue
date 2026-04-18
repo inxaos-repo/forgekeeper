@@ -20,7 +20,7 @@ const sourceConfig = {
 }
 
 const config = computed(() => {
-  const key = (props.source || 'manual').toLowerCase()
+  const key = String(props.source || 'manual').toLowerCase()
   return sourceConfig[key] || sourceConfig.manual
 })
 
