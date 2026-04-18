@@ -425,6 +425,32 @@ public static class ModelEndpoints
                     foreach (var m in models) m.LicenseType = request.Value;
                     break;
 
+                case "setcollection":
+                    foreach (var m in models) m.CollectionName = request.Value;
+                    break;
+
+                case "setprintstatus":
+                    foreach (var m in models) m.PrintStatus = request.Value;
+                    break;
+
+                case "removetag":
+                    var removeTagName = request.Value.ToLowerInvariant().Trim();
+                    foreach (var m in models)
+                    {
+                        var tagToRemove = m.Tags.FirstOrDefault(t => t.Name == removeTagName);
+                        if (tagToRemove != null) m.Tags.Remove(tagToRemove);
+                    }
+                    break;
+
+                case "setcreator":
+                    var creatorName = request.Value.Trim();
+                    var newCreator = await db.Creators
+                        .FirstOrDefaultAsync(c => c.Name.ToLower() == creatorName.ToLower(), ct);
+                    if (newCreator == null)
+                        return Results.BadRequest(new { message = $"Creator '{creatorName}' not found" });
+                    foreach (var m in models) m.CreatorId = newCreator.Id;
+                    break;
+
                 default:
                     return Results.BadRequest(new { message = $"Unknown operation: {request.Operation}" });
             }
@@ -578,5 +604,111 @@ public static class ModelEndpoints
             var results = nameDupes.Concat(hashDupes).Take(maxResults).ToList();
             return Results.Ok(results);
         }).WithName("FindDuplicates");
+
+        // --- Bulk Metadata (multi-field + tags in one request) ---
+
+        group.MapPost("/bulk-metadata", async (
+            [FromBody] BulkMetadataRequest request,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            if (request.ModelIds.Count == 0)
+                return Results.BadRequest(new { message = "No model IDs provided" });
+
+            if (request.ModelIds.Count > 500)
+                return Results.BadRequest(new { message = "Maximum 500 models per bulk operation" });
+
+            var models = await db.Models
+                .Include(m => m.Tags)
+                .Where(m => request.ModelIds.Contains(m.Id))
+                .ToListAsync(ct);
+
+            if (models.Count == 0)
+                return Results.NotFound(new { message = "No matching models found" });
+
+            var errors = new List<string>();
+            var tagsAdded = 0;
+            var tagsRemoved = 0;
+
+            // Apply field updates
+            Creator? newCreator = null;
+            if (request.Fields.TryGetValue("creator", out var creatorValue) && !string.IsNullOrWhiteSpace(creatorValue))
+            {
+                newCreator = await db.Creators
+                    .FirstOrDefaultAsync(c => c.Name.ToLower() == creatorValue.ToLower(), ct);
+                if (newCreator == null)
+                    errors.Add($"Creator '{creatorValue}' not found — creator field skipped");
+            }
+
+            foreach (var model in models)
+            {
+                if (request.Fields.TryGetValue("category", out var category) && category != null)
+                    model.Category = category;
+                if (request.Fields.TryGetValue("scale", out var scale) && scale != null)
+                    model.Scale = scale;
+                if (request.Fields.TryGetValue("gameSystem", out var gameSystem) && gameSystem != null)
+                    model.GameSystem = gameSystem;
+                if (request.Fields.TryGetValue("licenseType", out var licenseType) && licenseType != null)
+                    model.LicenseType = licenseType;
+                if (request.Fields.TryGetValue("collectionName", out var collectionName) && collectionName != null)
+                    model.CollectionName = collectionName;
+                if (request.Fields.TryGetValue("printStatus", out var printStatus) && printStatus != null)
+                    model.PrintStatus = printStatus;
+                if (request.Fields.TryGetValue("notes", out var notes) && notes != null)
+                    model.Notes = notes;
+                if (request.Fields.TryGetValue("rating", out var ratingStr) && ratingStr != null
+                    && int.TryParse(ratingStr, out var rating) && rating >= 1 && rating <= 5)
+                    model.Rating = rating;
+                if (newCreator != null)
+                    model.CreatorId = newCreator.Id;
+
+                model.UpdatedAt = DateTime.UtcNow;
+            }
+
+            // Add tags
+            foreach (var tagName in request.AddTags.Select(t => t.ToLowerInvariant().Trim()).Distinct())
+            {
+                if (string.IsNullOrWhiteSpace(tagName)) continue;
+                var tag = await db.Tags.FirstOrDefaultAsync(t => t.Name == tagName, ct);
+                if (tag == null)
+                {
+                    tag = new Tag { Id = Guid.NewGuid(), Name = tagName };
+                    db.Tags.Add(tag);
+                }
+                foreach (var model in models)
+                {
+                    if (!model.Tags.Any(t => t.Name == tagName))
+                    {
+                        model.Tags.Add(tag);
+                        tagsAdded++;
+                    }
+                }
+            }
+
+            // Remove tags
+            foreach (var tagName in request.RemoveTags.Select(t => t.ToLowerInvariant().Trim()).Distinct())
+            {
+                if (string.IsNullOrWhiteSpace(tagName)) continue;
+                foreach (var model in models)
+                {
+                    var existing = model.Tags.FirstOrDefault(t => t.Name == tagName);
+                    if (existing != null)
+                    {
+                        model.Tags.Remove(existing);
+                        tagsRemoved++;
+                    }
+                }
+            }
+
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new BulkMetadataResponse
+            {
+                AffectedCount = models.Count,
+                TagsAdded = tagsAdded,
+                TagsRemoved = tagsRemoved,
+                Errors = errors,
+            });
+        }).WithName("BulkMetadata");
     }
 }

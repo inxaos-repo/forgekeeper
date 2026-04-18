@@ -173,3 +173,113 @@ public class DuplicateModel
     public string? BasePath { get; set; }
     public long TotalSizeBytes { get; set; }
 }
+
+/// <summary>
+/// Request for the bulk-metadata endpoint — apply multiple field updates and tag changes in one call.
+/// </summary>
+public class BulkMetadataRequest
+{
+    /// <summary>Model IDs to update (max 500).</summary>
+    public List<Guid> ModelIds { get; set; } = [];
+
+    /// <summary>
+    /// Fields to set. Null values are ignored (not cleared). Supported keys:
+    /// creator, category, scale, gameSystem, licenseType, collectionName, printStatus, rating, notes.
+    /// </summary>
+    public Dictionary<string, string?> Fields { get; set; } = [];
+
+    /// <summary>Tags to add to every model in the set.</summary>
+    public List<string> AddTags { get; set; } = [];
+
+    /// <summary>Tags to remove from every model in the set.</summary>
+    public List<string> RemoveTags { get; set; } = [];
+}
+
+public class BulkMetadataResponse
+{
+    public int AffectedCount { get; set; }
+    public int TagsAdded { get; set; }
+    public int TagsRemoved { get; set; }
+    public List<string> Errors { get; set; } = [];
+}
+
+/// <summary>Request body for POST /api/v1/import/scan.</summary>
+public class ImportScanRequest
+{
+    /// <summary>Absolute path to scan on the server filesystem.</summary>
+    public string Path { get; set; } = string.Empty;
+
+    /// <summary>Whether to recurse into subdirectories (default true).</summary>
+    public bool Recursive { get; set; } = true;
+
+    /// <summary>Maximum depth of recursion (0 = unlimited).</summary>
+    public int MaxDepth { get; set; } = 0;
+}
+
+/// <summary>Top-level result from a scan operation.</summary>
+public class ImportScanResult
+{
+    public string ScannedPath { get; set; } = string.Empty;
+    public int TotalDirectoriesScanned { get; set; }
+    public int DetectedModels { get; set; }
+    public int AlreadyInLibrary { get; set; }
+    public List<DetectedModelEntry> Models { get; set; } = [];
+    public DateTime ScannedAt { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>A single potential model detected during a scan.</summary>
+public class DetectedModelEntry
+{
+    public string FolderPath { get; set; } = string.Empty;
+    public string DetectedModelName { get; set; } = string.Empty;
+    public string? DetectedCreatorName { get; set; }
+    public bool AlreadyInLibrary { get; set; }
+    public Guid? ExistingModelId { get; set; }
+    public List<DetectedVariantFile> Files { get; set; } = [];
+    public int TotalFiles { get; set; }
+    public long TotalSizeBytes { get; set; }
+    public bool HasMetadataJson { get; set; }
+}
+
+/// <summary>A single file inside a detected model folder.</summary>
+public class DetectedVariantFile
+{
+    public string RelativePath { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public string FileType { get; set; } = string.Empty;
+    public long SizeBytes { get; set; }
+    public string? DetectedVariant { get; set; }
+}
+
+/// <summary>Input for PreviewRename in NamingTemplateService.</summary>
+public class ModelRenameInput
+{
+    public Guid ModelId { get; set; }
+    public string CurrentPath { get; set; } = string.Empty;
+    public string ModelName { get; set; } = string.Empty;
+    public string CreatorName { get; set; } = string.Empty;
+    public string? Variant { get; set; }
+    public string? Scale { get; set; }
+    public string? Source { get; set; }
+    public string? Category { get; set; }
+    public string? GameSystem { get; set; }
+    public string? FileType { get; set; }
+    public DateTime? DateAdded { get; set; }
+    public string? Collection { get; set; }
+    public List<string> Files { get; set; } = [];
+}
+
+/// <summary>Preview of what a rename would do.</summary>
+public class RenamePreview
+{
+    public Guid ModelId { get; set; }
+    public string CurrentPath { get; set; } = string.Empty;
+    public string NewPath { get; set; } = string.Empty;
+    public List<FileRenamePreview> Files { get; set; } = [];
+}
+
+public class FileRenamePreview
+{
+    public string From { get; set; } = string.Empty;
+    public string To { get; set; } = string.Empty;
+}

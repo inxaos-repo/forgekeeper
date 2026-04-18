@@ -373,6 +373,33 @@ public class ForgekeeperMcpServer
             case "setscale":
                 foreach (var m in models) m.Scale = value;
                 break;
+            case "setlicense":
+                foreach (var m in models) m.LicenseType = value;
+                break;
+            case "setcollection":
+                foreach (var m in models) m.CollectionName = value;
+                break;
+            case "setprintstatus":
+                foreach (var m in models) m.PrintStatus = value;
+                break;
+            case "removetag":
+                var removeTagName = value.ToLowerInvariant().Trim();
+                foreach (var m in models)
+                {
+                    var tagToRemove = m.Tags.FirstOrDefault(t => t.Name == removeTagName);
+                    if (tagToRemove != null) m.Tags.Remove(tagToRemove);
+                }
+                break;
+            case "setcreator":
+                var creatorName = value.Trim();
+                var newCreator = await db.Creators
+                    .FirstOrDefaultAsync(c => c.Name.ToLower() == creatorName.ToLower(), ct);
+                if (newCreator == null)
+                    throw new ArgumentException($"Creator '{creatorName}' not found");
+                foreach (var m in models) m.CreatorId = newCreator.Id;
+                break;
+            default:
+                throw new ArgumentException($"Unknown operation: {operation}");
         }
 
         foreach (var m in models) m.UpdatedAt = DateTime.UtcNow;
@@ -701,15 +728,15 @@ public class ForgekeeperMcpServer
         new()
         {
             Name = "bulkUpdate",
-            Description = "Apply an operation to multiple models at once: tag, categorize, setGameSystem, setScale.",
+            Description = "Apply an operation to multiple models at once. Operations: tag (add tag), removetag (remove tag), categorize (set category), setGameSystem, setScale, setLicense (set licenseType), setCollection (set collectionName), setPrintStatus (set workflow print status), setCreator (reassign to creator by name).",
             Category = "write",
             InputSchema = new McpInputSchema
             {
                 Properties = new()
                 {
                     ["modelIds"] = new() { Type = "array", Description = "List of model UUIDs", Items = new() { Description = "Model UUID" } },
-                    ["operation"] = new() { Description = "Operation to perform", Enum = ["tag", "categorize", "setGameSystem", "setScale"] },
-                    ["value"] = new() { Description = "Value for the operation" },
+                    ["operation"] = new() { Description = "Operation to perform", Enum = ["tag", "removetag", "categorize", "setgamesystem", "setscale", "setlicense", "setcollection", "setprintstatus", "setcreator"] },
+                    ["value"] = new() { Description = "Value for the operation (tag name, category, creator name, etc.)" },
                 },
                 Required = ["modelIds", "operation", "value"],
             },

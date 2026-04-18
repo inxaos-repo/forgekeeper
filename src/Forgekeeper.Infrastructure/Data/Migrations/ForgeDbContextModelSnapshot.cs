@@ -271,6 +271,11 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("print_history");
 
+                    b.Property<string>("PrintStatus")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("print_status");
+
                     b.Property<PrintSettingsInfo>("PrintSettings")
                         .HasColumnType("jsonb")
                         .HasColumnName("print_settings");
