@@ -167,7 +167,8 @@ public class PluginHostService : BackgroundService
 
         // Use a long-lived token (not the HTTP request's CT which times out with nginx)
         // The sync runs in the background and can take minutes for FlareSolverr CF solve + login
-        var syncCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        // Sync can take hours for large libraries (7,230+ models × download time)
+        var syncCts = new CancellationTokenSource(TimeSpan.FromHours(12));
         _ = Task.Run(() => RunSyncAsync(slug, syncCts.Token, startIndex));
     }
 
