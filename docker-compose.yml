@@ -1,7 +1,7 @@
 services:
   forgekeeper:
-    image: ghcr.io/inxaos-repo/forgekeeper:main
-    # Or build locally: build: .
+    image: ${FORGEKEEPER_IMAGE:-forgekeeper:local}
+    build: .
     restart: unless-stopped
     ports:
       - "5000:5000"

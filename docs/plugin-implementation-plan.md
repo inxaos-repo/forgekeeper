@@ -27,21 +27,25 @@ Effort sizing:
 
 ## Phase A — v1.0: Ship It
 
+> **✅ Phase A is COMPLETE** as of 2026-04-18. All work packages WP-PL1 through WP-PL5 are implemented in the codebase. See completion notes per work package below.
+
 **Goal:** Load plugins safely. Validate manifest.json. Enforce SDK compatibility. Give operators visibility into plugin health. No distribution mechanism yet — plugins are either bundled in the Docker image or dropped in manually.
 
 ### Phase A Work Packages
 
-| ID | Work Package | Effort | Depends On |
-|----|-------------|--------|-----------|
-| WP-PL1 | manifest.json Parsing & Validation | M | — |
-| WP-PL2 | SDK Version Compatibility Check | M | WP-PL1 |
-| WP-PL3 | Enhanced Plugins Settings Page | M | WP-PL1, WP-PL2 |
-| WP-PL4 | Hot-Reload API | L | WP-PL1, WP-PL2 |
-| WP-PL5 | Error Logging & Diagnostics | M | WP-PL1, WP-PL4 |
+| ID | Work Package | Effort | Depends On | Status |
+|----|-------------|--------|-----------|--------|
+| WP-PL1 | manifest.json Parsing & Validation | M | — | ✅ Complete (2026-04-18) |
+| WP-PL2 | SDK Version Compatibility Check | M | WP-PL1 | ✅ Complete (2026-04-18) |
+| WP-PL3 | Enhanced Plugins Settings Page | M | WP-PL1, WP-PL2 | ✅ Complete (2026-04-18) |
+| WP-PL4 | Hot-Reload API | L | WP-PL1, WP-PL2 | ✅ Complete (2026-04-18) |
+| WP-PL5 | Error Logging & Diagnostics | M | WP-PL1, WP-PL4 | ✅ Complete (2026-04-18) |
 
 ---
 
-### WP-PL1: manifest.json Parsing & Validation
+### WP-PL1: manifest.json Parsing & Validation ✅ Complete
+
+**Completed:** 2026-04-18 — `ManifestValidationService` fully implemented in `Forgekeeper.Infrastructure/Services/`.
 
 **Objective:** During plugin discovery in `PluginHostService`, read and validate `manifest.json` from each plugin directory. Store the parsed data on the `LoadedPlugin` record. Reject invalid plugins gracefully — log the error, skip the plugin, don't crash.
 
@@ -78,7 +82,9 @@ Effort sizing:
 
 ---
 
-### WP-PL2: SDK Version Compatibility Check
+### WP-PL2: SDK Version Compatibility Check ✅ Complete
+
+**Completed:** 2026-04-18 — `SdkCompatibilityChecker` fully implemented. `SdkInfo` static class in `Forgekeeper.PluginSdk/SdkInfo.cs` exposes `SdkInfo.Version`, `SdkInfo.MajorVersion`, etc.
 
 **Objective:** After manifest validation passes, compare the plugin's declared SDK version requirements against the host SDK version. Refuse to load incompatible plugins with a clear, actionable error message.
 
@@ -112,7 +118,9 @@ Effort sizing:
 
 ---
 
-### WP-PL3: Enhanced Plugins Settings Page
+### WP-PL3: Enhanced Plugins Settings Page ✅ Complete
+
+**Completed:** 2026-04-18 — `PluginTrustBadge.vue` and `PluginSdkBadge.vue` exist. Plugin list API returns all new fields including `author`, `manifestValid`, `sdkCompatLevel`, `source`, etc.
 
 **Objective:** Update `PluginsView.vue` from a basic list to a rich settings page showing manifest metadata, SDK compatibility status, trust badge, enable/disable toggle, and sync history.
 
@@ -147,7 +155,11 @@ Effort sizing:
 
 ---
 
-### WP-PL4: Hot-Reload API
+### WP-PL4: Hot-Reload API ✅ Complete (API reload only)
+
+**Completed:** 2026-04-18 — `POST /api/v1/plugins/reload` and `POST /api/v1/plugins/{slug}/reload` are implemented and gated by `Forgekeeper__HotReloadEnabled` (default: false). Returns `501 Not Implemented` when disabled.
+
+> **Note:** WP-PL4.6 (`PluginDirectoryWatcher`) was deliberately skipped — file watchers are unreliable over NFS/SMB mounts (the primary dev workflow). Use the API endpoints for hot-reload instead.
 
 **Objective:** Provide API endpoints to reload all plugins (or a single plugin) without restarting the Forgekeeper service. Uses proper `AssemblyLoadContext` unload + recreate. Gated by a config flag — disabled by default in production.
 
@@ -183,7 +195,9 @@ Effort sizing:
 
 ---
 
-### WP-PL5: Error Logging & Diagnostics
+### WP-PL5: Error Logging & Diagnostics ✅ Complete
+
+**Completed:** 2026-04-18 — `GET /api/v1/plugins/{slug}/diagnostics` endpoint implemented. Returns `loadedAt`, `source`, `assemblyName`, `dllPath`, `manifest`, `validation`, `sdkCompat`, and recent sync run history.
 
 **Objective:** Structured logging for all plugin lifecycle events. A diagnostics endpoint for per-plugin history. Prometheus metrics for plugin health.
 

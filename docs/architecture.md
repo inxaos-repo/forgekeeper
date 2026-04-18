@@ -25,10 +25,11 @@
 │  │ Scanner Svc  │ │ Thumbnail    │ │ Plugin  │ │
 │  │ (background) │ │ Worker (bg)  │ │ Host    │ │
 │  └──────────────┘ └──────────────┘ └─────────┘ │
-│  ┌──────────────┐ ┌──────────────┐              │
-│  │ Search Svc   │ │ Import Svc   │              │
-│  │ (pg_trgm)    │ │ (unsorted→)  │              │
-│  └──────────────┘ └──────────────┘              │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────┐ │
+│  │ Search Svc   │ │ Import Svc   │ │ Import   │ │
+│  │ (pg_trgm)    │ │ (unsorted→)  │ │ Worker   │ │
+│  └──────────────┘ └──────────────┘ │ (bg)     │ │
+│                                     └──────────┘ │
 │  ┌──────────────────────────────────────────┐   │
 │  │  Vue.js 3 SPA (Three.js STL viewer)      │   │
 │  └──────────────────────────────────────────┘   │
@@ -62,12 +63,14 @@ The REST API layer built with ASP.NET Core Minimal APIs. Routes are organized in
 - **CreatorEndpoints** — list creators, get creator details and models
 - **TagEndpoints** — list tags, add/remove tags from models
 - **SourceEndpoints** — manage source directories
-- **ScanEndpoints** — trigger and monitor scans
-- **ImportEndpoints** — process unsorted files, manage import queue
-- **PluginEndpoints** — plugin management, config, sync, auth
+- **ScanEndpoints** — trigger and monitor scans, integrity verify
+- **ImportEndpoints** — process unsorted files, manage import queue, watch directories, scan arbitrary paths
+- **FileEndpoints** — server-side file browser (`GET /api/v1/files/browse`) for import directory selection
+- **PluginEndpoints** — plugin management, config, sync, auth, hot-reload, history, diagnostics
 - **StatsEndpoints** — collection and creator statistics
 - **VariantEndpoints** — file download, variant thumbnails
 - **MCP** — Model Context Protocol integration for AI tools
+- **Export/Restore** — full library JSON export (`GET /api/v1/export`) and import restore (`POST /api/v1/import/restore`)
 
 Middleware:
 - **ApiKeyMiddleware** — optional API key authentication via `X-Api-Key` header
@@ -83,6 +86,16 @@ Background service that indexes the filesystem into the database:
 - Supports both full and incremental scanning modes
 - Reports progress via `ScanProgress` DTO
 
+### Import Worker (`Api/BackgroundServices/ImportWorker.cs`)
+
+Background hosted service that processes the automatic import queue:
+
+- Runs on a configurable interval (`Import:IntervalMinutes`, default 30 min)
+- Scans directories listed in `Import:WatchDirectories` for new model folders
+- Calls `ImportService.ProcessDirectoriesAsync` to create import queue entries
+- Only active when `Import:AutoImportEnabled` is `true`
+- Registered in `Program.cs` alongside `ScannerWorker` and `ThumbnailWorker`
+
 ### Thumbnail Worker (`Api/BackgroundServices/ThumbnailWorker.cs`)
 
 Background hosted service that generates thumbnails:
@@ -91,6 +104,18 @@ Background hosted service that generates thumbnails:
 - Processes models that lack thumbnails
 - Configurable size and format via settings
 - Stores thumbnails in `.thumbnails/` under the base path
+
+### Manifest Validation & SDK Compatibility (`Infrastructure/Services/`)
+
+Two services that gate plugin loading:
+
+- **`ManifestValidationService`** — Reads and validates `manifest.json` from each plugin directory. Full SemVer validation, slug format checking (lowercase + hyphens), required-field enforcement. Produces structured `PluginManifestValidationResult` with `Errors[]` and `Warnings[]`.
+- **`SdkCompatibilityChecker`** — Checks plugin SDK version against host SDK (from `SdkInfo.Version`). Supports wildcard versions (`1.x`). Returns `Compatible`, `MinorMismatch`, `MajorMismatch`, or `Unknown`.
+
+### Naming & Metadata Services (`Infrastructure/Services/`)
+
+- **`NamingTemplateService`** — Template engine for model rename operations. Handles variables like `{creator}`, `{name}`, `{source}`, `{category}`, `{scale}`, `{rating}`, `{id}`.
+- **`MetadataWritebackService`** — Reads existing `metadata.json`, merges user-owned fields (print history, components, tags, etc.), and writes back to disk. Triggered on every model edit via the API.
 
 ### Plugin Host (`Infrastructure/Services/PluginHostService.cs`)
 
@@ -139,7 +164,7 @@ ScanState ── tracks per-directory scan state
 
 | Entity | Description |
 |--------|-------------|
-| **Model3D** | A 3D model with metadata, belonging to a creator and source. Contains JSONB columns for print history, components, and print settings. |
+| **Model3D** | A 3D model with metadata, belonging to a creator and source. Contains JSONB columns for print history, components, and print settings. Additional fields: `PrintStatus` (free-form workflow string: `want-to-print`, `printing`, `printed`, `on-hold`, `skipped`), `AcquisitionOrderId` (order/campaign ID), `Extra` (JSONB pass-through for source-specific data from `metadata.json`), `ExternalCreatedAt`/`ExternalUpdatedAt` (dates from source platform), `DownloadedAt` (when files were downloaded), `LastScannedAt` (last scanner pass timestamp). |
 | **Creator** | A model creator/sculptor. Has a source type and optional external profile URL. |
 | **Variant** | A specific file within a model (e.g., supported STL, unsupported STL, presupported). Tracks file path, size, hash, and physical properties. |
 | **Tag** | A tag applied to models. Many-to-many relationship. Tags have an optional `source` field ("scraper" vs "user"). |
@@ -147,6 +172,8 @@ ScanState ── tracks per-directory scan state
 | **ModelRelation** | Self-referencing many-to-many for model relationships (collection, companion, remix, alternate, base). |
 | **PluginConfig** | Per-plugin configuration stored encrypted in the database. |
 | **ImportQueueItem** | Tracks files in the unsorted directory through the import pipeline. |
+| **ScanState** | Per-directory scan state tracking — stores last-scanned timestamp and file hash/count for incremental scan support. One row per source directory path. |
+| **SyncRun** | Records each plugin sync operation — tracks `StartedAt`, `CompletedAt`, `Status`, `ScrapedCount`, `FailedCount`, `TotalCount`, and any error message. Used for sync history (`GET /api/v1/plugins/history`) and Prometheus metrics. |
 
 ### Key Enums
 

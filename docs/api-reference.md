@@ -30,6 +30,10 @@ Search and filter the model library with pagination.
 | `collectionName` | string | Filter by collection name |
 | `printed` | bool | Filter by print status |
 | `minRating` | int | Minimum rating (1-5) |
+| `fileType` | enum | Filter by file type (`Stl`, `Obj`, `Threemf`, `Lys`, `Ctb`, `Gcode`, etc.) |
+| `acquisitionMethod` | enum | Filter by acquisition method (`Purchase`, `Subscription`, `Free`, `Campaign`, `Gift`) |
+| `publishedAfter` | datetime | Filter models published on/after this date (ISO 8601 UTC) |
+| `publishedBefore` | datetime | Filter models published on/before this date (ISO 8601 UTC) |
 | `sortBy` | string | Sort field: `name`, `date`, `rating`, `filecount`, `size`, `creator` (default: `name`) |
 | `sortDescending` | bool | Sort descending (default: `false`) |
 | `page` | int | Page number, 1-based (default: `1`) |
@@ -214,6 +218,14 @@ Record that a model was printed.
 ```
 
 **Response:** `201 Created` with the created print history entry.
+
+---
+
+### `DELETE /api/v1/models/{id}/prints/{printId}` — Delete Print History Entry
+
+Delete a specific print history entry from a model.
+
+**Response:** `204 No Content`
 
 ---
 
@@ -582,7 +594,48 @@ curl -X DELETE "http://localhost:5000/api/v1/models/{id}/tags/dragon"
 
 ---
 
-### `DELETE /api/v1/sources/{id}` — Delete Source
+### `GET /api/v1/sources/{slug}` — Get Source
+
+Returns a single source by its slug.
+
+**Response:**
+
+```json
+{
+  "id": "...",
+  "slug": "mmf",
+  "name": "MyMiniFactory",
+  "basePath": "/library/sources/mmf",
+  "adapterType": "MmfSourceAdapter",
+  "autoScan": true,
+  "modelCount": 500,
+  "createdAt": "2026-01-01T00:00:00Z",
+  "updatedAt": "2026-01-01T00:00:00Z"
+}
+```
+
+---
+
+### `PATCH /api/v1/sources/{slug}` — Update Source
+
+Update source settings. All fields optional (patch semantics).
+
+**Request Body:**
+
+```json
+{
+  "name": "MyMiniFactory",
+  "basePath": "/library/sources/mmf",
+  "adapterType": "MmfSourceAdapter",
+  "autoScan": true
+}
+```
+
+**Response:** `200 OK`
+
+---
+
+### `DELETE /api/v1/sources/{slug}` — Delete Source
 
 **Response:** `204 No Content`
 
@@ -612,6 +665,29 @@ Scans only files that have changed since the last scan.
 
 ---
 
+### `POST /api/v1/scan/verify` — Verify Library Integrity
+
+Walks all models and variants in the database and checks that their `BasePath` directories and variant files exist on disk. Non-destructive — does not modify any records.
+
+**Response:** `200 OK`
+
+```json
+{
+  "totalModels": 5000,
+  "verifiedModels": 4985,
+  "missingModels": 15,
+  "totalFiles": 35000,
+  "verifiedFiles": 34950,
+  "missingFiles": 50,
+  "missingItems": [
+    { "type": "model", "id": "...", "path": "/library/sources/mmf/Creator/Missing Model" },
+    { "type": "file", "id": "...", "path": "/library/sources/mmf/Creator/Model/missing.stl" }
+  ]
+}
+```
+
+---
+
 ### `GET /api/v1/scan/untracked` — Get Untracked Files
 
 Returns files present on disk in source directories that are not tracked in the database.
@@ -629,7 +705,7 @@ Returns files present on disk in source directories that are not tracked in the 
   {
     "path": "/mnt/3dprinting/sources/mmf/SomeCreator/OldModel/model.stl",
     "source": "mmf",
-    "sizBytes": 1234567
+    "sizeBytes": 1234567
   }
 ]
 ```

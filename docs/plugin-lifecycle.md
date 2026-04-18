@@ -44,7 +44,7 @@ Every plugin must include a `manifest.json` at its root. See `plugins/manifest.s
 ```json
 {
   "slug": "mmf",
-  "name": "My Manga Forum Scraper",
+  "name": "MyMiniFactory Scraper",
   "version": "1.0.0",
   "sdk_version": "1.0.0",
   "min_sdk_version": "1.0.0",
@@ -52,11 +52,11 @@ Every plugin must include a `manifest.json` at its root. See `plugins/manifest.s
   "min_forgekeeper_version": "1.0.0",
   "author": "Plugin Author",
   "email": "author@example.com",
-  "description": "Scrapes library data from My Manga Forum (MMF).",
+  "description": "Scrapes 3D printing model library data from MyMiniFactory (MMF).",
   "homepage": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
   "source_url": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
   "license": "MIT",
-  "tags": ["manga", "scraper", "mmf"],
+  "tags": ["3d-printing", "miniatures", "scraper", "mmf"],
   "entry_assembly": "Forgekeeper.Scraper.Mmf.dll"
 }
 ```
@@ -146,16 +146,16 @@ https://raw.githubusercontent.com/forgekeeper/plugin-registry/main/registry.json
   "plugins": [
     {
       "slug": "mmf",
-      "name": "My Manga Forum Scraper",
+      "name": "MyMiniFactory Scraper",
       "version": "1.0.0",
       "author": "Plugin Author",
-      "description": "Scrapes library data from My Manga Forum (MMF).",
+      "description": "Scrapes 3D printing model library data from MyMiniFactory (MMF).",
       "homepage": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
       "download_url": "https://github.com/your-org/Forgekeeper.Scraper.Mmf/releases/download/v1.0.0/Forgekeeper.Scraper.Mmf-1.0.0.zip",
       "sdk_version": "1.0.0",
       "min_sdk_version": "1.0.0",
       "checksum_sha256": "abc123...",
-      "tags": ["manga", "scraper"],
+      "tags": ["3d-printing", "miniatures", "scraper"],
       "updated": "2026-04-18T00:00:00Z"
     }
   ]
@@ -243,11 +243,12 @@ services:
       - ./plugins:/data/plugins    # user-installed plugins
       - ./data:/data/library        # library database
     environment:
-      FORGEKEEPER_PLUGINS_PATH: /data/plugins
-      FORGEKEEPER_PLUGINS_BUILTIN_PATH: /app/plugins
+      Forgekeeper__PluginsDirectory: /app/plugins
 ```
 
-Forgekeeper loads from both paths: `/app/plugins/` (built-in, read-only image layer) and `/data/plugins/` (user-installed, writable volume). User plugins with the same slug override built-in plugins.
+Forgekeeper loads plugins from `Forgekeeper__PluginsDirectory` (default `/app/plugins`). To add user-installed plugins, mount them into the same directory or a subdirectory. Both built-in (image-bundled) and user-dropped plugins are discovered from this path.
+
+> **Note:** There is currently a single plugins directory. There is no slug-override mechanism — if two plugins share the same slug, behavior is undefined. Use unique slugs for all plugins.
 
 ---
 
@@ -427,11 +428,11 @@ forgekeeper/plugin-registry/
   "plugins": [
     {
       "slug": "mmf",
-      "name": "My Manga Forum Scraper",
+      "name": "MyMiniFactory Scraper",
       "version": "1.0.0",
       "author": "Plugin Author",
       "author_url": "https://github.com/your-github-username",
-      "description": "Scrapes library data from My Manga Forum (MMF). Supports series, volumes, and reading progress sync.",
+      "description": "Scrapes 3D printing model library data from MyMiniFactory (MMF). Supports designer libraries, collections, and download sync.",
       "homepage": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
       "source_url": "https://github.com/your-org/Forgekeeper.Scraper.Mmf",
       "download_url": "https://github.com/your-org/Forgekeeper.Scraper.Mmf/releases/download/v1.0.0/Forgekeeper.Scraper.Mmf-1.0.0.zip",
@@ -441,7 +442,7 @@ forgekeeper/plugin-registry/
       "max_sdk_version": "1.x",
       "min_forgekeeper_version": "1.0.0",
       "checksum_sha256": "abc123def456...",
-      "tags": ["manga", "scraper", "official"],
+      "tags": ["3d-printing", "miniatures", "scraper", "official"],
       "license": "MIT",
       "updated": "2026-04-18T00:00:00Z",
       "downloads": 0
@@ -461,6 +462,8 @@ forgekeeper/plugin-registry/
 ---
 
 ## 8. CLI Commands Reference
+
+> **⚠️ Planned (Phase B/C) — Not yet implemented.** The Forgekeeper binary is currently an ASP.NET API server. The `forgekeeper plugin` CLI subcommands below are planned for Phase B (v1.1). They do **not** exist in the current codebase. Use the REST API (`POST /api/v1/plugins/{slug}/reload`, `GET /api/v1/plugins`, etc.) for plugin management today.
 
 ```
 forgekeeper plugin list
@@ -521,11 +524,11 @@ Hot-reload allows plugins to be updated without restarting the Forgekeeper servi
 
 - [x] Plugins loaded from `/app/plugins/` (Docker image)
 - [x] Plugins loaded from `/data/plugins/` (user volume)
-- [ ] `manifest.json` parsing and validation on load
-- [ ] SDK version compatibility check (refuse to load incompatible plugins)
-- [ ] Basic **Settings → Plugins** page: list loaded plugins with name, version, status
-- [ ] Hot-reload via `POST /api/plugins/reload` (dev/debug use)
-- [ ] Clear error logging when a plugin fails to load
+- [x] `manifest.json` parsing and validation on load (`ManifestValidationService`)
+- [x] SDK version compatibility check (`SdkCompatibilityChecker`) — refuses to load incompatible plugins
+- [x] Enhanced **Settings → Plugins** page with trust badges, SDK compat indicators, manifest validation status
+- [x] Hot-reload via `POST /api/v1/plugins/reload` and `POST /api/v1/plugins/{slug}/reload`
+- [x] Clear error logging when a plugin fails to load; diagnostics at `GET /api/v1/plugins/{slug}/diagnostics`
 
 **Deliverables:** manifest.json schema, validation code, basic plugins UI page.
 

@@ -42,6 +42,20 @@ Forgekeeper is configured via environment variables, `appsettings.json`, or a co
 |----------|-------------|---------|
 | `Search__MinTrigramSimilarity` | Minimum pg_trgm similarity score for fuzzy search (0.0-1.0). Lower = more results, less precise. | `0.3` |
 
+### Import
+
+| Variable | Description | Default |
+|----------|-------------|------|
+| `Import__WatchDirectories__0` | First directory to auto-scan for imports (repeat for more) | (none) |
+| `Import__AutoImportEnabled` | Enable automatic import processing on a schedule | `false` |
+| `Import__IntervalMinutes` | How often to check watch directories (minutes) | `30` |
+
+### Plugins
+
+| Variable | Description | Default |
+|----------|-------------|------|
+| `Forgekeeper__HotReloadEnabled` | Enable hot-reload of plugins without service restart | `false` |
+
 ### ASP.NET Core
 
 | Variable | Description | Default |
@@ -80,6 +94,14 @@ Forgekeeper is configured via environment variables, `appsettings.json`, or a co
   },
   "Search": {
     "MinTrigramSimilarity": 0.3
+  },
+  "Import": {
+    "WatchDirectories": [],
+    "AutoImportEnabled": false,
+    "IntervalMinutes": 30
+  },
+  "Plugins": {
+    "HotReloadEnabled": false
   },
   "Security": {
     "ApiKey": null
