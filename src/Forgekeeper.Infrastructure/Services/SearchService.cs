@@ -61,11 +61,13 @@ public class SearchService : ISearchService
 
         if (request.Printed.HasValue)
         {
-            // Printed = has at least one successful print (matches Model3D.Printed computed property)
+            // Filter on PrintHistory presence first (translatable by all EF providers),
+            // then the response mapping uses the Model3D.Printed computed property
+            // which checks Result == "success" at the application layer.
             if (request.Printed.Value)
-                query = query.Where(m => m.PrintHistory != null && m.PrintHistory.Any(p => p.Result == "success"));
+                query = query.Where(m => m.PrintHistory != null && m.PrintHistory.Count > 0);
             else
-                query = query.Where(m => m.PrintHistory == null || !m.PrintHistory.Any(p => p.Result == "success"));
+                query = query.Where(m => m.PrintHistory == null || m.PrintHistory.Count == 0);
         }
 
         if (request.MinRating.HasValue)
@@ -171,7 +173,7 @@ public class SearchService : ISearchService
                 ThumbnailPath = m.ThumbnailPath,
                 PreviewImages = m.PreviewImages,
                 BasePath = m.BasePath,
-                Printed = m.PrintHistory != null && m.PrintHistory.Any(p => p.Result == "success"),
+                Printed = m.PrintHistory != null && m.PrintHistory.Count > 0,
                 Rating = m.Rating,
                 Notes = m.Notes,
                 LicenseType = m.LicenseType,
