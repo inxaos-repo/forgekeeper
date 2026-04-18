@@ -389,9 +389,34 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             }
             catch { }
 
-            // ── Step 6: Write metadata.json ──
-            var metadata = BuildMetadata(model, details, downloadedFiles);
+            // ── Step 6: Load existing metadata + write updated metadata.json ──
+            Dictionary<string, object?>? existingMetadata = null;
             var metadataPath = Path.Combine(modelDir, "metadata.json");
+            if (File.Exists(metadataPath))
+            {
+                try
+                {
+                    var existingJson = await File.ReadAllTextAsync(metadataPath, ct);
+                    existingMetadata = JsonSerializer.Deserialize<Dictionary<string, object?>>(
+                        existingJson, JsonOptions);
+                }
+                catch { /* If we can't read existing, start fresh */ }
+            }
+
+            // Check if source has been updated since last sync
+            if (existingMetadata != null && details?.UpdatedAt != null)
+            {
+                var lastSynced = GetDateFromMetadata(existingMetadata, "lastSynced");
+                var sourceUpdated = details.UpdatedAt;
+                if (lastSynced.HasValue && sourceUpdated <= lastSynced && filesDownloaded == 0)
+                {
+                    // Source hasn't changed and no new files — skip metadata rewrite
+                    filesSkipped++;
+                    return ScrapeResult.Ok("metadata.json", downloadedFiles);
+                }
+            }
+
+            var metadata = BuildMetadata(model, details, downloadedFiles, existingMetadata);
             var json = JsonSerializer.Serialize(metadata, JsonWriteOptions);
             await File.WriteAllTextAsync(metadataPath, json, ct);
 
@@ -973,18 +998,20 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         }
     }
 
-    private static Dictionary<string, object?> BuildMetadata(ScrapedModel model, MmfModelDetails? details, List<DownloadedFile> files)
+    /// <summary>Build metadata.json, preserving user edits from existing metadata.</summary>
+    internal static Dictionary<string, object?> BuildMetadata(
+        ScrapedModel model, MmfModelDetails? details, List<DownloadedFile> files,
+        Dictionary<string, object?>? existing = null)
     {
         var metadata = new Dictionary<string, object?>
         {
-            ["metadataVersion"] = 2,
+            ["metadataVersion"] = 3,
             ["source"] = "mmf",
             ["externalId"] = model.ExternalId,
             ["externalUrl"] = details?.Url ?? $"https://www.myminifactory.com/object/{model.ExternalId}",
             ["name"] = details?.Name ?? model.Name,
             ["description"] = details?.Description,
             ["type"] = details?.Type ?? model.Type,
-            ["tags"] = details?.Tags?.Select(t => t.Name).Where(n => n != null).ToList() ?? new List<string?>(),
             ["creator"] = new Dictionary<string, object?>
             {
                 ["externalId"] = model.CreatorId ?? details?.Designer?.Id?.ToString(),
@@ -997,6 +1024,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 ["created"] = details?.CreatedAt,
                 ["updated"] = details?.UpdatedAt ?? model.UpdatedAt,
                 ["published"] = details?.PublishedAt,
+                ["lastSynced"] = DateTime.UtcNow,
             },
             ["files"] = files.Select(f => new Dictionary<string, object?>
             {
@@ -1007,6 +1035,14 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             }).ToList(),
         };
 
+        // Merge tags: source tags + existing user tags (deduplicated)
+        var sourceTags = details?.Tags?.Select(t => t.Name).Where(n => n != null).ToList() ?? new List<string?>();
+        var userTags = GetExistingList(existing, "userTags");
+        var allTags = sourceTags.Concat(userTags).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        metadata["tags"] = allTags;
+        metadata["sourceTags"] = sourceTags; // Track which came from MMF
+        metadata["userTags"] = userTags;     // Track user-added tags
+
         if (details?.Images is { Count: > 0 })
         {
             metadata["images"] = details.Images.Select(i => new Dictionary<string, object?>
@@ -1016,7 +1052,60 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             }).ToList();
         }
 
+        // Preserve user-edited fields from existing metadata
+        if (existing != null)
+        {
+            // These fields are user-owned — never overwrite with source data
+            PreserveField(metadata, existing, "rating");
+            PreserveField(metadata, existing, "printStatus");
+            PreserveField(metadata, existing, "printHistory");
+            PreserveField(metadata, existing, "notes");
+            PreserveField(metadata, existing, "scale");
+            PreserveField(metadata, existing, "gameSystem");
+            PreserveField(metadata, existing, "collection");
+            PreserveField(metadata, existing, "components");
+            PreserveField(metadata, existing, "license");
+
+            // Preserve user description if they edited it
+            if (existing.TryGetValue("userDescription", out var ud) && ud != null)
+            {
+                metadata["description"] = ud;
+                metadata["userDescription"] = ud;
+            }
+        }
+
         return metadata;
+    }
+
+    /// <summary>Extract a DateTime from nested metadata (e.g., dates.lastSynced).</summary>
+    private static DateTime? GetDateFromMetadata(Dictionary<string, object?> metadata, string dateKey)
+    {
+        if (metadata.TryGetValue("dates", out var datesVal) && datesVal is JsonElement datesEl 
+            && datesEl.ValueKind == JsonValueKind.Object
+            && datesEl.TryGetProperty(dateKey, out var dateProp)
+            && dateProp.ValueKind == JsonValueKind.String
+            && DateTime.TryParse(dateProp.GetString(), out var dt))
+            return dt;
+        return null;
+    }
+
+    /// <summary>Preserve a field from existing metadata if it has a value.</summary>
+    private static void PreserveField(Dictionary<string, object?> target, Dictionary<string, object?> source, string key)
+    {
+        if (source.TryGetValue(key, out var value) && value != null)
+            target[key] = value;
+    }
+
+    /// <summary>Get a list of strings from existing metadata.</summary>
+    private static List<string?> GetExistingList(Dictionary<string, object?>? metadata, string key)
+    {
+        if (metadata == null) return new List<string?>();
+        if (!metadata.TryGetValue(key, out var val) || val == null) return new List<string?>();
+        if (val is JsonElement je && je.ValueKind == JsonValueKind.Array)
+            return je.EnumerateArray().Select(e => e.GetString()).ToList();
+        if (val is List<string?> list) return list;
+        if (val is List<object?> objList) return objList.Select(o => o?.ToString()).ToList();
+        return new List<string?>();
     }
 
     internal static string? DetectVariant(string? filename)
