@@ -14,7 +14,7 @@ public class ApiKeyMiddleware
     {
         // Skip auth for health checks and swagger
         var path = context.Request.Path.Value?.ToLower() ?? "";
-        if (path.StartsWith("/health") || path.StartsWith("/swagger"))
+        if (path.StartsWith("/health") || path.StartsWith("/swagger") || path == "/metrics")
         {
             await _next(context);
             return;

@@ -165,6 +165,81 @@ public static class PluginEndpoints
             return Results.BadRequest(new { authenticated = false, message = result.Message });
         }).WithName("PluginAuth");
 
+        // GET /api/v1/plugins/{slug}/progress — stream SSE sync progress
+        group.MapGet("/{slug}/progress", async (
+            string slug,
+            HttpContext httpContext,
+            PluginHostService pluginHost,
+            CancellationToken ct) =>
+        {
+            var plugin = pluginHost.GetPlugin(slug);
+            if (plugin is null)
+            {
+                httpContext.Response.StatusCode = 404;
+                await httpContext.Response.WriteAsJsonAsync(new { message = $"Plugin '{slug}' not found" }, ct);
+                return;
+            }
+
+            httpContext.Response.Headers["Content-Type"] = "text/event-stream";
+            httpContext.Response.Headers["Cache-Control"] = "no-cache";
+            httpContext.Response.Headers["X-Accel-Buffering"] = "no";
+            httpContext.Response.Headers["Connection"] = "keep-alive";
+
+            var writer = httpContext.Response.Body;
+
+            async Task WriteSseAsync(string eventName, string jsonData)
+            {
+                var line = $"event: {eventName}\ndata: {jsonData}\n\n";
+                var bytes = System.Text.Encoding.UTF8.GetBytes(line);
+                await writer.WriteAsync(bytes, ct);
+                await httpContext.Response.Body.FlushAsync(ct);
+            }
+
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    var status = pluginHost.GetSyncStatus(slug);
+
+                    if (status is null)
+                    {
+                        await Task.Delay(2000, ct);
+                        continue;
+                    }
+
+                    if (!status.IsRunning)
+                    {
+                        // Sync finished — emit complete event and close
+                        var completePayload = System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            scraped = status.ScrapedModels,
+                            total = status.TotalModels,
+                            failed = status.FailedModels
+                        });
+                        await WriteSseAsync("complete", completePayload);
+                        break;
+                    }
+
+                    var progress = status.CurrentProgress;
+                    var progressPayload = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        scraped = progress?.Current ?? status.ScrapedModels,
+                        total = progress?.Total ?? status.TotalModels,
+                        failed = status.FailedModels,
+                        currentItem = progress?.CurrentItem,
+                        status = progress?.Status ?? "running"
+                    });
+                    await WriteSseAsync("progress", progressPayload);
+
+                    await Task.Delay(2000, ct);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Client disconnected — normal
+            }
+        }).WithName("GetPluginSyncProgress").Produces(200);
+
         // GET /api/v1/plugins/{slug}/status — get sync status
         group.MapGet("/{slug}/status", (
             string slug,

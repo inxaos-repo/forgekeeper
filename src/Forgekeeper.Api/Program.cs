@@ -95,6 +95,108 @@ app.UseStaticFiles();
 // Health check
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
 
+// Prometheus metrics endpoint
+app.MapGet("/metrics", async (IServiceProvider services, PluginHostService pluginHost, CancellationToken ct) =>
+{
+    using var scope = services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+    // Model counts by source
+    var modelsBySource = await db.Models
+        .GroupBy(m => m.Source)
+        .Select(g => new { Source = g.Key, Count = g.Count() })
+        .ToListAsync(ct);
+
+    long mmfCount = modelsBySource.FirstOrDefault(x => x.Source == Forgekeeper.Core.Enums.SourceType.Mmf)?.Count ?? 0;
+    long manualCount = modelsBySource.FirstOrDefault(x => x.Source == Forgekeeper.Core.Enums.SourceType.Manual)?.Count ?? 0;
+
+    var totalCreators = await db.Creators.CountAsync(ct);
+    var totalFiles = await db.Variants.CountAsync(ct);
+    var totalSizeBytes = await db.Models.SumAsync(m => m.TotalSizeBytes, ct);
+    var thumbnailCount = await db.Models.CountAsync(m => m.ThumbnailPath != null, ct);
+    var printedCount = await db.Models.CountAsync(m => m.PrintHistory != null && m.PrintHistory.Count > 0, ct);
+
+    // Known plugin slugs (all loaded plugins)
+    var pluginSlugs = pluginHost.Plugins.Keys.ToList();
+
+    var sb = new System.Text.StringBuilder();
+
+    // Models by source
+    sb.AppendLine("# HELP forgekeeper_models_total Total models in library");
+    sb.AppendLine("# TYPE forgekeeper_models_total gauge");
+    sb.AppendLine($"forgekeeper_models_total{{source=\"mmf\"}} {mmfCount}");
+    sb.AppendLine($"forgekeeper_models_total{{source=\"manual\"}} {manualCount}");
+    sb.AppendLine();
+
+    // Creators
+    sb.AppendLine("# HELP forgekeeper_creators_total Total creators");
+    sb.AppendLine("# TYPE forgekeeper_creators_total gauge");
+    sb.AppendLine($"forgekeeper_creators_total {totalCreators}");
+    sb.AppendLine();
+
+    // Files
+    sb.AppendLine("# HELP forgekeeper_files_total Total file variants");
+    sb.AppendLine("# TYPE forgekeeper_files_total gauge");
+    sb.AppendLine($"forgekeeper_files_total {totalFiles}");
+    sb.AppendLine();
+
+    // Library size
+    sb.AppendLine("# HELP forgekeeper_library_size_bytes Total library size in bytes");
+    sb.AppendLine("# TYPE forgekeeper_library_size_bytes gauge");
+    sb.AppendLine($"forgekeeper_library_size_bytes {totalSizeBytes}");
+    sb.AppendLine();
+
+    // Thumbnails
+    sb.AppendLine("# HELP forgekeeper_thumbnails_total Generated thumbnails count");
+    sb.AppendLine("# TYPE forgekeeper_thumbnails_total gauge");
+    sb.AppendLine($"forgekeeper_thumbnails_total {thumbnailCount}");
+    sb.AppendLine();
+
+    // Printed
+    sb.AppendLine("# HELP forgekeeper_printed_total Models with print status printed");
+    sb.AppendLine("# TYPE forgekeeper_printed_total gauge");
+    sb.AppendLine($"forgekeeper_printed_total {printedCount}");
+    sb.AppendLine();
+
+    // Per-plugin sync metrics
+    sb.AppendLine("# HELP forgekeeper_sync_running Is a sync currently running (1=yes, 0=no)");
+    sb.AppendLine("# TYPE forgekeeper_sync_running gauge");
+    foreach (var slug in pluginSlugs)
+    {
+        var s = pluginHost.GetSyncStatus(slug);
+        sb.AppendLine($"forgekeeper_sync_running{{plugin=\"{slug}\"}} {(s?.IsRunning == true ? 1 : 0)}");
+    }
+    sb.AppendLine();
+
+    sb.AppendLine("# HELP forgekeeper_sync_scraped_total Models scraped in current/last sync");
+    sb.AppendLine("# TYPE forgekeeper_sync_scraped_total gauge");
+    foreach (var slug in pluginSlugs)
+    {
+        var s = pluginHost.GetSyncStatus(slug);
+        sb.AppendLine($"forgekeeper_sync_scraped_total{{plugin=\"{slug}\"}} {s?.ScrapedModels ?? 0}");
+    }
+    sb.AppendLine();
+
+    sb.AppendLine("# HELP forgekeeper_sync_failed_total Models failed in current/last sync");
+    sb.AppendLine("# TYPE forgekeeper_sync_failed_total gauge");
+    foreach (var slug in pluginSlugs)
+    {
+        var s = pluginHost.GetSyncStatus(slug);
+        sb.AppendLine($"forgekeeper_sync_failed_total{{plugin=\"{slug}\"}} {s?.FailedModels ?? 0}");
+    }
+    sb.AppendLine();
+
+    sb.AppendLine("# HELP forgekeeper_sync_total_models Total models in current sync manifest");
+    sb.AppendLine("# TYPE forgekeeper_sync_total_models gauge");
+    foreach (var slug in pluginSlugs)
+    {
+        var s = pluginHost.GetSyncStatus(slug);
+        sb.AppendLine($"forgekeeper_sync_total_models{{plugin=\"{slug}\"}} {s?.TotalModels ?? 0}");
+    }
+
+    return Results.Text(sb.ToString(), "text/plain; version=0.0.4; charset=utf-8");
+}).WithTags("Metrics").WithName("GetMetrics");
+
 // Map API endpoints
 app.MapModelEndpoints();
 app.MapCreatorEndpoints();
