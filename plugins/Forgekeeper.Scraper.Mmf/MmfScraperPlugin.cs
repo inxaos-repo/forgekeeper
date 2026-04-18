@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -22,6 +24,11 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     private IPlaywright? _playwright;
     private IBrowser? _browser;
     private IBrowserContext? _browserContext;
+
+    // Background unzip worker
+    private readonly ConcurrentQueue<(string archivePath, string extractDir, string filename)> _unzipQueue = new();
+    private volatile bool _unzipRunning;
+    private Task? _unzipTask;
 
     private const string MmfApiBase = "https://www.myminifactory.com/api/v2";
     private const string MmfAuthBase = "https://auth.myminifactory.com";
@@ -123,6 +130,10 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
     public async Task<IReadOnlyList<ScrapedModel>> FetchManifestAsync(PluginContext context, Stream? uploadedManifest = null, CancellationToken ct = default)
     {
+        // Start background unzip worker
+        _unzipRunning = true;
+        _unzipTask = Task.Run(() => UnzipWorkerLoop(context.Logger, ct), ct);
+
         context.Progress.Report(new ScrapeProgress
         {
             Status = "fetching_manifest",
@@ -356,77 +367,24 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 }
             }
 
-            // ── Step 5: Extract ZIP archives + cleanup ──
-            foreach (var dl in downloadedFiles.Where(f => f.IsArchive && File.Exists(f.LocalPath)).ToList())
+            // ── Step 5: Queue archives for background extraction ──
+            foreach (var dl in downloadedFiles.Where(f => f.IsArchive && File.Exists(f.LocalPath)))
             {
-                var ext = Path.GetExtension(dl.LocalPath).ToLowerInvariant();
                 var extractDir = Path.Combine(
                     Path.GetDirectoryName(dl.LocalPath)!,
                     Path.GetFileNameWithoutExtension(dl.LocalPath));
-
-                try
-                {
-                    if (ext == ".zip")
-                    {
-                        if (Directory.Exists(extractDir) && 
-                            Directory.EnumerateFiles(extractDir, "*", SearchOption.AllDirectories).Any())
-                        {
-                            // Already extracted — check if archive has newer files
-                            bool needsUpdate = false;
-                            try
-                            {
-                                using var archive = ZipFile.OpenRead(dl.LocalPath);
-                                var newestLocal = Directory.EnumerateFiles(extractDir, "*", SearchOption.AllDirectories)
-                                    .Select(f => File.GetLastWriteTimeUtc(f)).Max();
-                                needsUpdate = archive.Entries.Any(e => e.Length > 0 && e.LastWriteTime.UtcDateTime > newestLocal);
-                            }
-                            catch { needsUpdate = true; }
-
-                            if (!needsUpdate)
-                            {
-                                context.Logger.LogDebug("[MMF] Already extracted, deleting ZIP: {File}", dl.Filename);
-                                try { File.Delete(dl.LocalPath); } catch { }
-                                continue;
-                            }
-                            context.Logger.LogInformation("[MMF] Re-extracting (newer files in archive): {File}", dl.Filename);
-                        }
-
-                        Directory.CreateDirectory(extractDir);
-                        ZipFile.ExtractToDirectory(dl.LocalPath, extractDir, overwriteFiles: true);
-                        context.Logger.LogInformation("[MMF] Extracted: {File}", dl.Filename);
-
-                        // Delete ZIP after successful extraction
-                        try { File.Delete(dl.LocalPath); context.Logger.LogDebug("[MMF] Deleted ZIP: {File}", dl.Filename); }
-                        catch (Exception delEx) { context.Logger.LogWarning("[MMF] Could not delete ZIP: {Error}", delEx.Message); }
-                    }
-                    else if (ext is ".rar" or ".7z")
-                    {
-                        context.Logger.LogWarning("[MMF] {Ext} not natively supported: {File} (manual extraction needed)", ext, dl.Filename);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    context.Logger.LogWarning("[MMF] Failed to extract {File}: {Error}", dl.Filename, ex.Message);
-                }
+                _unzipQueue.Enqueue((dl.LocalPath, extractDir, dl.Filename ?? Path.GetFileName(dl.LocalPath)));
             }
 
-            // Also scan for leftover ZIPs from previous interrupted syncs
+            // Also queue leftover ZIPs from previous interrupted syncs
             try
             {
-                foreach (var zip in Directory.EnumerateFiles(modelDir, "*.zip"))
+                foreach (var zip in Directory.EnumerateFiles(modelDir, "*.zip").Concat(
+                                    Directory.EnumerateFiles(modelDir, "*.rar")).Concat(
+                                    Directory.EnumerateFiles(modelDir, "*.7z")))
                 {
                     var extractTo = Path.Combine(modelDir, Path.GetFileNameWithoutExtension(zip));
-                    if (!Directory.Exists(extractTo) || !Directory.EnumerateFiles(extractTo, "*", SearchOption.AllDirectories).Any())
-                    {
-                        try
-                        {
-                            Directory.CreateDirectory(extractTo);
-                            ZipFile.ExtractToDirectory(zip, extractTo, overwriteFiles: true);
-                            File.Delete(zip);
-                            context.Logger.LogInformation("[MMF] Extracted leftover ZIP: {File}", Path.GetFileName(zip));
-                        }
-                        catch { }
-                    }
+                    _unzipQueue.Enqueue((zip, extractTo, Path.GetFileName(zip)));
                 }
             }
             catch { }
@@ -629,6 +587,190 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             try { _playwright.Dispose(); } catch { }
             _playwright = null;
         }
+
+        // Stop unzip worker and wait for it to drain
+        _unzipRunning = false;
+        if (_unzipTask != null)
+        {
+            try { await Task.WhenAny(_unzipTask, Task.Delay(TimeSpan.FromSeconds(60))); } catch { }
+        }
+    }
+
+    // --- Background Unzip Worker ---
+
+    private async Task UnzipWorkerLoop(ILogger logger, CancellationToken ct)
+    {
+        int extracted = 0;
+        try
+        {
+            while (_unzipRunning || !_unzipQueue.IsEmpty)
+            {
+                if (ct.IsCancellationRequested) break;
+
+                if (_unzipQueue.TryDequeue(out var job))
+                {
+                    var (archivePath, extractDir, filename) = job;
+                    try
+                    {
+                        if (!File.Exists(archivePath)) continue;
+                        var ext = Path.GetExtension(archivePath).ToLowerInvariant();
+
+                        // Check if already extracted and current
+                        if (Directory.Exists(extractDir) &&
+                            Directory.EnumerateFiles(extractDir, "*", SearchOption.AllDirectories).Any())
+                        {
+                            bool needsUpdate = false;
+                            if (ext == ".zip")
+                            {
+                                try
+                                {
+                                    using var archive = ZipFile.OpenRead(archivePath);
+                                    var newestLocal = Directory.EnumerateFiles(extractDir, "*", SearchOption.AllDirectories)
+                                        .Select(f => File.GetLastWriteTimeUtc(f)).Max();
+                                    needsUpdate = archive.Entries.Any(e => e.Length > 0 && e.LastWriteTime.UtcDateTime > newestLocal);
+                                }
+                                catch { needsUpdate = true; }
+                            }
+                            else { needsUpdate = true; } // For RAR/7z, always re-extract if queued
+
+                            if (!needsUpdate)
+                            {
+                                logger.LogDebug("[UNZIP] Already current, cleaning up: {File}", filename);
+                                try { File.Delete(archivePath); } catch { }
+                                continue;
+                            }
+                        }
+
+                        Directory.CreateDirectory(extractDir);
+
+                        if (ext == ".zip")
+                        {
+                            ZipFile.ExtractToDirectory(archivePath, extractDir, overwriteFiles: true);
+                            extracted++;
+                            logger.LogInformation("[MMF] Extracted: {File}", filename);
+                        }
+                        else if (ext is ".rar" or ".7z")
+                        {
+                            // Shell out to 7z if available
+                            var sevenZip = FindExecutable("7z") ?? FindExecutable("7za") ?? FindExecutable("p7zip");
+                            if (sevenZip != null)
+                            {
+                                var psi = new ProcessStartInfo(sevenZip, $"x \"{archivePath}\" -o\"{extractDir}\" -y")
+                                {
+                                    RedirectStandardOutput = true,
+                                    RedirectStandardError = true,
+                                    UseShellExecute = false,
+                                    CreateNoWindow = true,
+                                };
+                                using var proc = Process.Start(psi);
+                                if (proc != null)
+                                {
+                                    await proc.WaitForExitAsync(ct);
+                                    if (proc.ExitCode == 0)
+                                    {
+                                        extracted++;
+                                        logger.LogInformation("[MMF] Extracted ({Ext}): {File}", ext, filename);
+                                    }
+                                    else
+                                    {
+                                        var stderr = await proc.StandardError.ReadToEndAsync(ct);
+                                        logger.LogWarning("[UNZIP] 7z failed for {File}: {Error}", filename, stderr.Trim());
+                                        continue; // Don't delete archive if extraction failed
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                logger.LogWarning("[UNZIP] {Ext} not supported (install p7zip-full): {File}", ext, filename);
+                                continue; // Don't delete — can't extract
+                            }
+                        }
+                        else
+                        {
+                            logger.LogWarning("[UNZIP] Unknown archive format: {File}", filename);
+                            continue;
+                        }
+
+                        // Clean up old version directories
+                        CleanupOldVersions(extractDir, logger);
+
+                        // Delete archive after successful extraction
+                        try { File.Delete(archivePath); }
+                        catch (Exception delEx) { logger.LogWarning("[UNZIP] Could not delete archive: {Error}", delEx.Message); }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning("[UNZIP] Error extracting {File}: {Error}", filename, ex.Message);
+                    }
+                }
+                else
+                {
+                    await Task.Delay(500, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            logger.LogError("[UNZIP] Worker crashed: {Error}", ex.Message);
+        }
+
+        if (extracted > 0)
+            logger.LogInformation("[UNZIP] Background worker extracted {Count} archive(s)", extracted);
+    }
+
+    /// <summary>Remove old version directories (e.g., "Model v1" when "Model v2" exists).</summary>
+    private static void CleanupOldVersions(string extractDir, ILogger logger)
+    {
+        try
+        {
+            var parent = Path.GetDirectoryName(extractDir);
+            if (parent == null) return;
+
+            var baseName = Path.GetFileName(extractDir);
+            // Strip version suffixes: "Model v2", "Model_v1.0", "Model MKIV"
+            var versionPattern = System.Text.RegularExpressions.Regex.Replace(
+                baseName, @"[\s_-]*(v\d+(\.\d+)*|mk\w+)$", "", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            if (versionPattern == baseName) return; // No version suffix found
+
+            foreach (var dir in Directory.GetDirectories(parent))
+            {
+                var dirName = Path.GetFileName(dir);
+                if (dirName == baseName) continue; // Skip self
+
+                var otherBase = System.Text.RegularExpressions.Regex.Replace(
+                    dirName, @"[\s_-]*(v\d+(\.\d+)*|mk\w+)$", "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                if (otherBase.Equals(versionPattern, StringComparison.OrdinalIgnoreCase))
+                {
+                    logger.LogInformation("[UNZIP] Removing old version: {Old} (newer: {New})", dirName, baseName);
+                    try { Directory.Delete(dir, recursive: true); } catch { }
+                }
+            }
+        }
+        catch { }
+    }
+
+    private static string? FindExecutable(string name)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("which", name)
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null) return null;
+            var result = proc.StandardOutput.ReadToEnd().Trim();
+            proc.WaitForExit();
+            return proc.ExitCode == 0 && !string.IsNullOrEmpty(result) ? result : null;
+        }
+        catch { return null; }
     }
 
     // --- Private helpers ---
