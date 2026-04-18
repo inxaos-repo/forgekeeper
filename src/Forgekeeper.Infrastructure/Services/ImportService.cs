@@ -153,14 +153,19 @@ public class ImportService : IImportService
 
             if (Directory.Exists(item.OriginalPath))
             {
+                var movedFiles = new List<(string src, string dst)>();
                 foreach (var file in Directory.EnumerateFiles(item.OriginalPath, "*", SearchOption.AllDirectories))
                 {
                     var relativePath = Path.GetRelativePath(item.OriginalPath, file);
                     var destPath = Path.Combine(targetDir, relativePath);
                     Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-                    File.Move(file, destPath, overwrite: false);
+                    // Overwrite if exists (handles re-import of partially moved files)
+                    File.Move(file, destPath, overwrite: true);
+                    movedFiles.Add((file, destPath));
                 }
-                Directory.Delete(item.OriginalPath, recursive: true);
+                // Only delete the source directory after ALL files moved successfully
+                try { Directory.Delete(item.OriginalPath, recursive: true); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Could not delete source directory {Path} after import", item.OriginalPath); }
             }
             else if (File.Exists(item.OriginalPath))
             {
