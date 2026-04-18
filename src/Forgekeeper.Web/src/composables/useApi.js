@@ -323,6 +323,10 @@ export function useApi() {
     return post(`/plugins/${encodeURIComponent(slug)}/sync`)
   }
 
+  function cancelPluginSync(slug) {
+    return post(`/plugins/${encodeURIComponent(slug)}/sync/cancel`)
+  }
+
   function getPluginAdminHtml(slug) {
     return get(`/plugins/${encodeURIComponent(slug)}/admin`)
   }
@@ -450,6 +454,7 @@ export function useApi() {
     getPluginConfig,
     updatePluginConfig,
     triggerPluginSync,
+    cancelPluginSync,
     getPluginAdminHtml,
     getPluginHistory,
     getPluginDiagnostics,

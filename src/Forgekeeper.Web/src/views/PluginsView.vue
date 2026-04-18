@@ -311,6 +311,16 @@ async function triggerSync(slug) {
   } catch { syncingSlug.value = null }
 }
 
+async function cancelSync(slug) {
+  try {
+    await api.cancelPluginSync(slug)
+    syncingSlug.value = null
+    liveProgress.value = null
+  } catch (e) {
+    console.error('Cancel sync failed:', e)
+  }
+}
+
 async function hotReloadAll() {
   reloading.value = true
   reloadMessage.value = null
@@ -788,6 +798,15 @@ onBeforeUnmount(() => {
                 ]"
               >
                 {{ syncingSlug === selectedSlug ? '🔄 Syncing...' : '🔄 Sync Now' }}
+              </button>
+
+              <!-- Cancel Sync -->
+              <button
+                v-if="syncingSlug === selectedSlug || pluginStatus?.isRunning"
+                @click="cancelSync(selectedSlug)"
+                class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors bg-forge-danger/20 hover:bg-forge-danger/40 text-forge-danger border border-forge-danger/30"
+              >
+                ⛔ Cancel Sync
               </button>
             </div>
           </div>
