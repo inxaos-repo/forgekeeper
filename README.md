@@ -1,50 +1,91 @@
 # Forgekeeper — 3D Print File Manager
 
-A self-hosted digital asset manager for massive 3D printing collections, built for hobbyists who accumulate files from multiple sources and need to actually find things.
+A self-hosted digital asset manager for massive 3D printing collections. **Plex for STL files** — built for hobbyists who accumulate files from multiple sources and need to actually find things.
+
+**Live at:** `https://forgekeeper.k8s.inxaos.com`
+
+## Current Status
+
+| Metric | Value |
+|--------|-------|
+| Models indexed | **4,010** |
+| Creators | **160** |
+| File variants | **200,931** |
+| Thumbnails generated | **16,600+** |
+| Backend tests | **241** |
+| E2E tests (Playwright) | **27** |
 
 ## Features
 
 - **Unified library** across multiple sources (MyMiniFactory, Thangs, Patreon, Cults3D, Thingiverse, manual)
 - **Smart variant handling** — supported/unsupported/presupported versions grouped under one model
-- **Source-parallel directories** — each source maintains its own folder structure, Forgekeeper provides the unified view
+- **Source-parallel directories** — each source keeps its own folder structure; Forgekeeper provides the unified view
 - **Import pipeline** — drop files in `unsorted/`, auto-detect what they are, confirm and sort
-- **Full-text search** with PostgreSQL pg_trgm fuzzy matching
+- **Full-text search** with PostgreSQL pg_trgm fuzzy matching + all filters (source, category, game system, scale, rating, printed, license, collection, tags)
 - **3D STL preview** in the browser (Three.js)
-- **Thumbnail generation** for visual browsing
-- **Tagging, rating, categorization** — game system, scale, printed status, notes
+- **Thumbnail generation** — stl-thumb → WebP, auto-queued for all STL files
+- **Tagging, rating, categorization** — game system, scale, printed status, notes, collections
+- **Plugin system** — isolated AssemblyLoadContext, NFS-based hot reload, per-plugin config/auth
+- **MMF scraper plugin** — FlareSolverr Cloudflare bypass, cookie auth, raw JSON API, 7,230+ model library sync
+- **Bulk management** — bulk tag, categorize, metadata update, creator reassignment across hundreds of models
+- **Rename/move with disk operations** — template-based rename preview + atomic move
+- **Print history** (JSONB), related models, components, print settings
+- **Metadata writeback** — user edits sync back to `metadata.json` for database-free recovery
+- **MCP interface** — 18 tools for AI assistant integration (search, update, bulk ops, analytics)
+- **Prometheus `/metrics` endpoint** for monitoring
+- **SSE sync progress streaming** — real-time plugin sync progress
 - **Built for scale** — handles 300K+ files without breaking a sweat
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│ External Tools (scraper plugins)    │
-│ Write files + metadata.json to sources/     │
-└──────────────────┬──────────────────────────┘
-                   │ metadata.json contract
-┌──────────────────▼──────────────────────────┐
-│ Forgekeeper                                  │
-│  ├── Scanner Service (indexes files → DB)   │
-│  ├── Import Service (unsorted → sorted)     │
-│  ├── Search Service (pg_trgm full-text)     │
-│  ├── Thumbnail Service (STL → WebP)         │
-│  ├── REST API (ASP.NET Core 9 Minimal APIs) │
-│  └── Vue.js 3 SPA (Three.js STL viewer)    │
-├──────────────────────────────────────────────┤
-│ PostgreSQL 16 (metadata, tags, search)       │
-│ NFS Storage (files, thumbnails)              │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Plugin Host (AssemblyLoadContext isolation)              │
+│  ├── MMF Scraper Plugin (FlareSolverr CF bypass)         │
+│  └── [custom plugins — drop DLL, restart, done]          │
+│  Writes files + metadata.json to sources/                │
+└────────────────────────┬─────────────────────────────────┘
+                         │ metadata.json contract
+┌────────────────────────▼─────────────────────────────────┐
+│  Forgekeeper                                              │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │  ASP.NET Core 9 API (Minimal APIs)                  │ │
+│  │  ├── Models / Creators / Tags / Sources             │ │
+│  │  ├── Import / Scan / Variants                       │ │
+│  │  ├── Plugin management + SSE progress               │ │
+│  │  ├── MCP interface (18 tools)                       │ │
+│  │  └── Stats / Health / Prometheus /metrics           │ │
+│  └─────────────────────────────────────────────────────┘ │
+│  ┌──────────────┐ ┌──────────────┐ ┌───────────────────┐ │
+│  │ Scanner Svc  │ │ Thumbnail    │ │ Plugin Host Svc   │ │
+│  │ (background) │ │ Worker (bg)  │ │ (sync lock+retry) │ │
+│  └──────────────┘ └──────────────┘ └───────────────────┘ │
+│  ┌──────────────┐ ┌──────────────┐                       │
+│  │ Search Svc   │ │ Import Svc   │                       │
+│  │ (pg_trgm)    │ │ (unsorted→)  │                       │
+│  └──────────────┘ └──────────────┘                       │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │  Vue.js 3 SPA (Three.js STL viewer)                 │ │
+│  └─────────────────────────────────────────────────────┘ │
+├──────────────────────────────────────────────────────────┤
+│  PostgreSQL 16 via CNPG (metadata, tags, search)         │
+│  NFS Storage (files, thumbnails)                         │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ## Tech Stack
 
-- **Backend:** C# / ASP.NET Core 9 (Minimal APIs)
-- **Database:** PostgreSQL 16 with pg_trgm extension
-- **ORM:** Entity Framework Core 9 (Npgsql)
-- **Frontend:** Vue.js 3 (Composition API) + Vite + Tailwind CSS
-- **3D Preview:** Three.js with STLLoader
-- **Thumbnails:** stl-thumb (Rust CLI)
-- **Container:** Docker (multi-stage .NET 9 build)
+| Layer | Technology |
+|-------|-----------|
+| **Backend** | C# / ASP.NET Core 9 (Minimal APIs) |
+| **Database** | PostgreSQL 16 with `pg_trgm` extension |
+| **ORM** | Entity Framework Core 9 (Npgsql) |
+| **Frontend** | Vue.js 3 (Composition API) + Vite + Tailwind CSS |
+| **3D Preview** | Three.js with STLLoader |
+| **Thumbnails** | stl-thumb (Rust CLI) → WebP |
+| **Container** | Docker (multi-stage .NET 9 + Node 22 build) |
+| **CI/CD** | GitHub Actions → GHCR container images |
+| **Deployment** | Flux GitOps → Kubernetes + CNPG |
 
 ## Quick Start
 
@@ -61,54 +102,41 @@ cd forgekeeper
 
 # Configure your library path
 cp .env.example .env
-# Edit .env and set LIBRARY_PATH to your STL collection directory
-# Your library should have the structure: {creator}/{model}/files...
+# Edit .env: set LIBRARY_PATH and FORGEKEEPER_ENCRYPTION_KEY
 
-# Start
+# Start everything (Forgekeeper + PostgreSQL + FlareSolverr)
 docker compose up -d
 
 # Access the web UI
 open http://localhost:5000
-
-# The scanner runs automatically on startup.
-# Add sources from the UI (Sources tab) or place them in:
-# {LIBRARY_PATH}/sources/{source-name}/  (e.g. sources/mmf/)
-
-# To enable MyMiniFactory library sync:
-# 1. Go to Plugins tab in the UI
-# 2. Configure MMF_USERNAME and MMF_PASSWORD
-# 3. Click Sync — FlareSolverr handles Cloudflare automatically
-# FlareSolverr is included in docker-compose.yml
 ```
+
+The scanner runs automatically on startup. Initial scan of a large collection may take a few minutes.
+
+### Enable MyMiniFactory Library Sync
+
+FlareSolverr is included in `docker-compose.yml` and starts automatically.
+
+1. Go to **Plugins** tab in the UI
+2. Configure your MMF username and password
+3. Click **Sync** — FlareSolverr handles the Cloudflare bypass automatically
 
 ### Run for Development
 
-**Backend:**
 ```bash
-cd src/Forgekeeper.Api
-dotnet run
-```
+# Backend
+cd src/Forgekeeper.Api && dotnet run
 
-**Frontend:**
-```bash
-cd src/Forgekeeper.Web
-npm install
-npm run dev
-```
+# Frontend (separate terminal)
+cd src/Forgekeeper.Web && npm install && npm run dev
 
-**Database:**
-```bash
-# Start just PostgreSQL
+# Database
 docker compose up postgres -d
-
-# Run migrations
-cd src/Forgekeeper.Api
-dotnet ef database update
 ```
+
+See the [Dev Environment guide](DEV-ENVIRONMENT.md) for the full dev container workflow.
 
 ## Directory Structure
-
-Forgekeeper expects your collection organized under a base path:
 
 ```
 /your/3d-printing/collection/
@@ -120,18 +148,18 @@ Forgekeeper expects your collection organized under a base path:
 │   │           ├── unsupported/
 │   │           ├── images/
 │   │           └── metadata.json
-│   ├── thangs/           # Thangs downloads
-│   ├── patreon/          # Patreon drops
-│   ├── cults3d/          # Cults3D downloads
-│   ├── thingiverse/      # Thingiverse downloads
-│   └── manual/           # Manually organized
+│   ├── thangs/
+│   ├── patreon/
+│   ├── cults3d/
+│   ├── thingiverse/
+│   └── manual/
 ├── unsorted/             # Drop zone for auto-import
-└── .forgekeeper/         # Thumbnails and cache
+└── .forgekeeper/         # Thumbnails and cache (auto-created)
 ```
 
 ## Integration Contract: metadata.json
 
-Any external tool that writes a `metadata.json` file alongside downloaded models enables rich import:
+Any external tool that writes a `metadata.json` alongside downloaded models enables rich import. Forgekeeper also **writes back** user-owned fields (tags, ratings, print history, components) to keep the filesystem as the ground truth.
 
 ```json
 {
@@ -143,73 +171,89 @@ Any external tool that writes a `metadata.json` file alongside downloaded models
     "displayName": "Creator Name",
     "username": "creator-slug"
   },
-  "dates": {
-    "downloaded": "2026-04-15T18:00:00Z"
-  },
+  "dates": { "downloaded": "2026-04-15T18:00:00Z" },
   "files": [
-    {
-      "filename": "model.stl",
-      "localPath": "unsupported/model.stl",
-      "variant": "unsupported"
-    }
+    { "filename": "model.stl", "localPath": "unsupported/model.stl", "variant": "unsupported" }
   ]
 }
 ```
 
-See the [full spec](SPEC.md) for all fields.
+This enables **database-free recovery** — re-scanning the filesystem rebuilds the full library including user edits.
 
-### Forgekeeper Writes to metadata.json
+## Plugin System
 
-Forgekeeper is not read-only on metadata.json. It writes back user-owned fields:
+Plugins implement `ILibraryScraper` from the `Forgekeeper.PluginSdk` package and are loaded via isolated `AssemblyLoadContext`. Drop a DLL in the `plugins/` directory and restart — Forgekeeper discovers and loads it automatically.
 
-- **User-owned fields:** `tags` (additions), `license`, `collection`, `printSettings`, `printHistory`, `components`, `relatedModels`, `physicalProperties`
-- **Scraper plugins preserves these on re-sync** — its `PreserveUserEdits` step round-trips all Forgekeeper-owned fields without interpreting them (stored as opaque `JsonElement`)
-- **Forgekeeper MUST NOT write:** `source`, `externalId`, `creator`, `dates.created/updated/published`, `dates.downloaded`, `files[]`, `acquisition`
+The MMF plugin demonstrates the full pattern: FlareSolverr-based Cloudflare bypass, cookie auth, raw JSON API parsing, and incremental sync with per-plugin `SemaphoreSlim` lock and exponential backoff retry.
 
-This enables database-free recovery — re-scanning the filesystem rebuilds the full library including user edits. Tags are merged as a union (both apps add, neither removes). License uses "user wins" policy: a user-set license takes precedence over the source value.
+```bash
+# See what plugins are loaded
+curl http://localhost:5000/api/v1/plugins
+
+# Trigger a sync
+curl -X POST http://localhost:5000/api/v1/plugins/mmf/sync
+
+# Stream progress (SSE)
+curl http://localhost:5000/api/v1/plugins/mmf/progress
+```
+
+See the [Plugin Development Guide](docs/plugin-development.md) for full details.
+
+## MCP Integration
+
+Forgekeeper exposes an MCP (Model Context Protocol) interface with 18 tools for AI assistant integration:
+
+| Category | Tools |
+|----------|-------|
+| Read | `search`, `getModel`, `getCreator`, `listSources`, `stats`, `findDuplicates`, `findUntagged`, `recent` |
+| Write | `tagModel`, `updateModel`, `markPrinted`, `setComponents`, `linkModels`, `bulkUpdate`, `triggerSync` |
+| Analysis | `collectionReport`, `healthCheck`, `printHistory` |
+
+```bash
+# List available tools
+curl http://localhost:5000/mcp/tools
+
+# Invoke a tool
+curl -X POST http://localhost:5000/mcp/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "search", "arguments": {"query": "dragon", "category": "Fantasy"}}'
+```
+
+## Monitoring
+
+Forgekeeper exports Prometheus metrics at `GET /metrics`:
+
+- Total models, creators, files, thumbnails
+- Active scan/sync operations
+- Per-plugin sync counters and last-run timestamps
+- Application health via `GET /health`
 
 ## API
 
-Base URL: `/api/v1`
+Base URL: `/api/v1` — full docs at [docs/api-reference.md](docs/api-reference.md)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/models` | List/search models |
-| GET | `/models/{id}` | Model detail + variants |
-| PATCH | `/models/{id}` | Update metadata |
-| GET | `/creators` | List creators |
-| GET | `/creators/{id}/models` | Creator's models |
-| GET | `/variants/{id}/download` | Download file |
-| POST | `/scan` | Trigger full scan |
-| POST | `/scan/incremental` | Incremental scan |
-| GET | `/import/pending` | Import queue |
-| POST | `/import/confirm` | Confirm import |
-| GET | `/stats` | Collection stats |
-| GET | `/tags` | List tags |
-
-## Configuration
-
-See `appsettings.json` for all options:
-- Database connection
-- Storage base paths
-- Scanner file types and source adapters
-- Thumbnail settings
-- Search parameters
+**Models:** search, detail, patch, delete, print history, components, thumbnail, related, rename/move, bulk ops, duplicates  
+**Creators:** list, detail, models  
+**Tags:** list all tags, per-model add/remove  
+**Sources:** list, create, delete  
+**Scan:** full, incremental, status, untracked  
+**Import:** process, queue, confirm, dismiss  
+**Plugins:** list, config, sync, auth, SSE progress, status, manifest upload  
+**Stats:** collection stats  
+**MCP:** tool list, tool invoke  
+**Metrics:** Prometheus `/metrics`, health `/health`
 
 ## Documentation
 
-Comprehensive documentation is available in the [`docs/`](docs/) directory:
-
 | Page | Description |
 |------|-------------|
-| [Documentation Home](docs/index.md) | Overview and quick links |
-| [Getting Started](docs/getting-started.md) | Installation and first run |
-| [Architecture](docs/architecture.md) | System design and data model |
+| [Getting Started](docs/getting-started.md) | Installation, first run, plugin setup |
+| [Architecture](docs/architecture.md) | System design, data model, metadata contract |
 | [API Reference](docs/api-reference.md) | Complete REST API documentation |
 | [Configuration](docs/configuration.md) | Environment variables and settings |
-| [Plugin Development](docs/plugin-development.md) | Building scraper plugins |
-| [Deployment](docs/deployment.md) | Docker, Kubernetes, NFS, CNPG |
-| [Contributing](docs/contributing.md) | Dev setup, testing, code style |
+| [Plugin Development](docs/plugin-development.md) | Building scraper plugins with the SDK |
+| [Deployment](docs/deployment.md) | Docker, Kubernetes, Flux, NFS, CNPG |
+| [Contributing](docs/contributing.md) | Dev setup, testing, migrations, code style |
 
 ## License
 
@@ -217,4 +261,4 @@ MIT
 
 ## Contributing
 
-Pull requests welcome. See the [Contributing Guide](docs/contributing.md) and [SPEC.md](SPEC.md) for details.
+Pull requests welcome. See [Contributing Guide](docs/contributing.md) and [SPEC.md](SPEC.md).

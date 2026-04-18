@@ -146,8 +146,53 @@ The Vue.js web interface provides:
 - **Import queue** — review and confirm auto-detected imports
 - **Stats** — collection statistics and creator breakdowns
 
+## Setting Up the MMF Plugin
+
+The MyMiniFactory scraper plugin syncs your MMF library automatically. It requires **FlareSolverr** to bypass Cloudflare protection.
+
+### Docker Compose
+
+FlareSolverr is included in `docker-compose.yml` and starts automatically with `docker compose up -d`. No extra steps needed.
+
+### Configure the Plugin
+
+1. Open the **Plugins** tab in the web UI
+2. Click **Configure** on the MMF plugin
+3. Enter your MyMiniFactory username and password
+4. Click **Save**
+5. Click **Sync** to start your first library sync
+
+Alternatively, via API:
+
+```bash
+# Configure credentials
+curl -X PUT http://localhost:5000/api/v1/plugins/mmf/config \
+  -H "Content-Type: application/json" \
+  -d '{"MMF_USERNAME": "your@email.com", "MMF_PASSWORD": "your-password"}'
+
+# Start sync
+curl -X POST http://localhost:5000/api/v1/plugins/mmf/sync
+
+# Stream progress (SSE)
+curl -N http://localhost:5000/api/v1/plugins/mmf/progress
+
+# Or poll status
+curl http://localhost:5000/api/v1/plugins/mmf/status
+```
+
+### Kubernetes
+
+Deploy FlareSolverr as a separate service (see [Deployment Guide](deployment.md#flaresolverr-required-for-mmf-plugin)). The plugin defaults to looking for FlareSolverr at:
+
+```
+http://flaresolverr.flaresolverr.svc.cluster.local:8191
+```
+
+Override via the `FLARESOLVERR_URL` config field in the Plugins UI.
+
 ## Next Steps
 
 - [API Reference](api-reference.md) — explore all available endpoints
 - [Configuration](configuration.md) — tune search, thumbnails, and security
 - [Plugin Development](plugin-development.md) — build scrapers for new sources
+- [Deployment](deployment.md) — Kubernetes, Flux, CNPG, NFS

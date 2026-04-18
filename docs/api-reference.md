@@ -272,6 +272,52 @@ Relation types: `collection`, `companion`, `remix`, `alternate`, `base`.
 
 ---
 
+### `POST /api/v1/models/{id}/rename` — Rename/Move Model
+
+Rename a model and optionally move its files on disk. Supports template-based naming.
+
+**Request Body:**
+
+```json
+{
+  "newName": "Dragon Miniature - AwesomeSculptor",
+  "moveFiles": true,
+  "template": null
+}
+```
+
+**Response:** `200 OK` with the updated model.
+
+**409 Conflict** if a model at the target path already exists.
+
+---
+
+### `POST /api/v1/models/rename/preview` — Template Rename Preview
+
+Preview what a template-based rename would produce for a set of models without applying changes.
+
+**Request Body:**
+
+```json
+{
+  "modelIds": ["id1", "id2"],
+  "template": "{creator} - {name}"
+}
+```
+
+**Template variables:** `{name}`, `{creator}`, `{source}`, `{category}`, `{gameSystem}`, `{scale}`, `{rating}`, `{id}`
+
+**Response:**
+
+```json
+[
+  { "modelId": "id1", "currentName": "Dragon", "newName": "AwesomeSculptor - Dragon" },
+  { "modelId": "id2", "currentName": "Orc Warrior", "newName": "AwesomeSculptor - Orc Warrior" }
+]
+```
+
+---
+
 ### `POST /api/v1/models/bulk` — Bulk Update Models
 
 Apply an operation to multiple models at once (max 500).
@@ -322,6 +368,56 @@ Add and/or remove tags from multiple models at once.
   "tagsAdded": 4,
   "tagsRemoved": 2
 }
+```
+
+---
+
+### `POST /api/v1/models/bulk-metadata` — Bulk Multi-Field Update + Tags
+
+Update multiple fields (and optionally tags) across many models in a single call. More powerful than `bulk` (single field) or `bulk-tags`.
+
+**Request Body:**
+
+```json
+{
+  "modelIds": ["id1", "id2"],
+  "fields": {
+    "category": "Warhammer 40K",
+    "gameSystem": "40K",
+    "scale": "32mm",
+    "rating": 4,
+    "printed": true
+  },
+  "addTags": ["warhammer", "space-marine"],
+  "removeTags": ["unsorted"]
+}
+```
+
+**Response:**
+
+```json
+{ "affectedCount": 2 }
+```
+
+---
+
+### `POST /api/v1/models/bulk-creator` — Bulk Creator Reassignment
+
+Reassign multiple models to a different creator.
+
+**Request Body:**
+
+```json
+{
+  "modelIds": ["id1", "id2", "id3"],
+  "creatorId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
+```
+
+**Response:**
+
+```json
+{ "affectedCount": 3 }
 ```
 
 ---
@@ -406,6 +502,8 @@ Returns all models by a specific creator.
 
 ### `GET /api/v1/tags` — List All Tags
 
+> **Tip:** To find all models with a specific tag, use `GET /api/v1/models?tags={tagName}`.
+
 **Response:**
 
 ```json
@@ -417,7 +515,7 @@ Returns all models by a specific creator.
 
 ---
 
-### `POST /api/v1/models/{modelId}/tags` — Add Tags to Model
+### `POST /api/v1/models/{id}/tags` — Add Tags to Model
 
 **Request Body:**
 
@@ -431,7 +529,7 @@ Returns all models by a specific creator.
 
 ---
 
-### `DELETE /api/v1/models/{modelId}/tags/{tagName}` — Remove Tag from Model
+### `DELETE /api/v1/models/{id}/tags/{tagName}` — Remove Tag from Model
 
 **Response:** `204 No Content`
 
@@ -465,12 +563,6 @@ curl -X DELETE "http://localhost:5000/api/v1/models/{id}/tags/dragon"
 
 ---
 
-### `GET /api/v1/sources/{slug}` — Get Source by Slug
-
-Returns a single source by its slug identifier.
-
----
-
 ### `POST /api/v1/sources` — Create Source
 
 **Request Body:**
@@ -490,24 +582,7 @@ Returns a single source by its slug identifier.
 
 ---
 
-### `PATCH /api/v1/sources/{slug}` — Update Source
-
-**Request Body:** (all fields optional)
-
-```json
-{
-  "name": "Updated Name",
-  "basePath": "/new/path",
-  "adapterType": "MmfSourceAdapter",
-  "autoScan": false
-}
-```
-
-**Response:** `200 OK`
-
----
-
-### `DELETE /api/v1/sources/{slug}` — Delete Source
+### `DELETE /api/v1/sources/{id}` — Delete Source
 
 **Response:** `204 No Content`
 
@@ -537,6 +612,30 @@ Scans only files that have changed since the last scan.
 
 ---
 
+### `GET /api/v1/scan/untracked` — Get Untracked Files
+
+Returns files present on disk in source directories that are not tracked in the database.
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `source` | string | Filter by source slug (optional) |
+
+**Response:**
+
+```json
+[
+  {
+    "path": "/mnt/3dprinting/sources/mmf/SomeCreator/OldModel/model.stl",
+    "source": "mmf",
+    "sizBytes": 1234567
+  }
+]
+```
+
+---
+
 ### `GET /api/v1/scan/status` — Get Scan Status
 
 **Response:**
@@ -560,6 +659,14 @@ Scans only files that have changed since the last scan.
 ---
 
 ## Import
+
+### `POST /api/v1/import/scan` — Scan Unsorted Directory
+
+Scans the `unsorted/` directory and reports what files are present (non-destructive preview).
+
+**Response:** `200 OK` with list of files found.
+
+---
 
 ### `POST /api/v1/import/process` — Process Unsorted Directory
 
@@ -691,6 +798,29 @@ Returns all creators sorted by model count with total sizes.
 
 ---
 
+### `GET /api/v1/plugins/{slug}/progress` — SSE Sync Progress Stream
+
+Server-Sent Events stream that pushes real-time sync progress updates. Connect with an EventSource or `curl -N`.
+
+```bash
+curl -N http://localhost:5000/api/v1/plugins/mmf/progress
+```
+
+Each event is a JSON `ScrapeProgress` object:
+
+```json
+{
+  "status": "downloading",
+  "current": 247,
+  "total": 500,
+  "currentItem": "Dragon Bust by SculptorX"
+}
+```
+
+Status values: `authenticating`, `fetching_manifest`, `downloading`, `complete`, `error`
+
+---
+
 ### `GET /api/v1/plugins/{slug}/config` — Get Plugin Config
 
 Returns the plugin's configuration schema with current values (secrets are masked).
@@ -799,6 +929,30 @@ Returns the file directly with appropriate content type (`model/stl`, `model/obj
 ### `GET /api/v1/variants/{id}/thumbnail` — Get Variant Thumbnail
 
 Returns the WebP thumbnail image for a specific variant.
+
+---
+
+## MCP (Model Context Protocol)
+
+---
+
+## Prometheus Metrics
+
+### `GET /metrics` — Prometheus Metrics
+
+Returns metrics in Prometheus text format. Useful for Grafana dashboards and alerting.
+
+Metrics include:
+- `forgekeeper_models_total` — total model count
+- `forgekeeper_creators_total` — total creator count
+- `forgekeeper_files_total` — total variant file count
+- `forgekeeper_thumbnails_total` — total generated thumbnails
+- `forgekeeper_scan_running` — 1 if a scan is active
+- Per-plugin sync metrics (last run, model count, error count)
+
+```bash
+curl http://localhost:5000/metrics
+```
 
 ---
 

@@ -176,7 +176,8 @@ spec:
     spec:
       containers:
         - name: forgekeeper
-          image: ghcr.io/inxaos-repo/forgekeeper:latest
+          image: ghcr.io/inxaos-repo/forgekeeper:main
+          imagePullPolicy: Always  # REQUIRED for mutable tags like :main or :latest
           ports:
             - containerPort: 5000
           envFrom:
@@ -460,6 +461,36 @@ Adjust log levels via environment variables:
 Serilog__MinimumLevel__Default: "Information"
 Serilog__MinimumLevel__Override__Microsoft: "Warning"
 ```
+
+### Prometheus Metrics
+
+Forgekeeper exports Prometheus metrics at `GET /metrics`. Add a `ServiceMonitor` to have kube-prometheus-stack scrape it automatically:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: forgekeeper
+  namespace: forgekeeper
+spec:
+  selector:
+    matchLabels:
+      app: forgekeeper
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 60s
+```
+
+### Flux GitOps Deployment
+
+Forgekeeper is deployed via Flux CD using a HelmRelease in the `inxaos-flux` repository. To update:
+
+1. Push a new image tag to GHCR via GitHub Actions CI
+2. Flux detects the new image (or update the HelmRelease values)
+3. Flux applies the change — Recreate strategy ensures clean rollover
+
+> **Note:** Because the deployment strategy is `Recreate`, there is a brief downtime during rollouts. This is intentional — multiple instances cannot safely share the scanner and thumbnail background workers.
 
 ## FlareSolverr (Required for MMF Plugin)
 

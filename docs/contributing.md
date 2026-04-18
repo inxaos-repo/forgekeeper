@@ -95,6 +95,8 @@ forgekeeper/
 
 ### Unit & Integration Tests
 
+The test suite has **241 tests** across parsing, services, repositories, adapters, plugins, and API integration.
+
 ```bash
 # Run all tests
 dotnet test
@@ -113,7 +115,7 @@ dotnet test --filter "Category=Repository"
 
 | Project | Tests |
 |---------|-------|
-| `tests/Forgekeeper.Tests` | Unit tests for parsing, adapters, services, repositories, plugins |
+| `tests/Forgekeeper.Tests` | 241 tests: parsing, adapters, services, repositories, plugins, API |
 
 Key test files:
 - `MetadataParsingTests.cs` — metadata.json deserialization
@@ -130,18 +132,31 @@ Key test files:
 
 ### End-to-End Tests (Playwright)
 
+**27 E2E tests** across 8 spec files cover the full UI + API flow: models, creators, sources, scan, import, plugins, stats, MCP, and health.
+
 ```bash
 # Via Docker Compose (recommended — no local browser install needed)
 docker compose run --rm e2e
 
-# Or locally
+# Or locally (requires Node.js 22+)
 cd tests/Forgekeeper.E2E
 npm ci
 npx playwright install
 npx playwright test --reporter=list
 ```
 
-E2E tests run against a live Forgekeeper instance and test the full UI + API flow.
+E2E spec files:
+
+| File | Coverage |
+|------|----------|
+| `models.spec.ts` | CRUD, search, bulk ops, rename |
+| `creators.spec.ts` | List, detail, model association |
+| `sources.spec.ts` | Create, delete, scan trigger |
+| `scan.spec.ts` | Full scan, incremental, progress |
+| `plugins.spec.ts` | Config, sync, SSE progress |
+| `stats.spec.ts` | Collection statistics |
+| `mcp.spec.ts` | Tool list and invocation |
+| `health.spec.ts` | Health check endpoint |
 
 ## Code Style
 

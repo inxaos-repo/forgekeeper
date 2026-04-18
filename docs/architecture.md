@@ -96,9 +96,12 @@ Background hosted service that generates thumbnails:
 
 Manages scraper plugins that integrate with external platforms:
 
-- Loads plugin DLLs from the plugins directory
+- Loads plugin DLLs from the `plugins/` directory via isolated `AssemblyLoadContext` (one per plugin — prevents DLL version conflicts)
+- **NFS-based hot reload:** drop a new DLL in the plugins directory and restart Forgekeeper to pick it up without rebuilding the container
 - Provides `PluginContext` with HttpClient, logger, config, and token store
-- Manages sync operations with progress tracking
+- **Per-plugin sync lock:** `SemaphoreSlim(1,1)` prevents concurrent syncs for the same plugin (returns 409 Conflict if already running)
+- **Download retry with exponential backoff:** 3 attempts, respects `Retry-After` headers from rate-limited APIs
+- Streams real-time progress via SSE (`GET /api/v1/plugins/{slug}/progress`)
 - Handles OAuth callbacks for browser-based auth flows
 - Stores plugin configuration and tokens encrypted in the database
 
@@ -166,7 +169,9 @@ The `metadata.json` file is the integration contract between external tools and 
 | `source`, `externalId`, `creator`, `dates.*`, `files[]` | Scraper/downloader | Forgekeeper MUST NOT overwrite |
 | `tags` | Both | Union merge — both add, neither removes |
 | `license` | Both | User-set value takes precedence |
-| `collection`, `printSettings`, `printHistory`, `components`, `relatedModels`, `physicalProperties` | Forgekeeper | User-owned fields written back |
+| `collection`, `printSettings`, `printHistory`, `components`, `relatedModels`, `physicalProperties` | Forgekeeper | User-owned fields written back on every metadata save |
+
+**Metadata writeback** is triggered whenever the user edits a model via the API. Forgekeeper reads the existing `metadata.json`, merges user-owned fields, and writes the result back. The `PreserveUserEdits` step in the MMF scraper plugin round-trips all Forgekeeper-owned fields as an opaque `JsonElement` — scraper re-syncs never clobber user data.
 
 ### Minimal Example
 
