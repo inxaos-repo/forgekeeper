@@ -19,24 +19,54 @@ Forgekeeper is actively used in production managing a large personal collection:
 
 ## Features
 
+### Core Library Management
 - **Unified library** across multiple sources (MyMiniFactory, Thangs, Patreon, Cults3D, Thingiverse, manual)
 - **Smart variant handling** — supported/unsupported/presupported versions grouped under one model
-- **Source-parallel directories** — each source keeps its own folder structure; Forgekeeper provides the unified view
-- **Import pipeline** — drop files in `unsorted/`, auto-detect what they are, confirm and sort
-- **Full-text search** with PostgreSQL pg_trgm fuzzy matching + all filters (source, category, game system, scale, rating, printed, license, collection, tags)
+- **Full-text search** with PostgreSQL pg_trgm fuzzy matching + all filters
 - **3D STL preview** in the browser (Three.js)
-- **Thumbnail generation** — stl-thumb → WebP, auto-queued for all STL files
+- **Thumbnail generation** — stl-thumb → WebP, auto-generated for all STL files
 - **Tagging, rating, categorization** — game system, scale, printed status, notes, collections
-- **Plugin system** — isolated AssemblyLoadContext, NFS-based hot reload, per-plugin config/auth
-- **MMF scraper plugin** — FlareSolverr Cloudflare bypass, cookie auth, raw JSON API, 7,230+ model library sync
-- **Bulk management** — bulk tag, categorize, metadata update, creator reassignment across hundreds of models
-- **Rename/move with disk operations** — template-based rename preview + atomic move
-- **Print history** (JSONB), related models, components, print settings
+- **Print history tracking** — log prints with printer, material, result, photos
+
+### Import & Organization
+- **Import pipeline** — drop files in watch directories, auto-detect creator/model, confirm and sort
+- **Multi-directory watch** — monitor Telegram downloads, Patreon drops, browser downloads
+- **Bulk management** — Mp3tag-style editor for tags, categories, creator reassignment
+- **Filename → metadata parser** — extract creator/name/category from directory names using templates
+- **Template-based reorganize** — restructure directories on disk using `{source}/{creator}/{name}` patterns
+- **Saved template presets** — reusable templates scoped to specific creators or sources
+
+### Plugin System
+- **Plugin architecture** — isolated AssemblyLoadContext, manifest validation, SDK version checking
+- **MMF scraper plugin** — FlareSolverr Cloudflare bypass, cookie auth, archive fallback, resumable sync
+- **Plugin registry** — browse and install community plugins from the web UI
+- **CLI management** — `forgekeeper plugin install/update/remove` from GitHub releases
+- **Auto-update checks** — notify or auto-apply when plugin updates are available
+
+### Monitoring & Operations
+- **Prometheus `/metrics`** — library stats, sync progress, plugin health
+- **Grafana dashboard** — 12 panels for library overview, sync status, trends
+- **Library Health page** — reconciliation view, integrity verification, orphan detection
+- **Backup & restore** — JSON export/import with upsert, resumable sync, gap-only restore mode
+- **SSE sync progress** — real-time streaming during plugin sync operations
+
+### Developer & Integration
+- **MCP interface** — 18 tools for AI assistant integration
 - **Metadata writeback** — user edits sync back to `metadata.json` for database-free recovery
-- **MCP interface** — 18 tools for AI assistant integration (search, update, bulk ops, analytics)
-- **Prometheus `/metrics` endpoint** for monitoring
-- **SSE sync progress streaming** — real-time plugin sync progress
-- **Built for scale** — handles 300K+ files without breaking a sweat
+- **REST API** — 70+ endpoints with full CRUD, bulk operations, and search
+- **Server-side file browser** — browse host filesystem from the web UI (sandboxed)
+
+## Roadmap
+
+Planned features (not yet implemented):
+- **Thangs / Patreon / Cults3D plugins** — additional source scrapers
+- **AI model tagging** — auto-categorize STLs using vision models on thumbnails
+- **STL repair** — detect and auto-fix broken meshes
+- **Print cost estimator** — slicer integration for filament/resin estimates
+- **Auto-print** — send STL directly to OctoPrint or Bambu Lab printers
+- **Collection sharing** — export curated collections as shareable lists
+- **Plugin marketplace** — ratings, reviews, publisher verification
+- **Multi-user support** — shared libraries with per-user permissions
 
 ## Architecture
 
