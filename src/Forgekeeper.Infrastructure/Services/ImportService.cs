@@ -38,16 +38,35 @@ public class ImportService : IImportService
     public async Task<List<ImportQueueItemDto>> ProcessUnsortedAsync(CancellationToken ct = default)
     {
         var basePaths = _config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
+        var dirs = basePaths.Select(bp => Path.Combine(bp, "unsorted")).ToList();
+
+        // Also include configured watch directories
+        var watchDirs = _config.GetSection("Import:WatchDirectories").Get<string[]>();
+        if (watchDirs != null)
+            dirs.AddRange(watchDirs.Where(d => !string.IsNullOrWhiteSpace(d)));
+
+        return await ProcessDirectoriesAsync(dirs, ct);
+    }
+
+    public async Task<List<ImportQueueItemDto>> ProcessDirectoriesAsync(List<string> directories, CancellationToken ct = default)
+    {
+        var basePaths = _config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
+        var defaultBasePath = basePaths[0];
         var results = new List<ImportQueueItemDto>();
 
-        foreach (var basePath in basePaths)
+        foreach (var dir in directories.Distinct())
         {
-            var unsortedDir = Path.Combine(basePath, "unsorted");
-            if (!Directory.Exists(unsortedDir))
+            if (!Directory.Exists(dir))
                 continue;
 
+            _logger.LogDebug("Scanning import directory: {Dir}", dir);
+
+            // Determine the base path this directory belongs to (for canonical move target)
+            var basePath = basePaths.FirstOrDefault(bp => dir.StartsWith(bp, StringComparison.OrdinalIgnoreCase))
+                ?? defaultBasePath;
+
             // Process archives first
-            foreach (var file in Directory.EnumerateFiles(unsortedDir, "*", SearchOption.TopDirectoryOnly))
+            foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly))
             {
                 ct.ThrowIfCancellationRequested();
                 var ext = Path.GetExtension(file);
@@ -62,8 +81,8 @@ public class ImportService : IImportService
                 }
             }
 
-            // Now process all entries in unsorted/
-            foreach (var entry in Directory.EnumerateFileSystemEntries(unsortedDir))
+            // Now process all entries
+            foreach (var entry in Directory.EnumerateFileSystemEntries(dir))
             {
                 ct.ThrowIfCancellationRequested();
 

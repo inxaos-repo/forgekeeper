@@ -228,6 +228,27 @@ export function useApi() {
     return get(`/plugins/${encodeURIComponent(slug)}/admin`)
   }
 
+  function getPluginHistory(slug, limit) {
+    const qs = limit ? `?limit=${limit}` : ''
+    return get(`/plugins/${encodeURIComponent(slug)}/history${qs}`)
+  }
+
+  function getPluginDiagnostics(slug) {
+    return get(`/plugins/${encodeURIComponent(slug)}/diagnostics`)
+  }
+
+  function reloadPlugins() {
+    return post('/plugins/reload')
+  }
+
+  function reloadPlugin(slug) {
+    return post(`/plugins/${encodeURIComponent(slug)}/reload`)
+  }
+
+  function togglePlugin(slug, enabled) {
+    return put(`/plugins/${encodeURIComponent(slug)}/config`, { ENABLED: enabled ? 'true' : 'false' })
+  }
+
   // ─── Files / Directory Browser ─────────────────────────
   /**
    * Browse server-side filesystem.
@@ -299,6 +320,11 @@ export function useApi() {
     updatePluginConfig,
     triggerPluginSync,
     getPluginAdminHtml,
+    getPluginHistory,
+    getPluginDiagnostics,
+    reloadPlugins,
+    reloadPlugin,
+    togglePlugin,
     // Files
     browseFiles,
   }

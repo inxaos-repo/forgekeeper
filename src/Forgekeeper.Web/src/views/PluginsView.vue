@@ -1,11 +1,16 @@
 <!--
-  PluginsView.vue — Plugin admin interface (WP13)
-  List installed plugins, per-plugin config editor (dynamic from ConfigSchema),
-  sync controls, auth flow, admin page embed, sync progress
+  PluginsView.vue — Plugin admin interface (WP-PL3/WP-PL4/WP-PL5)
+  - Rich plugin cards with manifest metadata, trust badge, SDK compat
+  - Enable/disable toggle
+  - Sync controls, progress, history
+  - Hot-reload button
+  - Diagnostics expandable section
 -->
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useApi } from '../composables/useApi.js'
+import PluginTrustBadge from '../components/PluginTrustBadge.vue'
+import PluginSdkBadge from '../components/PluginSdkBadge.vue'
 
 const api = useApi()
 
@@ -23,6 +28,24 @@ const statusPollTimer = ref(null)
 const sseSource = ref(null)
 const liveProgress = ref(null)
 
+// Hot-reload state
+const reloading = ref(false)
+const reloadingSlug = ref(null)
+const reloadMessage = ref(null)
+
+// Sync history
+const syncHistory = ref([])
+const loadingHistory = ref(false)
+const showHistory = ref(false)
+
+// Diagnostics
+const diagnostics = ref(null)
+const loadingDiagnostics = ref(false)
+const showDiagnostics = ref(false)
+
+// Manifest warnings/errors panel
+const showManifestDetails = ref(false)
+
 // Editing config values (keyed by field key)
 const configValues = ref({})
 
@@ -32,7 +55,7 @@ const selectedPlugin = computed(() =>
 
 function statusLabel(plugin) {
   if (!plugin) return 'unknown'
-  if (plugin.syncRunning || plugin.isSyncing) return 'syncing'
+  if (plugin.syncRunning || plugin.isSyncing || plugin.syncStatus?.isRunning) return 'syncing'
   if (plugin.isAuthenticated || plugin.authenticated) return 'ready'
   if (plugin.requiresBrowserAuth) return 'needs auth'
   return 'installed'
@@ -62,6 +85,13 @@ function formatDate(dateStr) {
   } catch { return dateStr }
 }
 
+function formatDuration(seconds) {
+  if (!seconds) return '—'
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
+  return `${(seconds / 3600).toFixed(1)}h`
+}
+
 // ─── Fetch ───────────────────────────────────────────────
 async function fetchPlugins() {
   try {
@@ -80,6 +110,11 @@ async function selectPlugin(slug) {
   selectedSlug.value = slug
   configDirty.value = false
   adminHtml.value = null
+  syncHistory.value = []
+  showHistory.value = false
+  showDiagnostics.value = false
+  diagnostics.value = null
+  showManifestDetails.value = false
   await Promise.all([
     fetchPluginConfig(slug),
     fetchPluginStatus(slug),
@@ -96,6 +131,11 @@ async function fetchPluginConfig(slug) {
     if (result?.schema) {
       for (const field of result.schema) {
         configValues.value[field.key] = result.values?.[field.key] ?? field.defaultValue ?? ''
+      }
+    } else if (Array.isArray(result)) {
+      // API returns array of field objects with .key and .value
+      for (const field of result) {
+        configValues.value[field.key] = field.value ?? field.defaultValue ?? ''
       }
     } else if (result?.values) {
       configValues.value = { ...result.values }
@@ -123,6 +163,43 @@ async function fetchAdminHtml(slug) {
   }
 }
 
+async function fetchSyncHistory(slug) {
+  loadingHistory.value = true
+  try {
+    const result = await api.getPluginHistory(slug, 20)
+    syncHistory.value = result || []
+  } catch {
+    syncHistory.value = []
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+async function fetchDiagnostics(slug) {
+  loadingDiagnostics.value = true
+  try {
+    diagnostics.value = await api.getPluginDiagnostics(slug)
+  } catch {
+    diagnostics.value = null
+  } finally {
+    loadingDiagnostics.value = false
+  }
+}
+
+function toggleHistory() {
+  showHistory.value = !showHistory.value
+  if (showHistory.value && !syncHistory.value.length && selectedSlug.value) {
+    fetchSyncHistory(selectedSlug.value)
+  }
+}
+
+function toggleDiagnostics() {
+  showDiagnostics.value = !showDiagnostics.value
+  if (showDiagnostics.value && !diagnostics.value && selectedSlug.value) {
+    fetchDiagnostics(selectedSlug.value)
+  }
+}
+
 // ─── Actions ─────────────────────────────────────────────
 async function saveConfig() {
   if (!selectedSlug.value) return
@@ -147,31 +224,65 @@ async function triggerSync(slug) {
   } catch { syncingSlug.value = null }
 }
 
+async function hotReloadAll() {
+  reloading.value = true
+  reloadMessage.value = null
+  try {
+    const result = await api.reloadPlugins()
+    reloadMessage.value = `Reloaded ${result?.loaded ?? 0} plugin(s)`
+    await fetchPlugins()
+    if (selectedSlug.value) await fetchPluginStatus(selectedSlug.value)
+  } catch (e) {
+    if (e.message?.includes('501')) {
+      reloadMessage.value = 'Hot-reload not enabled (set Plugins:HotReloadEnabled=true)'
+    } else {
+      reloadMessage.value = `Reload failed: ${e.message}`
+    }
+  } finally {
+    reloading.value = false
+    setTimeout(() => (reloadMessage.value = null), 5000)
+  }
+}
+
+async function hotReloadPlugin(slug) {
+  reloadingSlug.value = slug
+  reloadMessage.value = null
+  try {
+    await api.reloadPlugin(slug)
+    reloadMessage.value = `Plugin '${slug}' reloaded`
+    await fetchPlugins()
+    await fetchPluginStatus(slug)
+  } catch (e) {
+    if (e.message?.includes('501')) {
+      reloadMessage.value = 'Hot-reload not enabled (set Plugins:HotReloadEnabled=true)'
+    } else {
+      reloadMessage.value = `Reload failed: ${e.message}`
+    }
+  } finally {
+    reloadingSlug.value = null
+    setTimeout(() => (reloadMessage.value = null), 5000)
+  }
+}
+
 function startProgressStream(slug) {
   stopProgressStream()
-  // Try SSE first, fall back to polling
   try {
     const es = new EventSource(`/api/v1/plugins/${slug}/progress`)
     sseSource.value = es
-    
+
     es.addEventListener('progress', (e) => {
-      try {
-        liveProgress.value = JSON.parse(e.data)
-      } catch {}
+      try { liveProgress.value = JSON.parse(e.data) } catch {}
     })
-    
+
     es.addEventListener('complete', (e) => {
-      try {
-        liveProgress.value = { ...JSON.parse(e.data), complete: true }
-      } catch {}
+      try { liveProgress.value = { ...JSON.parse(e.data), complete: true } } catch {}
       stopProgressStream()
       syncingSlug.value = null
       fetchPlugins()
       fetchPluginStatus(slug)
     })
-    
+
     es.addEventListener('error', () => {
-      // SSE failed, fall back to polling
       stopProgressStream()
       startStatusPoll(slug)
     })
@@ -184,7 +295,6 @@ function startStatusPoll(slug) {
   stopStatusPoll()
   statusPollTimer.value = setInterval(async () => {
     await fetchPluginStatus(slug)
-    // Map API status to liveProgress format
     if (pluginStatus.value) {
       liveProgress.value = {
         scraped: pluginStatus.value.scrapedModels || 0,
@@ -222,29 +332,20 @@ function stopStatusPoll() {
 async function authenticate(plugin, force = false) {
   const slug = plugin.slug || plugin.sourceSlug
   try {
-    // Call the auth endpoint to get the OAuth URL
     const res = await fetch(`/api/v1/plugins/${slug}/auth${force ? '?force=true' : ''}`)
     const data = await res.json()
-    
     if (data.authenticated && !force && !data.authUrl) {
-      // Already authenticated and no re-auth requested
       await fetchPlugins()
       return
     }
-    
     if (data.authUrl) {
-      // Open OAuth URL in popup
       window.open(data.authUrl, '_blank', 'width=600,height=700')
     } else {
-      console.error('No auth URL returned:', data.message)
       return
     }
-  } catch (err) {
-    // Fallback to direct URL
+  } catch {
     window.open(`/api/v1/plugins/${slug}/auth`, '_blank', 'width=600,height=700')
   }
-  
-  // Poll for auth completion
   const pollInterval = setInterval(async () => {
     try {
       const res = await fetch(`/api/v1/plugins/${slug}/auth`)
@@ -255,7 +356,6 @@ async function authenticate(plugin, force = false) {
       }
     } catch {}
   }, 3000)
-  // Stop polling after 5 minutes
   setTimeout(() => clearInterval(pollInterval), 300000)
 }
 
@@ -263,25 +363,31 @@ function onConfigChange() {
   configDirty.value = true
 }
 
-// ─── Config field rendering helpers ──────────────────────
-function fieldType(field) {
-  if (field.isSecret || field.secret) return 'password'
-  if (field.type === 'number' || field.type === 'integer') return 'number'
-  if (field.type === 'boolean') return 'checkbox'
-  return 'text'
-}
+// Config field schema — handles both array-of-fields and schema wrapper
+const configSchema = computed(() => {
+  if (!pluginConfig.value) return []
+  if (Array.isArray(pluginConfig.value)) return pluginConfig.value
+  if (pluginConfig.value.schema) return pluginConfig.value.schema
+  return []
+})
 
 function estimateTimeRemaining(progress) {
   if (!progress?.scraped || !progress?.total) return ''
-  // Rough estimate: assume constant rate from start
   const pct = progress.scraped / progress.total
   if (pct <= 0) return ''
-  const elapsed = (progress.elapsedMs || 60000) // default 1min if unknown
+  const elapsed = progress.elapsedMs || 60000
   const totalEstimate = elapsed / pct
   const remaining = totalEstimate - elapsed
   if (remaining < 60000) return 'less than a minute'
   if (remaining < 3600000) return `${Math.round(remaining / 60000)} minutes`
   return `${(remaining / 3600000).toFixed(1)} hours`
+}
+
+function syncRunStatusColor(status) {
+  if (status === 'completed') return 'text-forge-accent'
+  if (status === 'failed') return 'text-forge-danger'
+  if (status === 'running') return 'text-yellow-400'
+  return 'text-forge-text-muted'
 }
 
 onMounted(fetchPlugins)
@@ -293,7 +399,29 @@ onBeforeUnmount(() => {
 
 <template>
   <div>
-    <h1 class="text-2xl font-bold text-forge-text mb-6">Plugins</h1>
+    <!-- Header with title + global reload button -->
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-bold text-forge-text">Plugins</h1>
+      <button
+        @click="hotReloadAll"
+        :disabled="reloading"
+        :class="[
+          'flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border',
+          reloading
+            ? 'text-forge-text-muted border-forge-border cursor-not-allowed'
+            : 'text-forge-text-muted border-forge-border hover:text-forge-text hover:border-forge-accent/50',
+        ]"
+        title="Hot-reload all plugins (requires Plugins:HotReloadEnabled=true)"
+      >
+        <span :class="reloading ? 'animate-spin' : ''">🔄</span>
+        <span>{{ reloading ? 'Reloading...' : 'Reload All' }}</span>
+      </button>
+    </div>
+
+    <!-- Reload message toast -->
+    <div v-if="reloadMessage" class="mb-4 px-4 py-2 rounded-lg text-sm bg-forge-card border border-forge-border text-forge-text-muted">
+      {{ reloadMessage }}
+    </div>
 
     <!-- Loading -->
     <div v-if="api.loading.value && !plugins.length" class="flex justify-center py-20">
@@ -327,22 +455,22 @@ onBeforeUnmount(() => {
             <div class="flex items-center justify-between">
               <div class="min-w-0">
                 <h3 class="text-sm font-semibold text-forge-text truncate">
-                  {{ plugin.sourceName || plugin.name || plugin.slug || plugin.sourceSlug }}
+                  {{ plugin.name || plugin.sourceName || plugin.slug || plugin.sourceSlug }}
                 </h3>
-                <p class="text-xs text-forge-text-muted mt-0.5">v{{ plugin.version || '1.0' }}</p>
+                <p class="text-xs text-forge-text-muted mt-0.5">
+                  v{{ plugin.version || '?' }}
+                  <span v-if="plugin.author" class="ml-1">· {{ plugin.author }}</span>
+                </p>
               </div>
               <div class="flex items-center gap-2 shrink-0">
                 <div :class="['w-2 h-2 rounded-full', statusDot(plugin)]"></div>
                 <span :class="['text-xs capitalize', statusColor(plugin)]">{{ statusLabel(plugin) }}</span>
               </div>
             </div>
-            <div class="flex gap-4 mt-1 text-xs text-forge-text-muted">
-              <span v-if="plugin.lastSyncAt || plugin.lastSync">
-                Last: {{ formatDate(plugin.lastSyncAt || plugin.lastSync) }}
-              </span>
-              <span v-if="plugin.nextSyncAt || plugin.nextSync">
-                Next: {{ formatDate(plugin.nextSyncAt || plugin.nextSync) }}
-              </span>
+            <!-- Trust + SDK badges row -->
+            <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+              <PluginTrustBadge :source="plugin.source" :manifest-valid="plugin.manifestValid" />
+              <PluginSdkBadge :level="plugin.sdkCompatLevel" :reason="plugin.sdkCompatReason" />
             </div>
           </div>
         </div>
@@ -350,38 +478,69 @@ onBeforeUnmount(() => {
 
       <!-- Plugin detail -->
       <div v-if="selectedPlugin" class="flex-1 space-y-6">
-        <!-- Plugin header -->
+
+        <!-- ── Plugin header card ────────────────────────────── -->
         <div class="bg-forge-card border border-forge-border rounded-xl p-5">
-          <div class="flex items-start justify-between">
-            <div>
-              <h2 class="text-xl font-bold text-forge-text">
-                {{ selectedPlugin.sourceName || selectedPlugin.name || selectedSlug }}
-              </h2>
-              <p v-if="selectedPlugin.description" class="text-sm text-forge-text-muted mt-1">
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0 flex-1">
+              <!-- Name + version -->
+              <div class="flex items-center gap-3 flex-wrap">
+                <h2 class="text-xl font-bold text-forge-text">
+                  {{ selectedPlugin.name || selectedPlugin.sourceName || selectedSlug }}
+                </h2>
+                <span class="text-sm text-forge-text-muted font-mono">v{{ selectedPlugin.version || '?' }}</span>
+              </div>
+
+              <!-- Author + slug -->
+              <div class="flex items-center gap-4 mt-1 text-sm text-forge-text-muted flex-wrap">
+                <span v-if="selectedPlugin.author">by <strong class="text-forge-text">{{ selectedPlugin.author }}</strong></span>
+                <span>slug: <code class="text-forge-accent">{{ selectedPlugin.slug || selectedPlugin.sourceSlug }}</code></span>
+              </div>
+
+              <!-- Description -->
+              <p v-if="selectedPlugin.description" class="text-sm text-forge-text-muted mt-2">
                 {{ selectedPlugin.description }}
               </p>
-              <div class="flex items-center gap-4 mt-3 text-sm">
-                <span class="text-forge-text-muted">Version: <strong class="text-forge-text">{{ selectedPlugin.version || '1.0' }}</strong></span>
-                <span class="text-forge-text-muted">Source slug: <code class="text-forge-accent">{{ selectedPlugin.sourceSlug || selectedPlugin.slug }}</code></span>
+
+              <!-- Trust + SDK badges -->
+              <div class="flex items-center gap-2 mt-3 flex-wrap">
+                <PluginTrustBadge :source="selectedPlugin.source" :manifest-valid="selectedPlugin.manifestValid" />
+                <PluginSdkBadge :level="selectedPlugin.sdkCompatLevel" :reason="selectedPlugin.sdkCompatReason" />
               </div>
             </div>
 
-            <div class="flex items-center gap-2">
+            <!-- Action buttons -->
+            <div class="flex items-center gap-2 shrink-0 flex-wrap justify-end">
               <!-- Auth button -->
               <button
                 v-if="selectedPlugin.requiresBrowserAuth && !(selectedPlugin.isAuthenticated || selectedPlugin.authenticated)"
                 @click="authenticate(selectedPlugin)"
-                class="px-4 py-2 bg-forge-danger/15 border border-forge-danger/30 text-forge-danger rounded-lg text-sm font-medium hover:bg-forge-danger/25 transition-colors"
+                class="px-3 py-1.5 bg-forge-danger/15 border border-forge-danger/30 text-forge-danger rounded-lg text-sm font-medium hover:bg-forge-danger/25 transition-colors"
               >
-                🔑 Authenticate
+                🔑 Auth
               </button>
 
-              <!-- Sync Now button -->
+              <!-- Hot-reload single plugin -->
+              <button
+                @click="hotReloadPlugin(selectedSlug)"
+                :disabled="reloadingSlug === selectedSlug"
+                :class="[
+                  'px-3 py-1.5 rounded-lg text-sm font-medium transition-colors border',
+                  reloadingSlug === selectedSlug
+                    ? 'text-forge-text-muted border-forge-border cursor-not-allowed'
+                    : 'text-forge-text-muted border-forge-border hover:text-forge-text hover:border-forge-accent/50',
+                ]"
+                title="Hot-reload this plugin"
+              >
+                <span :class="reloadingSlug === selectedSlug ? 'animate-spin inline-block' : ''">♻️</span>
+              </button>
+
+              <!-- Sync Now -->
               <button
                 @click="triggerSync(selectedSlug)"
                 :disabled="syncingSlug === selectedSlug"
                 :class="[
-                  'px-4 py-2 rounded-lg text-sm font-medium transition-colors',
+                  'px-4 py-1.5 rounded-lg text-sm font-medium transition-colors',
                   syncingSlug === selectedSlug
                     ? 'bg-forge-card text-forge-text-muted cursor-not-allowed'
                     : 'bg-forge-accent hover:bg-forge-accent-hover text-forge-bg',
@@ -391,9 +550,40 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
+
+          <!-- Manifest warnings/errors toggle -->
+          <div
+            v-if="(selectedPlugin.manifestErrors?.length || selectedPlugin.manifestWarnings?.length)"
+            class="mt-4 border-t border-forge-border pt-3"
+          >
+            <button
+              @click="showManifestDetails = !showManifestDetails"
+              class="flex items-center gap-2 text-xs text-forge-text-muted hover:text-forge-text transition-colors"
+            >
+              <span>{{ showManifestDetails ? '▼' : '▶' }}</span>
+              <span v-if="selectedPlugin.manifestErrors?.length" class="text-forge-danger">
+                {{ selectedPlugin.manifestErrors.length }} manifest error(s)
+              </span>
+              <span v-if="selectedPlugin.manifestWarnings?.length" class="text-yellow-400 ml-2">
+                {{ selectedPlugin.manifestWarnings.length }} warning(s)
+              </span>
+            </button>
+            <div v-if="showManifestDetails" class="mt-2 space-y-1">
+              <p
+                v-for="err in selectedPlugin.manifestErrors"
+                :key="err"
+                class="text-xs text-forge-danger bg-forge-danger/10 rounded px-2 py-1"
+              >⛔ {{ err }}</p>
+              <p
+                v-for="warn in selectedPlugin.manifestWarnings"
+                :key="warn"
+                class="text-xs text-yellow-400 bg-yellow-500/10 rounded px-2 py-1"
+              >⚠️ {{ warn }}</p>
+            </div>
+          </div>
         </div>
 
-        <!-- Sync status / progress -->
+        <!-- ── Sync progress ────────────────────────────────── -->
         <div
           v-if="liveProgress || syncingSlug === selectedSlug"
           class="bg-forge-card border border-forge-accent/30 rounded-xl p-4"
@@ -410,9 +600,7 @@ onBeforeUnmount(() => {
               </p>
             </div>
           </div>
-
           <div v-if="liveProgress?.total" class="space-y-2">
-            <!-- Progress bar -->
             <div class="space-y-1">
               <div class="flex justify-between text-xs text-forge-text-muted">
                 <span>{{ liveProgress.scraped || 0 }} / {{ liveProgress.total }}</span>
@@ -426,25 +614,29 @@ onBeforeUnmount(() => {
                 ></div>
               </div>
             </div>
-
-            <!-- Stats row -->
             <div class="flex gap-4 text-xs">
               <span class="text-forge-accent">{{ liveProgress.scraped || 0 }} scraped</span>
               <span v-if="liveProgress.failed" class="text-forge-danger">{{ liveProgress.failed }} failed</span>
-              <span v-if="liveProgress.downloaded" class="text-blue-400">{{ liveProgress.downloaded }} downloaded</span>
               <span v-if="liveProgress.skipped" class="text-forge-text-muted">{{ liveProgress.skipped }} skipped</span>
             </div>
-
-            <!-- ETA -->
             <p v-if="liveProgress.scraped > 0 && !liveProgress.complete && liveProgress.total > liveProgress.scraped" class="text-xs text-forge-text-muted">
               ~{{ estimateTimeRemaining(liveProgress) }} remaining
             </p>
           </div>
         </div>
 
-        <!-- Sync history summary -->
-        <div v-if="pluginStatus && !pluginStatus.syncProgress" class="bg-forge-card border border-forge-border rounded-xl p-5">
-          <h3 class="text-sm font-semibold text-forge-text-muted uppercase mb-3">Sync Status</h3>
+        <!-- ── Sync status summary ──────────────────────────── -->
+        <div v-if="pluginStatus && !liveProgress" class="bg-forge-card border border-forge-border rounded-xl p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-forge-text-muted uppercase">Sync Status</h3>
+            <button
+              @click="toggleHistory"
+              class="text-xs text-forge-text-muted hover:text-forge-text flex items-center gap-1 transition-colors"
+            >
+              <span>{{ showHistory ? '▼' : '▶' }}</span>
+              <span>History</span>
+            </button>
+          </div>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
             <div>
               <p class="text-xs text-forge-text-muted uppercase">Status</p>
@@ -458,30 +650,57 @@ onBeforeUnmount(() => {
               <p class="text-xs text-forge-text-muted uppercase">Next Sync</p>
               <p class="text-forge-text">{{ formatDate(pluginStatus.nextSyncAt || selectedPlugin.nextSyncAt || selectedPlugin.nextSync) }}</p>
             </div>
-            <div v-if="pluginStatus.lastSyncResult">
-              <p class="text-xs text-forge-text-muted uppercase">Last Result</p>
-              <p :class="pluginStatus.lastSyncResult === 'success' ? 'text-forge-accent' : 'text-forge-danger'" class="font-medium capitalize">
-                {{ pluginStatus.lastSyncResult }}
-              </p>
+            <div v-if="pluginStatus.scrapedModels || pluginStatus.totalModels">
+              <p class="text-xs text-forge-text-muted uppercase">Last Run</p>
+              <p class="text-forge-text">{{ pluginStatus.scrapedModels || 0 }} / {{ pluginStatus.totalModels || 0 }} models</p>
             </div>
           </div>
-          <p v-if="pluginStatus.lastSyncError" class="mt-3 text-xs text-forge-danger bg-forge-danger/10 rounded-lg px-3 py-2">
-            {{ pluginStatus.lastSyncError }}
+          <p v-if="pluginStatus.error" class="mt-3 text-xs text-forge-danger bg-forge-danger/10 rounded-lg px-3 py-2">
+            {{ pluginStatus.error }}
           </p>
+
+          <!-- Sync history table -->
+          <div v-if="showHistory" class="mt-4 border-t border-forge-border pt-3">
+            <div v-if="loadingHistory" class="flex justify-center py-4">
+              <div class="w-5 h-5 border-2 border-forge-accent border-t-transparent rounded-full animate-spin"></div>
+            </div>
+            <div v-else-if="!syncHistory.length" class="text-xs text-forge-text-muted text-center py-2">No sync history</div>
+            <table v-else class="w-full text-xs">
+              <thead>
+                <tr class="text-forge-text-muted uppercase text-left">
+                  <th class="pb-1 pr-3">Date</th>
+                  <th class="pb-1 pr-3">Status</th>
+                  <th class="pb-1 pr-3">Scraped</th>
+                  <th class="pb-1 pr-3">Failed</th>
+                  <th class="pb-1">Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="run in syncHistory" :key="run.id" class="border-t border-forge-border/50">
+                  <td class="py-1 pr-3 text-forge-text-muted">{{ formatDate(run.startedAt) }}</td>
+                  <td class="py-1 pr-3" :class="syncRunStatusColor(run.status)">{{ run.status }}</td>
+                  <td class="py-1 pr-3 text-forge-text">{{ run.scrapedModels ?? '—' }}</td>
+                  <td class="py-1 pr-3" :class="run.failedModels ? 'text-forge-danger' : 'text-forge-text-muted'">
+                    {{ run.failedModels ?? '—' }}
+                  </td>
+                  <td class="py-1 text-forge-text-muted">{{ formatDuration(run.durationSeconds) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
 
-        <!-- Config form (auto-generated from schema) -->
-        <div v-if="pluginConfig?.schema?.length" class="bg-forge-card border border-forge-border rounded-xl p-5">
+        <!-- ── Config form ──────────────────────────────────── -->
+        <div v-if="configSchema.length" class="bg-forge-card border border-forge-border rounded-xl p-5">
           <h3 class="text-sm font-semibold text-forge-text-muted uppercase mb-4">Configuration</h3>
-
           <div class="space-y-4">
-            <div v-for="field in pluginConfig.schema" :key="field.key">
+            <div v-for="field in configSchema" :key="field.key">
               <label class="block text-xs font-medium text-forge-text-muted mb-1 uppercase">
                 {{ field.label || field.key }}
                 <span v-if="field.required" class="text-forge-danger">*</span>
               </label>
 
-              <!-- Boolean (checkbox) -->
+              <!-- Boolean -->
               <label v-if="field.type === 'boolean'" class="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -499,13 +718,12 @@ onBeforeUnmount(() => {
                 :value="configValues[field.key]"
                 @input="configValues[field.key] = parseFloat($event.target.value) || 0; onConfigChange()"
                 :placeholder="field.placeholder || field.defaultValue?.toString() || ''"
-                :min="field.min"
-                :max="field.max"
+                :min="field.min" :max="field.max"
                 :step="field.step || (field.type === 'integer' ? 1 : 'any')"
                 class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
               />
 
-              <!-- Select (if options provided) -->
+              <!-- Select -->
               <select
                 v-else-if="field.options?.length"
                 :value="configValues[field.key]"
@@ -517,9 +735,9 @@ onBeforeUnmount(() => {
                 </option>
               </select>
 
-              <!-- Secret (password) -->
+              <!-- Secret -->
               <input
-                v-else-if="field.isSecret || field.secret"
+                v-else-if="field.isSecret || field.secret || field.type === 'secret'"
                 type="password"
                 :value="configValues[field.key]"
                 @input="configValues[field.key] = $event.target.value; onConfigChange()"
@@ -538,13 +756,12 @@ onBeforeUnmount(() => {
                 class="w-full bg-forge-bg border border-forge-border rounded-lg px-3 py-1.5 text-sm text-forge-text placeholder-forge-text-muted focus:outline-none focus:border-forge-accent"
               />
 
-              <p v-if="field.description && field.type !== 'boolean'" class="text-xs text-forge-text-muted mt-1">
-                {{ field.description }}
+              <p v-if="field.helpText || (field.description && field.type !== 'boolean')" class="text-xs text-forge-text-muted mt-1">
+                {{ field.helpText || field.description }}
               </p>
             </div>
           </div>
 
-          <!-- Save config button -->
           <button
             @click="saveConfig"
             :disabled="savingConfig || !configDirty"
@@ -562,7 +779,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <!-- Schedule config -->
+        <!-- ── Schedule config ──────────────────────────────── -->
         <div v-if="pluginConfig?.schedule != null || selectedPlugin?.syncInterval" class="bg-forge-card border border-forge-border rounded-xl p-5">
           <h3 class="text-sm font-semibold text-forge-text-muted uppercase mb-3">Sync Schedule</h3>
           <div class="text-sm text-forge-text">
@@ -572,10 +789,78 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- Plugin admin page embed -->
+        <!-- ── Plugin admin page embed ──────────────────────── -->
         <div v-if="adminHtml" class="bg-forge-card border border-forge-border rounded-xl p-5">
           <h3 class="text-sm font-semibold text-forge-text-muted uppercase mb-3">Plugin Admin</h3>
           <div class="prose prose-invert max-w-none text-sm" v-html="adminHtml"></div>
+        </div>
+
+        <!-- ── Diagnostics ──────────────────────────────────── -->
+        <div class="bg-forge-card border border-forge-border rounded-xl overflow-hidden">
+          <button
+            @click="toggleDiagnostics"
+            class="w-full px-5 py-3 flex items-center justify-between text-sm font-semibold text-forge-text-muted hover:text-forge-text transition-colors"
+          >
+            <span class="uppercase">🔬 Diagnostics</span>
+            <span>{{ showDiagnostics ? '▼' : '▶' }}</span>
+          </button>
+
+          <div v-if="showDiagnostics" class="border-t border-forge-border p-5 space-y-3">
+            <div v-if="loadingDiagnostics" class="flex justify-center py-4">
+              <div class="w-5 h-5 border-2 border-forge-accent border-t-transparent rounded-full animate-spin"></div>
+            </div>
+            <div v-else-if="!diagnostics" class="text-xs text-forge-text-muted text-center py-2">
+              Diagnostics unavailable
+            </div>
+            <template v-else>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <p class="text-forge-text-muted uppercase mb-0.5">Assembly</p>
+                  <code class="text-forge-text break-all">{{ diagnostics.assemblyName }}</code>
+                </div>
+                <div>
+                  <p class="text-forge-text-muted uppercase mb-0.5">DLL Path</p>
+                  <code class="text-forge-text-muted break-all">{{ diagnostics.dllPath || '(in-memory)' }}</code>
+                </div>
+                <div>
+                  <p class="text-forge-text-muted uppercase mb-0.5">Source Directory</p>
+                  <code class="text-forge-text-muted break-all">{{ diagnostics.sourceDirectory || '—' }}</code>
+                </div>
+                <div>
+                  <p class="text-forge-text-muted uppercase mb-0.5">Loaded At</p>
+                  <span class="text-forge-text">{{ formatDate(diagnostics.loadedAt) }}</span>
+                </div>
+                <div>
+                  <p class="text-forge-text-muted uppercase mb-0.5">Source</p>
+                  <span class="text-forge-text capitalize">{{ diagnostics.source || '—' }}</span>
+                </div>
+              </div>
+
+              <!-- Manifest validation detail -->
+              <div v-if="diagnostics.validation" class="mt-2">
+                <p class="text-xs text-forge-text-muted uppercase mb-1">Manifest Validation</p>
+                <p class="text-xs" :class="diagnostics.validation.isValid ? 'text-forge-accent' : 'text-forge-danger'">
+                  {{ diagnostics.validation.isValid ? '✓ Valid' : '✗ Invalid' }}
+                </p>
+                <p v-for="e in diagnostics.validation.errors" :key="e" class="text-xs text-forge-danger mt-0.5">⛔ {{ e }}</p>
+                <p v-for="w in diagnostics.validation.warnings" :key="w" class="text-xs text-yellow-400 mt-0.5">⚠️ {{ w }}</p>
+              </div>
+
+              <!-- SDK compat detail -->
+              <div v-if="diagnostics.sdkCompat" class="mt-2">
+                <p class="text-xs text-forge-text-muted uppercase mb-1">SDK Compatibility</p>
+                <p class="text-xs" :class="{
+                  'text-forge-accent': diagnostics.sdkCompat.level === 'Compatible',
+                  'text-yellow-400': diagnostics.sdkCompat.level === 'MinorMismatch',
+                  'text-forge-danger': diagnostics.sdkCompat.level === 'MajorMismatch',
+                  'text-forge-text-muted': diagnostics.sdkCompat.level === 'Unknown',
+                }">
+                  {{ diagnostics.sdkCompat.level }}
+                  <span v-if="diagnostics.sdkCompat.reason" class="ml-2 text-forge-text-muted">— {{ diagnostics.sdkCompat.reason }}</span>
+                </p>
+              </div>
+            </template>
+          </div>
         </div>
 
         <!-- Error -->

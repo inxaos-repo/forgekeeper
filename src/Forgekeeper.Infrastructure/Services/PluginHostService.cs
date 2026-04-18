@@ -28,6 +28,7 @@ public class PluginHostService : BackgroundService
     private readonly string _pluginsDirectory;
     private readonly string _sourcesDirectory;
     private readonly bool _forceLoadIncompatible;
+    private readonly bool _hotReloadEnabled;
 
     public PluginHostService(
         IServiceProvider services,
@@ -43,10 +44,14 @@ public class PluginHostService : BackgroundService
         _pluginsDirectory = configuration["Forgekeeper:PluginsDirectory"] ?? "/app/plugins";
         _sourcesDirectory = configuration["Forgekeeper:SourcesDirectory"] ?? "/mnt/3dprinting/sources";
         _forceLoadIncompatible = configuration.GetValue<bool>("Plugins:ForceLoadIncompatible", false);
+        _hotReloadEnabled = configuration.GetValue<bool>("Plugins:HotReloadEnabled", false);
     }
 
     /// <summary>Get all loaded plugins.</summary>
     public IReadOnlyDictionary<string, LoadedPlugin> Plugins => _plugins;
+
+    /// <summary>Whether hot-reload is enabled via config.</summary>
+    public bool HotReloadEnabled => _hotReloadEnabled;
 
     /// <summary>Get sync status for a plugin.</summary>
     public PluginSyncStatus? GetSyncStatus(string slug) =>
@@ -381,102 +386,225 @@ public class PluginHostService : BackgroundService
 
         foreach (var pluginDir in Directory.GetDirectories(_pluginsDirectory))
         {
-            try
+            await LoadPluginFromDirAsync(pluginDir, ct);
+        }
+    }
+
+    /// <summary>
+    /// Load (or reload) a single plugin directory. Handles manifest validation, SDK compat check,
+    /// DLL loading, and adds to the _plugins dictionary. Safe to call on already-loaded plugins
+    /// (overwrites existing entry).
+    /// </summary>
+    private Task LoadPluginFromDirAsync(string pluginDir, CancellationToken ct)
+    {
+        try
+        {
+            // Load and validate manifest (optional — backward compat)
+            var manifest = _manifestValidator.LoadManifest(pluginDir);
+            ManifestValidationResult? validationResult = null;
+            SdkCompatResult? compatResult = null;
+
+            if (manifest is not null)
             {
-                // Load and validate manifest (optional — backward compat)
-                var manifest = _manifestValidator.LoadManifest(pluginDir);
-                ManifestValidationResult? validationResult = null;
-                SdkCompatResult? compatResult = null;
+                validationResult = _manifestValidator.Validate(manifest);
 
-                if (manifest is not null)
+                foreach (var warn in validationResult.Warnings)
+                    _logger.LogWarning("[manifest:{Dir}] {Warning}", Path.GetFileName(pluginDir), warn);
+
+                foreach (var error in validationResult.Errors)
+                    _logger.LogError("[manifest:{Dir}] {Error}", Path.GetFileName(pluginDir), error);
+
+                // SDK compatibility check
+                compatResult = _sdkChecker.CheckCompatibility(manifest);
+
+                if (compatResult.Level == SdkCompatLevel.MajorMismatch)
                 {
-                    validationResult = _manifestValidator.Validate(manifest);
-
-                    foreach (var warn in validationResult.Warnings)
-                        _logger.LogWarning("[manifest:{Dir}] {Warning}", Path.GetFileName(pluginDir), warn);
-
-                    foreach (var error in validationResult.Errors)
-                        _logger.LogError("[manifest:{Dir}] {Error}", Path.GetFileName(pluginDir), error);
-
-                    // SDK compatibility check
-                    compatResult = _sdkChecker.CheckCompatibility(manifest);
-
-                    if (compatResult.Level == SdkCompatLevel.MajorMismatch)
-                    {
-                        if (_forceLoadIncompatible)
-                        {
-                            _logger.LogWarning(
-                                "[{Dir}] ⚠️ FORCE LOADING incompatible plugin (major SDK mismatch): {Reason}",
-                                Path.GetFileName(pluginDir), compatResult.Reason);
-                        }
-                        else
-                        {
-                            _logger.LogError(
-                                "[{Dir}] Refusing to load plugin — major SDK mismatch: {Reason}",
-                                Path.GetFileName(pluginDir), compatResult.Reason);
-                            continue; // Skip this plugin directory entirely
-                        }
-                    }
-                    else if (compatResult.Level == SdkCompatLevel.MinorMismatch)
+                    if (_forceLoadIncompatible)
                     {
                         _logger.LogWarning(
-                            "[{Dir}] Loading plugin with minor SDK mismatch (may be unstable): {Reason}",
+                            "[{Dir}] ⚠️ FORCE LOADING incompatible plugin (major SDK mismatch): {Reason}",
                             Path.GetFileName(pluginDir), compatResult.Reason);
                     }
-                }
-                else
-                {
-                    _logger.LogWarning(
-                        "[{Dir}] No manifest.json found — loading without validation (legacy plugin)",
-                        Path.GetFileName(pluginDir));
-                }
-
-                var dlls = Directory.GetFiles(pluginDir, "*.dll")
-                    .Where(f => !Path.GetFileName(f).StartsWith("Forgekeeper.PluginSdk"))
-                    .ToArray();
-
-                foreach (var dll in dlls)
-                {
-                    var loadContext = new PluginLoadContext(dll);
-                    var assembly = loadContext.LoadFromAssemblyPath(dll);
-
-                    var scraperTypes = assembly.GetTypes()
-                        .Where(t => typeof(ILibraryScraper).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
-
-                    foreach (var type in scraperTypes)
+                    else
                     {
-                        var scraper = (ILibraryScraper)Activator.CreateInstance(type)!;
-
-                        // If manifest has a slug, verify it matches the plugin's SourceSlug
-                        if (manifest is not null && !string.IsNullOrWhiteSpace(manifest.Slug) &&
-                            !string.Equals(manifest.Slug, scraper.SourceSlug, StringComparison.OrdinalIgnoreCase))
-                        {
-                            _logger.LogError(
-                                "[{Dir}] Manifest slug '{ManifestSlug}' does not match plugin SourceSlug '{PluginSlug}'",
-                                Path.GetFileName(pluginDir), manifest.Slug, scraper.SourceSlug);
-                        }
-
-                        _plugins[scraper.SourceSlug] = new LoadedPlugin
-                        {
-                            Scraper = scraper,
-                            Assembly = assembly,
-                            LoadContext = loadContext,
-                            LoadedAt = DateTime.UtcNow,
-                            Manifest = manifest,
-                            ValidationResult = validationResult,
-                            CompatResult = compatResult,
-                            Source = DetermineSource(pluginDir),
-                        };
-                        _logger.LogInformation("Loaded plugin: {Name} v{Version} ({Slug})",
-                            scraper.SourceName, scraper.Version, scraper.SourceSlug);
+                        _logger.LogError(
+                            "[{Dir}] Refusing to load plugin — major SDK mismatch: {Reason}",
+                            Path.GetFileName(pluginDir), compatResult.Reason);
+                        return Task.CompletedTask;
                     }
                 }
+                else if (compatResult.Level == SdkCompatLevel.MinorMismatch)
+                {
+                    _logger.LogWarning(
+                        "[{Dir}] Loading plugin with minor SDK mismatch (may be unstable): {Reason}",
+                        Path.GetFileName(pluginDir), compatResult.Reason);
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "[{Dir}] No manifest.json found — loading without validation (legacy plugin)",
+                    Path.GetFileName(pluginDir));
+            }
+
+            var dlls = Directory.GetFiles(pluginDir, "*.dll")
+                .Where(f => !Path.GetFileName(f).StartsWith("Forgekeeper.PluginSdk"))
+                .ToArray();
+
+            foreach (var dll in dlls)
+            {
+                var loadContext = new PluginLoadContext(dll);
+                var assembly = loadContext.LoadFromAssemblyPath(dll);
+
+                var scraperTypes = assembly.GetTypes()
+                    .Where(t => typeof(ILibraryScraper).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
+
+                foreach (var type in scraperTypes)
+                {
+                    var scraper = (ILibraryScraper)Activator.CreateInstance(type)!;
+
+                    // If manifest has a slug, verify it matches the plugin's SourceSlug
+                    if (manifest is not null && !string.IsNullOrWhiteSpace(manifest.Slug) &&
+                        !string.Equals(manifest.Slug, scraper.SourceSlug, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogError(
+                            "[{Dir}] Manifest slug '{ManifestSlug}' does not match plugin SourceSlug '{PluginSlug}'",
+                            Path.GetFileName(pluginDir), manifest.Slug, scraper.SourceSlug);
+                    }
+
+                    _plugins[scraper.SourceSlug] = new LoadedPlugin
+                    {
+                        Scraper = scraper,
+                        Assembly = assembly,
+                        LoadContext = loadContext,
+                        LoadedAt = DateTime.UtcNow,
+                        Manifest = manifest,
+                        ValidationResult = validationResult,
+                        CompatResult = compatResult,
+                        Source = DetermineSource(pluginDir),
+                        SourceDirectory = pluginDir,
+                    };
+                    _logger.LogInformation("Loaded plugin: {Name} v{Version} ({Slug})",
+                        scraper.SourceName, scraper.Version, scraper.SourceSlug);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load plugin from {Dir}", pluginDir);
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Hot-reload all plugins: unload all AssemblyLoadContexts, re-discover from original directories.
+    /// Requires HotReloadEnabled = true in config.
+    /// </summary>
+    public async Task<object> ReloadAllAsync(CancellationToken ct)
+    {
+        _logger.LogInformation("Hot-reload: reloading all plugins");
+
+        // Collect source directories before unloading
+        var pluginDirs = _plugins.Values
+            .Select(p => p.SourceDirectory)
+            .Where(d => !string.IsNullOrEmpty(d))
+            .Distinct()
+            .ToList();
+
+        // Unload all loaded plugins
+        var slugs = _plugins.Keys.ToList();
+        foreach (var slug in slugs)
+        {
+            if (_plugins.TryRemove(slug, out var plugin))
+            {
+                _logger.LogInformation("Hot-reload: unloading {Slug}", slug);
+                plugin.LoadContext.Unload();
+            }
+        }
+
+        // GC to release file locks
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        // Brief pause to let file handles release
+        await Task.Delay(200, ct);
+
+        // Re-load from collected directories + scan for new ones
+        var dirsToLoad = new HashSet<string>(pluginDirs, StringComparer.OrdinalIgnoreCase);
+        if (Directory.Exists(_pluginsDirectory))
+        {
+            foreach (var dir in Directory.GetDirectories(_pluginsDirectory))
+                dirsToLoad.Add(dir);
+        }
+
+        int loadErrors = 0;
+        foreach (var dir in dirsToLoad)
+        {
+            try
+            {
+                await LoadPluginFromDirAsync(dir, ct);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to load plugin from {Dir}", pluginDir);
+                loadErrors++;
+                _logger.LogError(ex, "Hot-reload: error loading {Dir}", dir);
             }
         }
+
+        _logger.LogInformation("Hot-reload complete: {Count} plugin(s) loaded", _plugins.Count);
+        return new
+        {
+            loaded = _plugins.Count,
+            plugins = _plugins.Keys.ToList(),
+            errors = loadErrors,
+        };
+    }
+
+    /// <summary>
+    /// Hot-reload a single plugin by slug: unload its AssemblyLoadContext and re-load from same directory.
+    /// Requires HotReloadEnabled = true in config.
+    /// </summary>
+    public async Task<object?> ReloadPluginAsync(string slug, CancellationToken ct)
+    {
+        if (!_plugins.TryGetValue(slug, out var existing))
+            return null;
+
+        var sourceDir = existing.SourceDirectory;
+        if (string.IsNullOrEmpty(sourceDir))
+            return null;
+
+        _logger.LogInformation("Hot-reload: reloading plugin {Slug} from {Dir}", slug, sourceDir);
+
+        // Unload
+        _plugins.TryRemove(slug, out _);
+        existing.LoadContext.Unload();
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        await Task.Delay(100, ct);
+
+        // Reload
+        await LoadPluginFromDirAsync(sourceDir, ct);
+
+        if (_plugins.TryGetValue(slug, out var reloaded))
+        {
+            _logger.LogInformation("Hot-reload: {Slug} reloaded successfully", slug);
+            return new
+            {
+                slug,
+                loaded = true,
+                loadedAt = reloaded.LoadedAt,
+                version = reloaded.Manifest?.Version ?? reloaded.Scraper.Version,
+                sdkCompat = reloaded.CompatResult?.Level.ToString(),
+                manifestValid = reloaded.ValidationResult?.IsValid,
+                source = reloaded.Source,
+            };
+        }
+
+        return new { slug, loaded = false, error = "Plugin not found after reload — check logs for errors" };
     }
 
     /// <summary>Determines the plugin source based on directory naming conventions.</summary>
@@ -623,6 +751,8 @@ public class LoadedPlugin
     public SdkCompatResult? CompatResult { get; init; }
     /// <summary>Origin of the plugin: "builtin", "registry", "github", "manual".</summary>
     public string Source { get; init; } = "manual";
+    /// <summary>Filesystem directory the plugin was loaded from (used for hot-reload).</summary>
+    public string SourceDirectory { get; init; } = string.Empty;
 }
 
 /// <summary>Tracks sync status for a single plugin.</summary>

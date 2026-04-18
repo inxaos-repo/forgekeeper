@@ -279,6 +279,55 @@ public static class PluginEndpoints
             return Results.Ok(runs);
         }).WithName("GetPluginSyncHistory");
 
+        // POST /api/v1/plugins/reload — hot-reload all plugins
+        group.MapPost("/reload", async (PluginHostService pluginHost, CancellationToken ct) =>
+        {
+            if (!pluginHost.HotReloadEnabled)
+                return Results.StatusCode(501); // Not Implemented
+            var result = await pluginHost.ReloadAllAsync(ct);
+            return Results.Ok(result);
+        }).WithName("ReloadAllPlugins");
+
+        // POST /api/v1/plugins/{slug}/reload — hot-reload single plugin
+        group.MapPost("/{slug}/reload", async (string slug, PluginHostService pluginHost, CancellationToken ct) =>
+        {
+            if (!pluginHost.HotReloadEnabled)
+                return Results.StatusCode(501); // Not Implemented
+            var result = await pluginHost.ReloadPluginAsync(slug, ct);
+            return result != null ? Results.Ok(result) : Results.NotFound(new { message = $"Plugin '{slug}' not found" });
+        }).WithName("ReloadPlugin");
+
+        // GET /api/v1/plugins/{slug}/diagnostics — full plugin diagnostics
+        group.MapGet("/{slug}/diagnostics", (string slug, PluginHostService pluginHost) =>
+        {
+            if (!pluginHost.Plugins.TryGetValue(slug, out var plugin))
+                return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
+
+            return Results.Ok(new
+            {
+                slug,
+                loaded = true,
+                loadedAt = plugin.LoadedAt,
+                source = plugin.Source,
+                sourceDirectory = plugin.SourceDirectory,
+                assemblyName = plugin.Assembly.GetName().ToString(),
+                dllPath = plugin.Assembly.Location,
+                manifest = plugin.Manifest,
+                validation = plugin.ValidationResult is null ? null : new
+                {
+                    isValid = plugin.ValidationResult.IsValid,
+                    errors = plugin.ValidationResult.Errors,
+                    warnings = plugin.ValidationResult.Warnings,
+                },
+                sdkCompat = plugin.CompatResult is null ? null : new
+                {
+                    level = plugin.CompatResult.Level.ToString(),
+                    isCompatible = plugin.CompatResult.IsCompatible,
+                    reason = plugin.CompatResult.Reason,
+                },
+            });
+        }).WithName("GetPluginDiagnostics");
+
         // GET /api/v1/plugins/{slug}/status — get sync status
         group.MapGet("/{slug}/status", (
             string slug,

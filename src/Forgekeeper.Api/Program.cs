@@ -66,6 +66,7 @@ builder.Services.AddSingleton<SdkCompatibilityChecker>();
 // Background Services
 builder.Services.AddHostedService<ThumbnailWorker>();
 builder.Services.AddHostedService<ScannerWorker>();
+builder.Services.AddHostedService<ImportWorker>();
 builder.Services.AddSingleton<PluginHostService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PluginHostService>());
 
@@ -209,6 +210,37 @@ app.MapGet("/metrics", async (IServiceProvider services, PluginHostService plugi
     {
         var s = pluginHost.GetSyncStatus(slug);
         sb.AppendLine($"forgekeeper_sync_total_models{{plugin=\"{slug}\"}} {s?.TotalModels ?? 0}");
+    }
+    sb.AppendLine();
+
+    // Plugin health metrics
+    sb.AppendLine("# HELP forgekeeper_plugins_loaded Whether a plugin is currently loaded (1=loaded)");
+    sb.AppendLine("# TYPE forgekeeper_plugins_loaded gauge");
+    foreach (var (slug, p) in pluginHost.Plugins)
+        sb.AppendLine($"forgekeeper_plugins_loaded{{slug=\"{slug}\"}} 1");
+    sb.AppendLine();
+
+    sb.AppendLine("# HELP forgekeeper_plugins_manifest_valid Whether the plugin manifest is valid (1=valid, 0=invalid, -1=no manifest)");
+    sb.AppendLine("# TYPE forgekeeper_plugins_manifest_valid gauge");
+    foreach (var (slug, p) in pluginHost.Plugins)
+    {
+        var val = p.ValidationResult is null ? -1 : (p.ValidationResult.IsValid ? 1 : 0);
+        sb.AppendLine($"forgekeeper_plugins_manifest_valid{{slug=\"{slug}\"}} {val}");
+    }
+    sb.AppendLine();
+
+    sb.AppendLine("# HELP forgekeeper_plugins_sdk_compatible Whether the plugin SDK is compatible (1=compatible, 0=incompatible, -1=unknown)");
+    sb.AppendLine("# TYPE forgekeeper_plugins_sdk_compatible gauge");
+    foreach (var (slug, p) in pluginHost.Plugins)
+    {
+        int val = p.CompatResult?.Level switch
+        {
+            Forgekeeper.Infrastructure.Services.SdkCompatLevel.Compatible => 1,
+            Forgekeeper.Infrastructure.Services.SdkCompatLevel.MinorMismatch => 1,
+            Forgekeeper.Infrastructure.Services.SdkCompatLevel.MajorMismatch => 0,
+            _ => -1,
+        };
+        sb.AppendLine($"forgekeeper_plugins_sdk_compatible{{slug=\"{slug}\"}} {val}");
     }
 
     return Results.Text(sb.ToString(), "text/plain; version=0.0.4; charset=utf-8");

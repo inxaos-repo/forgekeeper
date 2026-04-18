@@ -127,6 +127,40 @@ public static class ImportEndpoints
 
             return Results.Ok(result);
         }).WithName("ScanForImport");
+
+        // GET /api/v1/import/watch-directories — list configured watch directories
+        group.MapGet("/watch-directories", (IConfiguration config) =>
+        {
+            var watchDirs = config.GetSection("Import:WatchDirectories").Get<string[]>() ?? [];
+            var basePaths = config.GetSection("Storage:BasePaths").Get<string[]>() ?? ["/mnt/3dprinting"];
+            var unsortedDirs = basePaths.Select(bp => Path.Combine(bp, "unsorted")).Where(Directory.Exists).ToArray();
+            var autoImport = config.GetValue("Import:AutoImportEnabled", false);
+            var intervalMin = config.GetValue("Import:IntervalMinutes", 30);
+
+            return Results.Ok(new
+            {
+                watchDirectories = watchDirs,
+                unsortedDirectories = unsortedDirs,
+                autoImportEnabled = autoImport,
+                intervalMinutes = intervalMin,
+            });
+        }).WithName("GetWatchDirectories");
+
+        // POST /api/v1/import/scan-directory — scan a specific directory for imports
+        group.MapPost("/scan-directory", async (
+            [FromBody] ScanDirectoryRequest request,
+            IImportService importService,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Path))
+                return Results.BadRequest(new { message = "Path is required" });
+
+            if (!Directory.Exists(request.Path))
+                return Results.NotFound(new { message = $"Directory not found: {request.Path}" });
+
+            var results = await importService.ProcessDirectoriesAsync([request.Path], ct);
+            return Results.Ok(new { processed = results.Count, items = results });
+        }).WithName("ScanDirectory");
     }
 
     // -------- helpers --------
