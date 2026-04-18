@@ -61,14 +61,11 @@ public class SearchService : ISearchService
 
         if (request.Printed.HasValue)
         {
-            // Printed is filtered via JSONB query on PrintHistory.
-            // REVIEW: The computed Model3D.Printed property checks Any(p => p.Result == "success"),
-            // but this filter uses Count > 0, which matches any print attempt regardless of outcome.
-            // Consider aligning: filter by result=="success" for strict printed=true semantics.
+            // Printed = has at least one successful print (matches Model3D.Printed computed property)
             if (request.Printed.Value)
-                query = query.Where(m => m.PrintHistory != null && m.PrintHistory.Count > 0);
+                query = query.Where(m => m.PrintHistory != null && m.PrintHistory.Any(p => p.Result == "success"));
             else
-                query = query.Where(m => m.PrintHistory == null || m.PrintHistory.Count == 0);
+                query = query.Where(m => m.PrintHistory == null || !m.PrintHistory.Any(p => p.Result == "success"));
         }
 
         if (request.MinRating.HasValue)
@@ -174,7 +171,7 @@ public class SearchService : ISearchService
                 ThumbnailPath = m.ThumbnailPath,
                 PreviewImages = m.PreviewImages,
                 BasePath = m.BasePath,
-                Printed = m.PrintHistory != null && m.PrintHistory.Count > 0,
+                Printed = m.PrintHistory != null && m.PrintHistory.Any(p => p.Result == "success"),
                 Rating = m.Rating,
                 Notes = m.Notes,
                 LicenseType = m.LicenseType,
