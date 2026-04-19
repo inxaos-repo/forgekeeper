@@ -113,3 +113,6 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD wget -qO- http://localhost:5000/health || exit 1
 
 ENTRYPOINT ["dotnet", "Forgekeeper.Api.dll"]
+
+# Cache bust: 2026-04-19
+ARG CACHE_BUST=20260419
