@@ -13,7 +13,8 @@ namespace Forgekeeper.Scraper.Mmf;
 /// <summary>
 /// MyMiniFactory library scraper plugin.
 /// 
-/// Authentication: FlareSolverr for Cloudflare bypass + cookie-based login.
+/// Authentication: FlareSolverr GET for Cloudflare bypass (cf_clearance cookie harvest),
+///                 then Playwright headless login (GET /login → fill → submit → REMEMBERME).
 ///                 Falls back to Bearer token from MiniDownloader download_token.
 /// Manifest: Fetched via FlareSolverr session cookies (data-library API).
 ///           Also supports manual JSON upload via the Plugins page.
@@ -671,6 +672,54 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
     // --- Playwright browser download helpers ---
 
+    /// <summary>
+    /// Creates a fresh headless Chromium context for the login flow, seeded with CF-cleared
+    /// cookies from a prior FlareSolverr GET. Unlike <see cref="GetBrowserContextAsync"/>,
+    /// this context has no Authorization header injection — it is solely for form-based login.
+    /// The caller owns all three returned instances and MUST dispose them (try/finally).
+    /// </summary>
+    private static async Task<(IPlaywright Playwright, IBrowser Browser, IBrowserContext Context)> GetLoginBrowserContextAsync(
+        IEnumerable<(string Name, string Value)> cfCookies,
+        string userAgent,
+        ILogger logger)
+    {
+        logger.LogInformation("[MMF] Launching headless Chromium for Playwright login...");
+        var playwright = await Playwright.CreateAsync();
+        var chromiumPath = Environment.GetEnvironmentVariable("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH");
+        var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true,
+            ExecutablePath = !string.IsNullOrEmpty(chromiumPath) ? chromiumPath : null,
+        });
+        var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            UserAgent = userAgent,
+            ExtraHTTPHeaders = new Dictionary<string, string> { ["Accept-Language"] = "en-US,en;q=0.9" },
+        });
+
+        // Seed CF-cleared cookies so Playwright skips the Cloudflare challenge that FlareSolverr
+        // already solved. Only non-empty name/value pairs are seeded.
+        var cookiesToSeed = cfCookies
+            .Where(c => !string.IsNullOrEmpty(c.Name) && !string.IsNullOrEmpty(c.Value))
+            .Select(c => new Microsoft.Playwright.Cookie
+            {
+                Name   = c.Name,
+                Value  = c.Value,
+                Domain = ".myminifactory.com",
+                Path   = "/",
+            })
+            .ToList();
+
+        if (cookiesToSeed.Count > 0)
+        {
+            await context.AddCookiesAsync(cookiesToSeed);
+            logger.LogInformation("[MMF] Seeded {Count} CF cookies into Playwright login context",
+                cookiesToSeed.Count);
+        }
+
+        return (playwright, browser, context);
+    }
+
     private async Task<IBrowserContext> GetBrowserContextAsync(string bearerToken, ILogger logger)
     {
         if (_browserContext != null) return _browserContext;
@@ -1070,7 +1119,10 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 var fsSession = sessionProp.GetString();
                 context.Logger.LogInformation("[MMF] FlareSolverr session: {Session}", fsSession);
 
-                // 1b: Get login page (solves CF + gets CSRF)
+                // 1b: Get login page via FlareSolverr — CF bypass only.
+                // We harvest the CF-cleared cookies (cf_clearance, __cflb, __cf_bm) to seed into
+                // Playwright's context so it skips the challenge. CSRF is NOT extracted here;
+                // Playwright's own GET /login will render a fresh session-scoped CSRF in the DOM.
                 var loginPageResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
                     new StringContent(JsonSerializer.Serialize(new { cmd = "request.get", url = "https://www.myminifactory.com/login", session = fsSession, maxTimeout = 60000 }), System.Text.Encoding.UTF8, "application/json"), ct);
                 var loginPageBody = await loginPageResp.Content.ReadAsStringAsync(ct);
@@ -1081,71 +1133,132 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     context.Logger.LogError("[MMF] FlareSolverr login page failed: {Body}", loginPageBody[..Math.Min(500, loginPageBody.Length)]);
                     return [];
                 }
-                var loginHtml = loginSol.GetProperty("response").GetString() ?? "";
-                
-                // Extract CSRF token
-                var csrfMatch = System.Text.RegularExpressions.Regex.Match(loginHtml, @"name=""_csrf_token""\s*value=""([^""]+)""");
-                if (!csrfMatch.Success)
+                // Harvest CF-cleared cookies from FlareSolverr's GET response.
+                // These let Playwright skip the Cloudflare challenge it already solved.
+                if (loginSol.TryGetProperty("cookies", out var fsCookies))
                 {
-                    context.Logger.LogError("[MMF] Could not find CSRF token on login page");
-                    return [];
-                }
-                var csrfToken = csrfMatch.Groups[1].Value;
-                context.Logger.LogInformation("[MMF] Got CSRF token");
-
-                // 1c: POST login credentials
-                // Login form POST body — MUST match the browser's form submission exactly.
-                // Symfony's RememberMeAuthenticator listens for _submit=Login (the button's value) and
-                // _target_path to decide whether to issue a REMEMBERME cookie. Sending empty _submit or
-                // omitting _target_path causes Symfony to silently skip the remember-me flow, producing
-                // a successful-looking 302 with no REMEMBERME in Set-Cookie. Verified from browser DevTools
-                // against MMF's live login form 2026-04-20.
-                var postData =
-                    $"_csrf_token={Uri.EscapeDataString(csrfToken)}" +
-                    $"&_username={Uri.EscapeDataString(username)}" +
-                    $"&_password={Uri.EscapeDataString(password)}" +
-                    $"&_target_path={Uri.EscapeDataString("https://www.myminifactory.com")}" +
-                    $"&_submit={Uri.EscapeDataString("Login")}" +
-                    $"&_remember_me=on";
-                var loginResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
-                    new StringContent(JsonSerializer.Serialize(new { cmd = "request.post", url = "https://www.myminifactory.com/login_check", session = fsSession, postData = postData, maxTimeout = 90000 }), System.Text.Encoding.UTF8, "application/json"), ct);
-                var loginBody = await loginResp.Content.ReadAsStringAsync(ct);
-                context.Logger.LogInformation("[MMF] Login POST response: {Body}", loginBody.Length > 300 ? loginBody[..300] : loginBody);
-                var loginJson = JsonDocument.Parse(loginBody);
-                if (!loginJson.RootElement.TryGetProperty("solution", out var loginSolution))
-                {
-                    context.Logger.LogError("[MMF] FlareSolverr login POST failed: {Body}", loginBody[..Math.Min(500, loginBody.Length)]);
-                    return [];
-                }
-                var redirectUrl = loginSolution.TryGetProperty("url", out var urlProp) ? urlProp.GetString() ?? "" : "";
-                
-                // Extract user agent
-                if (loginSolution.TryGetProperty("userAgent", out var uaProp))
-                    solvedUserAgent = uaProp.GetString();
-
-                // Extract ALL cookies (CF + session + REMEMBERME)
-                if (loginSolution.TryGetProperty("cookies", out var cookiesArray))
-                {
-                    foreach (var cookie in cookiesArray.EnumerateArray())
+                    foreach (var cookie in fsCookies.EnumerateArray())
                     {
                         cfCookies.Add((
-                            Name: cookie.GetProperty("name").GetString() ?? "",
+                            Name:  cookie.GetProperty("name").GetString() ?? "",
                             Value: cookie.GetProperty("value").GetString() ?? ""
                         ));
                     }
                 }
+                if (loginSol.TryGetProperty("userAgent", out var fsUaProp))
+                    solvedUserAgent = fsUaProp.GetString();
 
-                var hasRememberMe = cfCookies.Any(c => c.Name == "REMEMBERME");
-                context.Logger.LogInformation("[MMF] Login {Result}: {Url}, cookies={Count}, REMEMBERME={HasRM}", 
-                    hasRememberMe ? "SUCCESS" : "FAILED", redirectUrl, cfCookies.Count, hasRememberMe);
-                
-                // Cleanup FlareSolverr session
+                context.Logger.LogInformation(
+                    "[MMF] FlareSolverr CF GET complete: {Count} cookies harvested, UA captured={HasUA}",
+                    cfCookies.Count, !string.IsNullOrEmpty(solvedUserAgent));
+
+                // Destroy FlareSolverr session — done with it after CF cookie harvest.
                 try { await httpClient.PostAsync($"{flareSolverrUrl}/v1",
                     new StringContent(JsonSerializer.Serialize(new { cmd = "sessions.destroy", session = fsSession }), System.Text.Encoding.UTF8, "application/json"), ct); } catch {}
-                
-                if (!hasRememberMe)
+
+                // 1c: Playwright-based login (replaces FlareSolverr request.post)
+                //
+                // Why: FlareSolverr's _post_request() (src/flaresolverr_service.py:425) double-URL-encodes
+                // form values: it calls unquote(val) then quote(val) in Python, then the headless browser
+                // auto-submits via a form which URL-encodes values a second time. This corrupts opaque
+                // tokens like CSRF (long base64-ish strings break on double-encode). Playwright submits
+                // the form natively as a real browser, with zero intermediate encoding.
+                //
+                // Flow: seed CF cookies → Playwright GET /login (fresh session-scoped CSRF in DOM)
+                //       → fill _username / _password / _remember_me → click submit
+                //       → form POSTs to /login_check (via action attribute) → wait for nav → harvest cookies.
+                var playwrightUA = solvedUserAgent
+                    ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+                IPlaywright?     pwInstance = null;
+                IBrowser?        pwBrowser  = null;
+                IBrowserContext? pwContext  = null;
+                string? loginFailureInfo = null;
+                bool    loginSuccess     = false;
+
+                try
                 {
-                    context.Logger.LogError("[MMF] Login did not produce REMEMBERME cookie — check credentials");
+                    (pwInstance, pwBrowser, pwContext) =
+                        await GetLoginBrowserContextAsync(cfCookies, playwrightUA, context.Logger);
+
+                    var loginPage = await pwContext.NewPageAsync();
+
+                    // GET /login — Playwright renders a fresh session-scoped CSRF token in the DOM.
+                    // We do NOT extract it; the form submits whatever is in the hidden field natively.
+                    context.Logger.LogInformation("[MMF] Playwright: navigating to /login...");
+                    await loginPage.GotoAsync(
+                        "https://www.myminifactory.com/login",
+                        new PageGotoOptions { Timeout = 30000, WaitUntil = WaitUntilState.DOMContentLoaded });
+
+                    // Fill credentials. CSRF is handled natively by the form.
+                    await loginPage.FillAsync("input[name='_username']", username);
+                    await loginPage.FillAsync("input[name='_password']", password);
+
+                    // Check remember-me. Guard against it being pre-checked by the page.
+                    if (!await loginPage.IsCheckedAsync("input[name='_remember_me']"))
+                        await loginPage.CheckAsync("input[name='_remember_me']");
+
+                    // Set up the navigation waiter BEFORE clicking so a fast redirect isn't missed.
+                    // The form's action attribute POSTs to /login_check — we don't navigate manually.
+                    context.Logger.LogInformation("[MMF] Playwright: submitting login form...");
+                    var navTask = loginPage.WaitForURLAsync(
+                        url => !url.Contains("/login"),
+                        new PageWaitForURLOptions { Timeout = 30000 });
+                    await loginPage.ClickAsync("button[type='submit'][name='_submit']");
+                    await navTask;
+
+                    // Extract cookies from Playwright's context (REMEMBERME + CF + session).
+                    var finalUrl  = loginPage.Url;
+                    var pwCookies = await pwContext.CookiesAsync();
+                    var hasRememberMe = pwCookies.Any(c => c.Name == "REMEMBERME");
+
+                    // Replace cfCookies with Playwright's full post-login cookie set.
+                    cfCookies.Clear();
+                    foreach (var c in pwCookies)
+                        cfCookies.Add((c.Name, c.Value));
+
+                    if (hasRememberMe)
+                    {
+                        context.Logger.LogInformation(
+                            "[MMF] Login SUCCESS via Playwright: finalUrl={Url}, cookies={Count}, REMEMBERME=True",
+                            finalUrl, cfCookies.Count);
+                        loginSuccess = true;
+                    }
+                    else
+                    {
+                        // Capture diagnostic info while page is still open (cookie values NOT logged).
+                        var cookieNames  = string.Join(", ", pwCookies.Select(c => c.Name));
+                        var pageContent  = await loginPage.ContentAsync();
+                        var truncated    = pageContent.Length > 1500
+                            ? pageContent[..1500] + "…"
+                            : pageContent;
+                        loginFailureInfo =
+                            $"finalUrl={finalUrl}, cookieNames=[{cookieNames}], pageContent={truncated}";
+                    }
+
+                    await loginPage.CloseAsync();
+                }
+                catch (TimeoutException tex)
+                {
+                    context.Logger.LogError(
+                        "[MMF] Playwright login timed out waiting for post-login navigation: {Error}",
+                        tex.Message);
+                }
+                catch (Exception pwEx)
+                {
+                    context.Logger.LogError(pwEx, "[MMF] Playwright login threw unexpected error");
+                }
+                finally
+                {
+                    if (pwContext  != null) try { await pwContext.DisposeAsync(); }  catch { }
+                    if (pwBrowser  != null) try { await pwBrowser.DisposeAsync(); }  catch { }
+                    if (pwInstance != null) try { pwInstance.Dispose(); }             catch { }
+                }
+
+                if (!loginSuccess)
+                {
+                    if (loginFailureInfo != null)
+                        context.Logger.LogError("[MMF] Playwright login FAILED — {Info}", loginFailureInfo);
                     return [];
                 }
             }
