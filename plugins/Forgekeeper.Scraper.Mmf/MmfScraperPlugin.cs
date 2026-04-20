@@ -686,10 +686,24 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         logger.LogInformation("[MMF] Launching headless Chromium for Playwright login...");
         var playwright = await Playwright.CreateAsync();
         var chromiumPath = Environment.GetEnvironmentVariable("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH");
+        // Container-friendly Chromium args. Without these, system Chromium running as root
+        // fails silently with net::ERR_SOCKET_NOT_CONNECTED on the first navigation because:
+        //  - Chromium refuses to run in its default sandbox as uid=0
+        //  - /dev/shm in k8s pods defaults to 64MB which Chrome's shared-memory regions can exhaust
+        // Both symptoms surface as the opaque SOCKET_NOT_CONNECTED error. Fix is the standard
+        // Docker/K8s Chromium trio: --no-sandbox, --disable-dev-shm-usage, --disable-gpu.
+        var containerArgs = new[]
+        {
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        };
         var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
             Headless = true,
             ExecutablePath = !string.IsNullOrEmpty(chromiumPath) ? chromiumPath : null,
+            Args = containerArgs,
         });
         var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -728,10 +742,12 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         _playwright = await Playwright.CreateAsync();
         // Use system Chromium if available (Docker image), fall back to Playwright's bundled version
         var chromiumPath = Environment.GetEnvironmentVariable("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH");
-        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions 
-        { 
+        // Container-friendly args (see GetLoginBrowserContextAsync for full explanation)
+        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
             Headless = true,
             ExecutablePath = !string.IsNullOrEmpty(chromiumPath) ? chromiumPath : null,
+            Args = new[] { "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu" },
         });
         _browserContext = await _browser.NewContextAsync(new BrowserNewContextOptions
         {
