@@ -68,6 +68,39 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Verify migration count in published image
+        if: github.event_name != 'pull_request'
+        env:
+          FORGEKEEPER_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
+        run: |
+          # Count migration .cs files in the repo (excluding Designer.cs and ModelSnapshot)
+          REPO_COUNT=$(find src/Forgekeeper.Infrastructure/Data/Migrations -name '*.cs' \
+            ! -name '*.Designer.cs' ! -name '*ModelSnapshot.cs' | wc -l | tr -d ' ')
+          echo "Repo migration files: $REPO_COUNT"
+
+          # Wait briefly for the image to be pullable, then extract and scan the DLL
+          for attempt in 1 2 3; do
+            if docker pull "$FORGEKEEPER_IMAGE" 2>/dev/null; then break; fi
+            echo "GHCR not ready, retrying in 15s... ($attempt/3)"
+            sleep 15
+          done
+
+          CID=$(docker create "$FORGEKEEPER_IMAGE")
+          docker cp "${CID}:/app/Forgekeeper.Infrastructure.dll" /tmp/fk-infra.dll
+          docker rm "$CID"
+
+          DLL_COUNT=$(strings /tmp/fk-infra.dll | grep -cE '[0-9]{14}_[A-Z][A-Za-z]+' || true)
+          echo "DLL migration attribute strings: $DLL_COUNT"
+
+          if [ "$DLL_COUNT" -lt "$REPO_COUNT" ]; then
+            echo "ERROR: DLL contains $DLL_COUNT migration(s) but repo has $REPO_COUNT .cs files."
+            echo "Likely cause: one or more migrations are missing their .Designer.cs file"
+            echo "(which carries the [Migration] attribute EF Core needs to discover them)."
+            exit 1
+          fi
+
+          echo "OK: All $REPO_COUNT migrations are present in the published DLL."
+
       - name: E2E Tests (Playwright)
         if: github.event_name != 'pull_request'
         env:
