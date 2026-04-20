@@ -1094,7 +1094,19 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 context.Logger.LogInformation("[MMF] Got CSRF token");
 
                 // 1c: POST login credentials
-                var postData = $"_csrf_token={Uri.EscapeDataString(csrfToken)}&_username={Uri.EscapeDataString(username)}&_password={Uri.EscapeDataString(password)}&_remember_me=on&_submit=";
+                // Login form POST body — MUST match the browser's form submission exactly.
+                // Symfony's RememberMeAuthenticator listens for _submit=Login (the button's value) and
+                // _target_path to decide whether to issue a REMEMBERME cookie. Sending empty _submit or
+                // omitting _target_path causes Symfony to silently skip the remember-me flow, producing
+                // a successful-looking 302 with no REMEMBERME in Set-Cookie. Verified from browser DevTools
+                // against MMF's live login form 2026-04-20.
+                var postData =
+                    $"_csrf_token={Uri.EscapeDataString(csrfToken)}" +
+                    $"&_username={Uri.EscapeDataString(username)}" +
+                    $"&_password={Uri.EscapeDataString(password)}" +
+                    $"&_target_path={Uri.EscapeDataString("https://www.myminifactory.com")}" +
+                    $"&_submit={Uri.EscapeDataString("Login")}" +
+                    $"&_remember_me=on";
                 var loginResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
                     new StringContent(JsonSerializer.Serialize(new { cmd = "request.post", url = "https://www.myminifactory.com/login_check", session = fsSession, postData = postData, maxTimeout = 90000 }), System.Text.Encoding.UTF8, "application/json"), ct);
                 var loginBody = await loginResp.Content.ReadAsStringAsync(ct);
