@@ -1095,11 +1095,17 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
                 // 1c: POST login credentials
                 // Login form POST body — MUST match the browser's form submission exactly.
-                // Symfony's RememberMeAuthenticator listens for _submit=Login (the button's value) and
-                // _target_path to decide whether to issue a REMEMBERME cookie. Sending empty _submit or
-                // omitting _target_path causes Symfony to silently skip the remember-me flow, producing
-                // a successful-looking 302 with no REMEMBERME in Set-Cookie. Verified from browser DevTools
-                // against MMF's live login form 2026-04-20.
+                // Symfony's RememberMeAuthenticator listens for _submit=Login and _target_path to decide
+                // whether to issue a REMEMBERME cookie. Verified from browser DevTools against MMF's
+                // live login form 2026-04-20.
+                //
+                // KNOWN ISSUE (2026-04-20): FlareSolverr v3.3.21 double-URL-encodes form field values in
+                // _post_request (src/flaresolverr_service.py:425). For opaque CSRF tokens this corrupts
+                // the value and Symfony rejects the login. The _login_check endpoint is strict; /login
+                // may be more forgiving about some validation steps. We try /login_check first (the
+                // correct endpoint the browser uses), then fall back to /login if the first attempt
+                // fails to produce REMEMBERME. Primary path is still flagged as needing a Playwright
+                // rewrite — see plans/forgekeeper-plugin-error-surfacing-1-0 Wiki page 116.
                 var postData =
                     $"_csrf_token={Uri.EscapeDataString(csrfToken)}" +
                     $"&_username={Uri.EscapeDataString(username)}" +
@@ -1107,45 +1113,99 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     $"&_target_path={Uri.EscapeDataString("https://www.myminifactory.com")}" +
                     $"&_submit={Uri.EscapeDataString("Login")}" +
                     $"&_remember_me=on";
-                var loginResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
-                    new StringContent(JsonSerializer.Serialize(new { cmd = "request.post", url = "https://www.myminifactory.com/login_check", session = fsSession, postData = postData, maxTimeout = 90000 }), System.Text.Encoding.UTF8, "application/json"), ct);
-                var loginBody = await loginResp.Content.ReadAsStringAsync(ct);
-                context.Logger.LogInformation("[MMF] Login POST response: {Body}", loginBody.Length > 300 ? loginBody[..300] : loginBody);
-                var loginJson = JsonDocument.Parse(loginBody);
-                if (!loginJson.RootElement.TryGetProperty("solution", out var loginSolution))
-                {
-                    context.Logger.LogError("[MMF] FlareSolverr login POST failed: {Body}", loginBody[..Math.Min(500, loginBody.Length)]);
-                    return [];
-                }
-                var redirectUrl = loginSolution.TryGetProperty("url", out var urlProp) ? urlProp.GetString() ?? "" : "";
-                
-                // Extract user agent
-                if (loginSolution.TryGetProperty("userAgent", out var uaProp))
-                    solvedUserAgent = uaProp.GetString();
 
-                // Extract ALL cookies (CF + session + REMEMBERME)
-                if (loginSolution.TryGetProperty("cookies", out var cookiesArray))
+                var loginUrls = new[]
                 {
-                    foreach (var cookie in cookiesArray.EnumerateArray())
+                    "https://www.myminifactory.com/login_check",
+                    "https://www.myminifactory.com/login"
+                };
+
+                bool hasRememberMe = false;
+                string lastRedirectUrl = "";
+                int lastCookieCount = 0;
+
+                foreach (var loginUrl in loginUrls)
+                {
+                    context.Logger.LogInformation("[MMF] Login attempt: POST {Url}", loginUrl);
+
+                    var loginResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
+                        new StringContent(JsonSerializer.Serialize(new { cmd = "request.post", url = loginUrl, session = fsSession, postData = postData, maxTimeout = 90000 }), System.Text.Encoding.UTF8, "application/json"), ct);
+                    var loginBody = await loginResp.Content.ReadAsStringAsync(ct);
+
+                    // Log the envelope (status, cookies metadata) truncated to avoid massive log lines
+                    context.Logger.LogInformation("[MMF] Login POST envelope ({Url}): {Body}",
+                        loginUrl, loginBody.Length > 500 ? loginBody[..500] : loginBody);
+
+                    var loginJson = JsonDocument.Parse(loginBody);
+                    if (!loginJson.RootElement.TryGetProperty("solution", out var loginSolution))
                     {
-                        cfCookies.Add((
-                            Name: cookie.GetProperty("name").GetString() ?? "",
-                            Value: cookie.GetProperty("value").GetString() ?? ""
-                        ));
+                        context.Logger.LogError("[MMF] FlareSolverr login POST failed ({Url}): {Body}",
+                            loginUrl, loginBody[..Math.Min(500, loginBody.Length)]);
+                        continue; // try next URL
+                    }
+
+                    var redirectUrl = loginSolution.TryGetProperty("url", out var urlProp) ? urlProp.GetString() ?? "" : "";
+                    lastRedirectUrl = redirectUrl;
+
+                    // Extract user agent (first successful attempt wins)
+                    if (string.IsNullOrEmpty(solvedUserAgent) && loginSolution.TryGetProperty("userAgent", out var uaProp))
+                        solvedUserAgent = uaProp.GetString();
+
+                    // Collect cookies from this attempt into a fresh list so we don't mix attempts
+                    var attemptCookies = new List<(string Name, string Value)>();
+                    if (loginSolution.TryGetProperty("cookies", out var cookiesArray))
+                    {
+                        foreach (var cookie in cookiesArray.EnumerateArray())
+                        {
+                            attemptCookies.Add((
+                                Name: cookie.GetProperty("name").GetString() ?? "",
+                                Value: cookie.GetProperty("value").GetString() ?? ""
+                            ));
+                        }
+                    }
+                    lastCookieCount = attemptCookies.Count;
+
+                    // DIAGNOSTIC: log all cookie names from this attempt (values omitted — REMEMBERME is an auth token)
+                    context.Logger.LogInformation("[MMF] Login attempt cookies ({Url}): names=[{Names}] finalUrl={FinalUrl}",
+                        loginUrl, string.Join(",", attemptCookies.Select(c => c.Name)), redirectUrl);
+
+                    // DIAGNOSTIC: log first 1500 chars of response HTML so we can see Symfony error messages,
+                    // CF challenge pages, honeypot fields, etc. Truncated to keep log lines manageable.
+                    if (loginSolution.TryGetProperty("response", out var respHtmlProp))
+                    {
+                        var respHtml = respHtmlProp.GetString() ?? "";
+                        // Strip <script>, <style>, and collapse whitespace for more signal per char
+                        var condensed = System.Text.RegularExpressions.Regex.Replace(respHtml,
+                            @"<(script|style)[^>]*>.*?</\1>", "", System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        condensed = System.Text.RegularExpressions.Regex.Replace(condensed, @"\s+", " ");
+                        context.Logger.LogInformation("[MMF] Login response HTML ({Url}, {Len} chars raw): {Excerpt}",
+                            loginUrl, respHtml.Length, condensed.Length > 1500 ? condensed[..1500] : condensed);
+                    }
+
+                    if (attemptCookies.Any(c => c.Name == "REMEMBERME"))
+                    {
+                        // Success — commit these cookies and stop
+                        cfCookies.AddRange(attemptCookies);
+                        hasRememberMe = true;
+                        context.Logger.LogInformation("[MMF] Login SUCCESS: {Url}, cookies={Count}, REMEMBERME=True",
+                            redirectUrl, attemptCookies.Count);
+                        break;
+                    }
+                    else
+                    {
+                        context.Logger.LogWarning("[MMF] Login attempt FAILED ({Url}): cookies={Count}, REMEMBERME=False — trying next path if any",
+                            loginUrl, attemptCookies.Count);
                     }
                 }
 
-                var hasRememberMe = cfCookies.Any(c => c.Name == "REMEMBERME");
-                context.Logger.LogInformation("[MMF] Login {Result}: {Url}, cookies={Count}, REMEMBERME={HasRM}", 
-                    hasRememberMe ? "SUCCESS" : "FAILED", redirectUrl, cfCookies.Count, hasRememberMe);
-                
                 // Cleanup FlareSolverr session
                 try { await httpClient.PostAsync($"{flareSolverrUrl}/v1",
                     new StringContent(JsonSerializer.Serialize(new { cmd = "sessions.destroy", session = fsSession }), System.Text.Encoding.UTF8, "application/json"), ct); } catch {}
-                
+
                 if (!hasRememberMe)
                 {
-                    context.Logger.LogError("[MMF] Login did not produce REMEMBERME cookie — check credentials");
+                    context.Logger.LogError("[MMF] All login paths exhausted without REMEMBERME cookie. lastRedirect={Url} lastCookies={Count}. Check response HTML logs above for Symfony error message or CF challenge.",
+                        lastRedirectUrl, lastCookieCount);
                     return [];
                 }
             }
