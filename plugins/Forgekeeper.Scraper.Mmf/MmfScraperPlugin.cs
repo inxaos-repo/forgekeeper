@@ -1216,12 +1216,28 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
                     // Set up the navigation waiter BEFORE clicking so a fast redirect isn't missed.
                     // The form's action attribute POSTs to /login_check — we don't navigate manually.
+                    // Predicate excludes both "/login" and "login_check" (the intermediate POST target);
+                    // "/login_check" contains "/login" so the original predicate already skips it, but
+                    // being explicit avoids confusion. Timeout bumped to 60 s — on-disk Chromium + CF
+                    // edge can take ~20 s just for GET /login, leaving no headroom at 30 s.
                     context.Logger.LogInformation("[MMF] Playwright: submitting login form...");
                     var navTask = loginPage.WaitForURLAsync(
-                        url => !url.Contains("/login"),
-                        new PageWaitForURLOptions { Timeout = 30000 });
+                        url => !url.Contains("/login") && !url.Contains("login_check"),
+                        new PageWaitForURLOptions { Timeout = 60000 });
                     await loginPage.ClickAsync("button[type='submit'][name='_submit']");
-                    await navTask;
+                    try
+                    {
+                        await navTask;
+                    }
+                    catch (TimeoutException)
+                    {
+                        // Fall through — if REMEMBERME was set before the full redirect completed,
+                        // login still succeeded. The cookie check below is the source of truth.
+                        context.Logger.LogWarning("[MMF] WaitForURLAsync timed out — falling through to cookie check");
+                    }
+
+                    // Wait briefly for network idle to ensure cookies are flushed; don't hard-fail.
+                    try { await loginPage.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 15000 }); } catch (TimeoutException) { }
 
                     // Extract cookies from Playwright's context (REMEMBERME + CF + session).
                     var finalUrl  = loginPage.Url;
