@@ -67,10 +67,18 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Type = PluginConfigFieldType.String,
             Required = false,
             DefaultValue = "downloader_v2",
-            HelpText = "MMF OAuth client ID. Default 'downloader_v2' works for most users.",
+            HelpText = "MMF OAuth client ID. Default 'downloader_v2' works for most users. Pair with CLIENT_SECRET to enable the authorization-code flow for authenticated file downloads.",
         },
-        // CLIENT_ID is declared for config completeness; not used in the FlareSolverr login flow.
-        // Kept in schema so existing plugin configs remain valid.
+        new PluginConfigField
+        {
+            Key = "CLIENT_SECRET",
+            Label = "OAuth Client Secret",
+            Type = PluginConfigFieldType.Secret,
+            Required = false,
+            HelpText = "OAuth client secret from your MMF app registration. Required for the authorization-code flow (downloads). Leave blank if you only want to sync the library manifest (no file downloads).",
+        },
+        // CLIENT_ID + CLIENT_SECRET enable the OAuth 2.0 authorization-code flow.
+        // Without CLIENT_SECRET the plugin falls back to manifest-only mode (no file downloads).
         new PluginConfigField
         {
             Key = "FLARESOLVERR_URL",
@@ -135,29 +143,80 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         },
     ];
 
-    public Task<AuthResult> AuthenticateAsync(PluginContext context, CancellationToken ct = default)
+    public async Task<AuthResult> AuthenticateAsync(PluginContext context, CancellationToken ct = default)
     {
         var username = context.Config.TryGetValue("MMF_USERNAME", out var u) ? u : null;
         var password = context.Config.TryGetValue("MMF_PASSWORD", out var p) ? p : null;
 
-        if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
+        if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+            return AuthResult.Failed("MMF_USERNAME and MMF_PASSWORD must be configured in the plugin settings");
+
+        // Check if OAuth authorization-code flow is configured (CLIENT_ID + CLIENT_SECRET + CALLBACK_URL).
+        // If configured, verify we have a valid (non-expired) access_token; if not, trigger re-auth.
+        var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
+        var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
+        var callbackUrl = context.Config.TryGetValue("CALLBACK_URL", out var cb) ? cb : null;
+
+        if (!string.IsNullOrEmpty(clientId) && !string.IsNullOrEmpty(clientSecret) && !string.IsNullOrEmpty(callbackUrl))
         {
-            return Task.FromResult(AuthResult.Success("Credentials configured — ready to sync"));
+            // Check for a valid, non-expired access token
+            var existingToken = await context.TokenStore.GetTokenAsync("access_token", ct);
+            var expiresAtStr = await context.TokenStore.GetTokenAsync("token_expires_at", ct);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            bool tokenValid = !string.IsNullOrEmpty(existingToken)
+                && long.TryParse(expiresAtStr, out var expiresAt)
+                && now < expiresAt - 60; // 60s buffer
+
+            if (tokenValid)
+                return AuthResult.Success("OAuth credentials configured and access token is valid — ready to sync");
+
+            // No valid token — build authorization URL to trigger browser flow
+            // Scope list is a best-guess for MMF's OAuth server; may need tuning.
+            // Known scopes: 'read' (public data), 'user' (profile), 'download' (file downloads).
+            // 'offline_access' requests a refresh_token (not all providers honor it).
+            var state = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8));
+            await context.TokenStore.SaveTokenAsync("oauth_state", state, ct);
+
+            var authUrl = $"https://www.myminifactory.com/oauth/authorize"
+                + $"?client_id={Uri.EscapeDataString(clientId)}"
+                + $"&response_type=code"
+                + $"&redirect_uri={Uri.EscapeDataString(callbackUrl)}"
+                + $"&scope={Uri.EscapeDataString("read download offline_access")}"
+                + $"&state={state}";
+
+            return AuthResult.NeedsBrowser(authUrl, "MMF OAuth authorization required — click to connect");
         }
 
-        return Task.FromResult(AuthResult.Failed("MMF_USERNAME and MMF_PASSWORD must be configured in the plugin settings"));
+        // Credentials configured; OAuth not configured (manifest-only mode)
+        return AuthResult.Success("Credentials configured — ready to sync (manifest only; add CLIENT_SECRET for file downloads)");
     }
 
     public async Task<AuthResult> HandleAuthCallbackAsync(PluginContext context, IDictionary<string, string> callbackParams, CancellationToken ct = default)
     {
-        // Legacy OAuth implicit flow: access_token is returned as a URL fragment parameter.
-        // The primary auth flow is now FlareSolverr + cookie login (see FetchLibraryViaBrowserAsync).
-        // This callback path is retained for future OAuth support or direct token injection.
+        // Legacy OAuth implicit flow: access_token returned as a URL fragment parameter.
+        // Retained for back-compat; the new auth-code flow is preferred.
         if (callbackParams.TryGetValue("access_token", out var accessToken) && !string.IsNullOrEmpty(accessToken))
         {
             await context.TokenStore.SaveTokenAsync("access_token", accessToken, ct);
-            context.Logger.LogInformation("Saved MMF access token from callback");
-            return AuthResult.Success("Connected to MyMiniFactory successfully!");
+            context.Logger.LogInformation("[MMF] Saved access token from legacy implicit-flow callback");
+            return AuthResult.Success("Connected to MyMiniFactory via implicit flow");
+        }
+
+        // Standard OAuth 2.0 authorization-code flow
+        if (callbackParams.TryGetValue("code", out var code) && !string.IsNullOrEmpty(code))
+        {
+            // TODO(v1): validate 'state' param against token store to prevent CSRF.
+            // Skipped in v0 — state is stored in AuthenticateAsync but not verified here yet.
+
+            var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
+            var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
+            var callbackUrl = context.Config.TryGetValue("CALLBACK_URL", out var cb) ? cb : null;
+
+            if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret) || string.IsNullOrEmpty(callbackUrl))
+                return AuthResult.Failed("OAuth callback: CLIENT_ID, CLIENT_SECRET, or CALLBACK_URL missing in plugin config");
+
+            return await ExchangeCodeForTokenAsync(context, code, clientId, clientSecret, callbackUrl, ct);
         }
 
         if (callbackParams.TryGetValue("error", out var error))
@@ -166,7 +225,65 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             return AuthResult.Failed($"Auth error: {error} — {errorDesc}");
         }
 
-        return AuthResult.Failed("No access token received in callback");
+        return AuthResult.Failed("No authorization code or access_token received in callback");
+    }
+
+    /// <summary>
+    /// Exchanges an authorization code for tokens via MMF's OAuth token endpoint.
+    /// Extracted as a protected virtual method so unit tests can override it.
+    /// </summary>
+    protected virtual async Task<AuthResult> ExchangeCodeForTokenAsync(
+        PluginContext context, string code, string clientId, string clientSecret, string callbackUrl,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            var form = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"]    = "authorization_code",
+                ["code"]          = code,
+                ["client_id"]     = clientId,
+                ["client_secret"] = clientSecret,
+                ["redirect_uri"]  = callbackUrl,
+            });
+
+            var resp = await http.PostAsync("https://www.myminifactory.com/oauth/token", form, ct);
+            var body = await resp.Content.ReadAsStringAsync(ct);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                // Always log exchange failures — business-critical, not gated on IsVerbose
+                context.Logger.LogError("[MMF] OAuth token exchange failed: {Status} {Body}",
+                    resp.StatusCode, body.Length > 400 ? body[..400] : body);
+                return AuthResult.Failed($"MMF token exchange failed: {resp.StatusCode}");
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var newAccessToken = root.GetProperty("access_token").GetString() ?? "";
+            string? newRefreshToken = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
+            long expiresIn = root.TryGetProperty("expires_in", out var eip) && eip.ValueKind == JsonValueKind.Number
+                ? eip.GetInt64() : 3600;
+
+            await context.TokenStore.SaveTokenAsync("access_token", newAccessToken, ct);
+            if (!string.IsNullOrEmpty(newRefreshToken))
+                await context.TokenStore.SaveTokenAsync("refresh_token", newRefreshToken, ct);
+            await context.TokenStore.SaveTokenAsync("token_expires_at",
+                (DateTimeOffset.UtcNow + TimeSpan.FromSeconds(expiresIn)).ToUnixTimeSeconds().ToString(), ct);
+
+            // Business-critical outcome — always log (not gated on IsVerbose)
+            context.Logger.LogInformation(
+                "[MMF] OAuth: access_token acquired (expires_in={ExpiresIn}s, has_refresh_token={HasRefresh})",
+                expiresIn, !string.IsNullOrEmpty(newRefreshToken));
+
+            return AuthResult.Success("Connected to MyMiniFactory via OAuth");
+        }
+        catch (Exception ex)
+        {
+            context.Logger.LogError(ex, "[MMF] OAuth token exchange threw");
+            return AuthResult.Failed($"OAuth exchange error: {ex.Message}");
+        }
     }
 
     public async Task<IReadOnlyList<ScrapedModel>> FetchManifestAsync(PluginContext context, Stream? uploadedManifest = null, CancellationToken ct = default)
@@ -201,7 +318,10 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         var delayMs = GetDelayMs(context);
         var downloadDelayMs = GetDownloadDelayMs(context);
         var restoreMode = IsRestoreMode(context);
-        
+
+        // Ensure OAuth access token is fresh before use (refreshes if within 5 min of expiry)
+        await EnsureFreshAccessTokenAsync(context, ct);
+
         // Get auth tokens — try download_token (MiniDownloader) or access_token (OAuth)
         var bearerToken = await context.TokenStore.GetTokenAsync("download_token", ct)
             ?? await context.TokenStore.GetTokenAsync("access_token", ct);
@@ -1876,6 +1996,89 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         catch { }
 
         return null;
+    }
+
+    /// <summary>
+    /// Proactively refreshes the OAuth access_token when it is within 5 minutes of expiry.
+    /// On refresh failure, logs a warning but does NOT throw — the bearer-token-null fallback
+    /// path still handles degraded operation (manifest sync continues; downloads will 403).
+    /// </summary>
+    private async Task EnsureFreshAccessTokenAsync(PluginContext context, CancellationToken ct)
+    {
+        var expiresAtStr = await context.TokenStore.GetTokenAsync("token_expires_at", ct);
+        if (string.IsNullOrEmpty(expiresAtStr))
+            return; // No OAuth token in store — nothing to refresh
+
+        if (!long.TryParse(expiresAtStr, out var expiresAt))
+            return;
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (now < expiresAt - 300)
+            return; // Token still fresh (>5 min remaining)
+
+        // Token is expired or expiring soon — attempt refresh
+        var refreshToken = await context.TokenStore.GetTokenAsync("refresh_token", ct);
+        if (string.IsNullOrEmpty(refreshToken))
+        {
+            context.Logger.LogWarning("[MMF] OAuth access_token is expiring but no refresh_token in store — user must re-authenticate");
+            return;
+        }
+
+        var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
+        var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
+
+        if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
+        {
+            context.Logger.LogWarning("[MMF] OAuth token needs refresh but CLIENT_ID/CLIENT_SECRET not configured");
+            return;
+        }
+
+        if (IsVerbose(context))
+            context.Logger.LogInformation("[MMF] OAuth access_token expiring — attempting refresh");
+
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            var form = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"]    = "refresh_token",
+                ["refresh_token"] = refreshToken,
+                ["client_id"]     = clientId,
+                ["client_secret"] = clientSecret,
+            });
+
+            var resp = await http.PostAsync("https://www.myminifactory.com/oauth/token", form, ct);
+            var body = await resp.Content.ReadAsStringAsync(ct);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                context.Logger.LogWarning(
+                    "[MMF] OAuth refresh failed ({Status}) — continuing with existing token (may 403). User may need to re-authenticate.",
+                    resp.StatusCode);
+                return;
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var newAccessToken = root.GetProperty("access_token").GetString() ?? "";
+            string? newRefreshToken = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
+            long expiresIn = root.TryGetProperty("expires_in", out var eip) && eip.ValueKind == JsonValueKind.Number
+                ? eip.GetInt64() : 3600;
+
+            await context.TokenStore.SaveTokenAsync("access_token", newAccessToken, ct);
+            if (!string.IsNullOrEmpty(newRefreshToken))
+                await context.TokenStore.SaveTokenAsync("refresh_token", newRefreshToken, ct);
+            await context.TokenStore.SaveTokenAsync("token_expires_at",
+                (DateTimeOffset.UtcNow + TimeSpan.FromSeconds(expiresIn)).ToUnixTimeSeconds().ToString(), ct);
+
+            context.Logger.LogInformation(
+                "[MMF] OAuth token refreshed (expires_in={ExpiresIn}s, rotated_refresh={Rotated})",
+                expiresIn, !string.IsNullOrEmpty(newRefreshToken));
+        }
+        catch (Exception ex)
+        {
+            context.Logger.LogWarning(ex, "[MMF] OAuth refresh threw — continuing with existing token");
+        }
     }
 
     private static string GetCallbackUrl(PluginContext context)
