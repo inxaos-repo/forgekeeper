@@ -112,6 +112,20 @@ public class MmfScraperSchemaRegressionTests
     }
 
     [Fact]
+    public void ClientSecret_Field_IsOptionalAndSecret()
+    {
+        // CLIENT_SECRET must be:
+        //   (a) present in the schema — without it the OAuth download flow has no config field
+        //   (b) Secret type — so it's encrypted at rest (caught by AllSecretFields_AreMarkedSecretType too)
+        //   (c) NOT Required — manifest sync must work without an OAuth app registration
+        var field = Plugin.ConfigSchema.FirstOrDefault(f => f.Key == "CLIENT_SECRET");
+        Assert.NotNull(field);
+        Assert.Equal(PluginConfigFieldType.Secret, field!.Type);
+        Assert.False(field.Required,
+            "CLIENT_SECRET must remain optional so manifest-only mode works without OAuth.");
+    }
+
+    [Fact]
     public void ConfigSchema_HasNoDuplicateKeys()
     {
         var keys = Plugin.ConfigSchema.Select(f => f.Key).ToList();

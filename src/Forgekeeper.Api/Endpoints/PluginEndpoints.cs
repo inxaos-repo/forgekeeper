@@ -477,7 +477,8 @@ public static class PluginEndpoints
             var query = httpContext.Request.Query;
 
             // If we have auth params (from JS fragment redirect), process them
-            if (query.ContainsKey("access_token") || query.ContainsKey("error"))
+            // Handle auth-code flow (code in query) AND legacy implicit flow (access_token) AND errors
+            if (query.ContainsKey("access_token") || query.ContainsKey("code") || query.ContainsKey("error"))
             {
                 var callbackParams = query.ToDictionary(q => q.Key, q => q.Value.ToString());
                 var result = await pluginHost.HandleAuthCallbackAsync(slug, callbackParams, ct);
