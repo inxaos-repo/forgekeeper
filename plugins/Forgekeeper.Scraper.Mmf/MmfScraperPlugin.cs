@@ -1281,15 +1281,67 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     }
                     catch (TimeoutException) { /* fall through — Fill call below will fail with a clearer error */ }
 
-                    // Fill credentials with PressSequentiallyAsync instead of FillAsync.
-                    // FillAsync writes directly to the input's .value property, bypassing React's
-                    // synthetic event system. React then reads its virtual DOM state (still empty)
-                    // on submit, producing a "successful" POST with empty credentials. Typing via
-                    // Locator.PressSequentiallyAsync fires keydown/keypress/input events React listens
-                    // for, which updates React's internal state. Delay=0 keeps it fast — we don't need
-                    // per-keystroke timing, just the events.
+                    // Diagnostic: log credential SHAPE (not values). Used to diagnose Symfony
+                    // "Invalid credentials" when browser login works but plugin login does not.
+                    // Catches:
+                    //   - stored password truncated on save (UI/form-encoding bug)
+                    //   - hidden leading/trailing whitespace on stored value
+                    //   - non-ASCII chars the keyboard event pipeline may mishandle
+                    // We log: character count, ASCII range summary, leading/trailing-whitespace flag,
+                    //         and the SHA-256 fingerprint of the stored value (first 8 hex chars).
+                    // A fingerprint lets the operator compare 'what's stored' against 'what browser
+                    // uses' by running `echo -n 'mypassword' | sha256sum | cut -c1-8` locally —
+                    // without ever emitting the plaintext.
+                    var pwLen            = password.Length;
+                    var pwHasLeadWs      = password.Length > 0 && char.IsWhiteSpace(password[0]);
+                    var pwHasTrailWs     = password.Length > 0 && char.IsWhiteSpace(password[^1]);
+                    var pwNonAsciiCount  = password.Count(c => c > 127);
+                    var pwAsciiPunctCnt  = password.Count(c => c <= 127 && !char.IsLetterOrDigit(c));
+                    var pwFingerprint    = string.Empty;
+                    try
+                    {
+                        using var sha = System.Security.Cryptography.SHA256.Create();
+                        var digest = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(password));
+                        pwFingerprint = Convert.ToHexString(digest)[..8].ToLowerInvariant();
+                    }
+                    catch { /* never fail diagnostics */ }
+                    context.Logger.LogInformation(
+                        "[MMF] credential shape: username.length={UserLen} password.length={PwLen} " +
+                        "pw.leadWs={LeadWs} pw.trailWs={TrailWs} pw.nonAscii={NonAscii} " +
+                        "pw.asciiPunct={Punct} pw.sha256-8={Fp} (values NEVER logged)",
+                        username.Length, pwLen, pwHasLeadWs, pwHasTrailWs, pwNonAsciiCount,
+                        pwAsciiPunctCnt, pwFingerprint);
+
+                    // Type credentials. PressSequentiallyAsync fires keydown/keypress/input events
+                    // (as opposed to FillAsync which writes to .value directly). Delay=0 keeps it fast.
                     await loginPage.Locator("input[name='_username']").PressSequentiallyAsync(username, new LocatorPressSequentiallyOptions { Delay = 0 });
                     await loginPage.Locator("input[name='_password']").PressSequentiallyAsync(password, new LocatorPressSequentiallyOptions { Delay = 0 });
+
+                    // Diagnostic: verify what Playwright actually put in the DOM after typing.
+                    // If Playwright swallowed characters (keyboard layout issues, escape chars, etc.)
+                    // the DOM.value.length will differ from our input length. Check BOTH user + pw.
+                    try
+                    {
+                        var domUserLen = await loginPage.Locator("input[name='_username']").EvaluateAsync<int>("el => el.value.length");
+                        var domPwLen   = await loginPage.Locator("input[name='_password']").EvaluateAsync<int>("el => el.value.length");
+                        if (domUserLen != username.Length || domPwLen != pwLen)
+                        {
+                            context.Logger.LogWarning(
+                                "[MMF] typed-value length MISMATCH — some characters were NOT delivered to the DOM! " +
+                                "expected user={ExpectedUser} got user={GotUser}; expected pw={ExpectedPw} got pw={GotPw}",
+                                username.Length, domUserLen, pwLen, domPwLen);
+                        }
+                        else
+                        {
+                            context.Logger.LogInformation(
+                                "[MMF] DOM value lengths match input: user={UserLen} pw={PwLen}",
+                                domUserLen, domPwLen);
+                        }
+                    }
+                    catch (Exception diagEx)
+                    {
+                        context.Logger.LogDebug(diagEx, "[MMF] post-type DOM length check failed (non-fatal)");
+                    }
 
                     // Check remember-me. Guard against it being pre-checked by the page.
                     // (CheckAsync also dispatches a change event, so React picks it up natively.)
