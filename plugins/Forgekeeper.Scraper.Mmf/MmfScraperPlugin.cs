@@ -673,6 +673,27 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     // --- Playwright browser download helpers ---
 
     /// <summary>
+    /// Builds a signal-dense excerpt of an HTML page for diagnostic logging.
+    /// Strips <script> and <style> blocks (MMF's login page front-loads ~10 KB of
+    /// NewRelic / GTM / matomo JS before the actual form markup starts, which made
+    /// the old 1500-char cap useless — every excerpt was pure analytics noise).
+    /// Also collapses runs of whitespace so real DOM content dominates the budget.
+    /// </summary>
+    private static string BuildDomExcerpt(string html, int maxChars = 3000)
+    {
+        if (string.IsNullOrEmpty(html)) return "";
+
+        var stripped = System.Text.RegularExpressions.Regex.Replace(
+            html,
+            @"<(script|style)[^>]*>.*?</\1>",
+            "",
+            System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        stripped = System.Text.RegularExpressions.Regex.Replace(stripped, @"\s+", " ").Trim();
+
+        return stripped.Length > maxChars ? stripped[..maxChars] + "…" : stripped;
+    }
+
+    /// <summary>
     /// Creates a fresh headless Chromium context for the login flow, seeded with CF-cleared
     /// cookies from a prior FlareSolverr GET. Unlike <see cref="GetBrowserContextAsync"/>,
     /// this context has no Authorization header injection — it is solely for form-based login.
@@ -1238,7 +1259,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                         // Selector missing = DOM shape changed on MMF's side. Dump current HTML so
                         // we can see what's actually there without a fresh debugging round-trip.
                         var html = await loginPage.ContentAsync();
-                        var excerpt = html.Length > 1500 ? html[..1500] + "…" : html;
+                        var excerpt = BuildDomExcerpt(html);
                         context.Logger.LogError(
                             "[MMF] Submit button not found on /login (selector={Selector}, url={Url}). DOM excerpt: {Excerpt}",
                             SubmitSelector, loginPage.Url, excerpt);
@@ -1290,11 +1311,9 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                         // Capture diagnostic info while page is still open (cookie values NOT logged).
                         var cookieNames  = string.Join(", ", pwCookies.Select(c => c.Name));
                         var pageContent  = await loginPage.ContentAsync();
-                        var truncated    = pageContent.Length > 1500
-                            ? pageContent[..1500] + "…"
-                            : pageContent;
+                        var excerpt      = BuildDomExcerpt(pageContent);
                         loginFailureInfo =
-                            $"finalUrl={finalUrl}, cookieNames=[{cookieNames}], pageContent={truncated}";
+                            $"finalUrl={finalUrl}, cookieNames=[{cookieNames}], pageContent={excerpt}";
                     }
 
                     await loginPage.CloseAsync();
