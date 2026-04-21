@@ -673,6 +673,36 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     // --- Playwright browser download helpers ---
 
     /// <summary>
+    /// Returns the outerHTML of the FIRST element matching <paramref name="selector"/> on
+    /// <paramref name="page"/>, or empty string if nothing matches. Never throws; the whole
+    /// point of this helper is to be safe to call from a diagnostic code path.
+    /// </summary>
+    private static async Task<string> SafeEvalFirstOuterHtmlAsync(IPage page, string selector)
+    {
+        try
+        {
+            var locator = page.Locator(selector).First;
+            if (await locator.CountAsync() == 0) return "";
+            return await locator.EvaluateAsync<string>("el => el.outerHTML") ?? "";
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// Returns concatenated outerHTML of ALL elements matching <paramref name="selector"/>,
+    /// joined with " | ". Empty string if nothing matches or an error occurs.
+    /// </summary>
+    private static async Task<string> SafeEvalAllOuterHtmlAsync(IPage page, string selector)
+    {
+        try
+        {
+            var allHtml = await page.EvaluateAsync<string[]>(@"sel => Array.from(document.querySelectorAll(sel)).map(el => el.outerHTML)", selector);
+            return allHtml == null ? "" : string.Join(" | ", allHtml.Where(h => !string.IsNullOrWhiteSpace(h)));
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>
     /// Builds a signal-dense excerpt of an HTML page for diagnostic logging.
     /// MMF's login page front-loads ~10 KB of <head> markup (meta tags, link preloads,
     /// NewRelic / GTM / matomo scripts) before the actual <body> content starts, which
@@ -1233,17 +1263,36 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     var loginPage = await pwContext.NewPageAsync();
 
                     // GET /login — Playwright renders a fresh session-scoped CSRF token in the DOM.
-                    // We do NOT extract it; the form submits whatever is in the hidden field natively.
+                    // MMF's login page is React-rendered as of the "New Library" rollout (April 2026);
+                    // server markup returns a bootstrap shell, and the <form> is mounted by React after
+                    // JS loads. We wait for NetworkIdle (bounded) so the form is hydrated before we try
+                    // to interact with it.
                     context.Logger.LogInformation("[MMF] Playwright: navigating to /login...");
                     await loginPage.GotoAsync(
                         "https://www.myminifactory.com/login",
                         new PageGotoOptions { Timeout = 30000, WaitUntil = WaitUntilState.DOMContentLoaded });
+                    try { await loginPage.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 15000 }); }
+                    catch (TimeoutException) { /* bounded — React may still be idle enough */ }
+                    try
+                    {
+                        await loginPage.WaitForSelectorAsync(
+                            "input[name='_username']",
+                            new PageWaitForSelectorOptions { Timeout = 15000, State = WaitForSelectorState.Visible });
+                    }
+                    catch (TimeoutException) { /* fall through — Fill call below will fail with a clearer error */ }
 
-                    // Fill credentials. CSRF is handled natively by the form.
-                    await loginPage.FillAsync("input[name='_username']", username);
-                    await loginPage.FillAsync("input[name='_password']", password);
+                    // Fill credentials with PressSequentiallyAsync instead of FillAsync.
+                    // FillAsync writes directly to the input's .value property, bypassing React's
+                    // synthetic event system. React then reads its virtual DOM state (still empty)
+                    // on submit, producing a "successful" POST with empty credentials. Typing via
+                    // Locator.PressSequentiallyAsync fires keydown/keypress/input events React listens
+                    // for, which updates React's internal state. Delay=0 keeps it fast — we don't need
+                    // per-keystroke timing, just the events.
+                    await loginPage.Locator("input[name='_username']").PressSequentiallyAsync(username, new LocatorPressSequentiallyOptions { Delay = 0 });
+                    await loginPage.Locator("input[name='_password']").PressSequentiallyAsync(password, new LocatorPressSequentiallyOptions { Delay = 0 });
 
                     // Check remember-me. Guard against it being pre-checked by the page.
+                    // (CheckAsync also dispatches a change event, so React picks it up natively.)
                     if (!await loginPage.IsCheckedAsync("input[name='_remember_me']"))
                         await loginPage.CheckAsync("input[name='_remember_me']");
 
@@ -1322,10 +1371,27 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     {
                         // Capture diagnostic info while page is still open (cookie values NOT logged).
                         var cookieNames  = string.Join(", ", pwCookies.Select(c => c.Name));
-                        var pageContent  = await loginPage.ContentAsync();
-                        var excerpt      = BuildDomExcerpt(pageContent);
+
+                        // Targeted extract: pull ONLY the <form> + any error/flash markup rather
+                        // than dumping the whole body. MMF's top-nav/promo-bar/cookie-consent eats
+                        // the excerpt budget before we ever reach the form.
+                        //
+                        // Each snippet is kept short; we join them so the log line has the
+                        // signal-dense parts of the DOM without needing a giant cap.
+                        string formHtml   = await SafeEvalFirstOuterHtmlAsync(loginPage, "form[action*='login_check'], form[action*='/login']");
+                        string errorsHtml = await SafeEvalAllOuterHtmlAsync(loginPage,
+                            ".alert, .flash, .flash-notice, .flash-error, .flash-success, " +
+                            "[class*='error'], [class*='Error'], [role='alert'], .invalid-feedback, .help-block.error");
+                        string titleText  = await loginPage.TitleAsync();
+                        var fallback     = string.IsNullOrWhiteSpace(formHtml) && string.IsNullOrWhiteSpace(errorsHtml)
+                            ? BuildDomExcerpt(await loginPage.ContentAsync())
+                            : "";
+
                         loginFailureInfo =
-                            $"finalUrl={finalUrl}, cookieNames=[{cookieNames}], pageContent={excerpt}";
+                            $"finalUrl={finalUrl}, title=\"{titleText}\", cookieNames=[{cookieNames}], " +
+                            $"formHtml={BuildDomExcerpt(formHtml, 2000)}, " +
+                            $"errorsHtml={BuildDomExcerpt(errorsHtml, 2000)}, " +
+                            $"fallbackBodyExcerpt={fallback}";
                     }
 
                     await loginPage.CloseAsync();
