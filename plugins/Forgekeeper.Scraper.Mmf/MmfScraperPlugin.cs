@@ -374,10 +374,16 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         var sessionCookies = await context.TokenStore.GetTokenAsync("session_cookies", ct);
         var sessionUA = await context.TokenStore.GetTokenAsync("session_useragent", ct);
 
-        // Strip 'object-' prefix from external ID (manifest stores 'object-12345' but API wants '12345')
-        var numericId = model.ExternalId?.StartsWith("object-") == true 
-            ? model.ExternalId[7..] 
-            : model.ExternalId;
+        // Parse manifest ID — items come as 'object-786967', 'bundle-2447', 'collection-999', etc.
+        // Only 'object' types are supported; bundles/collections have unknown API surface.
+        var (numericId, idType) = SplitManifestId(model.ExternalId);
+        if (idType != "object")
+        {
+            context.Logger.LogInformation(
+                "[MMF] Skipping {Type} entry {Id} ({Name}) — {Type} types are not yet supported (only individual objects)",
+                idType, model.ExternalId, model.Name ?? "<no name>");
+            return ScrapeResult.Ok("metadata.json", []);
+        }
 
         context.Progress.Report(new ScrapeProgress
         {
@@ -542,15 +548,42 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                         {
                             context.Logger.LogInformation("[MMF] Downloading: {File} for {Model} (attempt {Attempt}/3)",
                                 safeName, model.Name, attempt + 1);
-                            using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-                            // Use Bearer for MMF URLs, skip for CDN URLs
-                            if (!string.IsNullOrEmpty(bearerToken) && !IsCdnUrl(file.DownloadUrl))
-                                dlClient.DefaultRequestHeaders.Authorization =
-                                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
-                            dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+                            // Disable auto-redirect so we can manually handle the 302 that MMF /download returns.
+                            // MMF redirects to a signed S3 CDN URL; forwarding our Authorization header
+                            // to the CDN causes AWS to reject the presigned URL with 403.
+                            using var dlHandler = new HttpClientHandler { AllowAutoRedirect = false };
+                            using var dlClient = new HttpClient(dlHandler) { Timeout = TimeSpan.FromMinutes(30) };
+                            const string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+                            dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
 
-                            var fileResponse = await dlClient.GetAsync(file.DownloadUrl, ct);
+                            // Step 1: authenticated GET to MMF — we expect a 302 to a signed CDN URL
+                            using var mmfReq = new HttpRequestMessage(HttpMethod.Get, file.DownloadUrl);
+                            if (!string.IsNullOrEmpty(bearerToken) && !IsCdnUrl(file.DownloadUrl))
+                                mmfReq.Headers.Authorization =
+                                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
+                            using var mmfResp = await dlClient.SendAsync(mmfReq, HttpCompletionOption.ResponseHeadersRead, ct);
+
+                            HttpResponseMessage fileResponse;
+                            if ((int)mmfResp.StatusCode == 302 && mmfResp.Headers.Location is not null)
+                            {
+                                // Step 2: follow the redirect WITHOUT Authorization — AWS S3 rejects
+                                // presigned URLs that carry any additional Authorization header.
+                                var cdnLocation = mmfResp.Headers.Location.IsAbsoluteUri
+                                    ? mmfResp.Headers.Location
+                                    : new Uri(new Uri(file.DownloadUrl), mmfResp.Headers.Location);
+                                context.Logger.LogDebug("[MMF] Following signed-CDN redirect for {File}: {Url}",
+                                    safeName, cdnLocation);
+                                using var cdnReq = new HttpRequestMessage(HttpMethod.Get, cdnLocation);
+                                // No Authorization, no cookies — the presigned URL is self-authenticating
+                                fileResponse = await dlClient.SendAsync(cdnReq, HttpCompletionOption.ResponseHeadersRead, ct);
+                                mmfResp.Dispose(); // done with the 302 response
+                            }
+                            else
+                            {
+                                // Rare: direct 200 body or non-302 error — use as-is and let the
+                                // 403/cookie/Playwright fallback chain below handle failure cases.
+                                fileResponse = mmfResp;
+                            }
 
                             // Check for 404 — don't retry, file doesn't exist
                             if (fileResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -2005,6 +2038,25 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         client.DefaultRequestHeaders.Accept.Add(
             new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
         return client;
+    }
+
+    /// <summary>
+    /// Splits an MMF manifest ID like "object-786967" / "bundle-2447" / "collection-999"
+    /// or a bare numeric ID into (numericId, type). Returns (null, null) for null/empty.
+    /// Bare numeric IDs are treated as "object" type.
+    /// </summary>
+    internal static (string? NumericId, string? Type) SplitManifestId(string? externalId)
+    {
+        if (string.IsNullOrEmpty(externalId)) return (null, null);
+        var dash = externalId.IndexOf('-');
+        if (dash <= 0)
+        {
+            // No prefix — assume it's already a numeric object id
+            return (externalId, "object");
+        }
+        var prefix = externalId[..dash].ToLowerInvariant();
+        var tail = externalId[(dash + 1)..];
+        return (tail, prefix);
     }
 
     /// <summary>Check if a URL is a CDN URL (skip Bearer auth for CDN downloads).</summary>
