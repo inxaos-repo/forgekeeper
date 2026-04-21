@@ -121,8 +121,11 @@ public class MmfOAuthFlowTests
 
         Assert.False(result.Authenticated);
         Assert.NotNull(result.AuthUrl);
-        Assert.Contains("myminifactory.com/oauth/authorize", result.AuthUrl);
-        Assert.Contains("response_type=code", result.AuthUrl);
+        // Real MMF OAuth endpoint lives at auth.myminifactory.com/web/authorize (implicit flow).
+        // Discovered from MiniDownloader's source 2026-04-21. www.myminifactory.com/oauth/authorize
+        // 404s for all clients.
+        Assert.Contains("auth.myminifactory.com/web/authorize", result.AuthUrl);
+        Assert.Contains("response_type=token", result.AuthUrl);
         Assert.Contains("client_id=", result.AuthUrl);
         Assert.Contains("redirect_uri=", result.AuthUrl);
     }

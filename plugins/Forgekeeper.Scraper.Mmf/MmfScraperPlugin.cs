@@ -42,7 +42,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     public string Version => "1.0.0";
     // RequiresBrowserAuth drives the admin UI's render of the "Authenticate" button.
     // With OAuth 2.0 authorization-code flow (PR #18), the plugin DOES need a browser
-    // dance to acquire access_token + refresh_token — user navigates to MMF's /oauth/authorize,
+    // dance to acquire access_token — user navigates to MMF's auth.myminifactory.com/web/authorize,
     // logs in, approves, and MMF redirects back to our /auth/mmf/callback endpoint.
     //
     // Before PR #18 this was `false` because the plugin relied entirely on
@@ -84,7 +84,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Label = "OAuth Client Secret",
             Type = PluginConfigFieldType.Secret,
             Required = false,
-            HelpText = "(OAuth flow, currently stubbed) OAuth client secret. Historically used with the /oauth/authorize + /oauth/token flow, but MMF removed those endpoints in 2026. Use MMF_API_KEY instead. Left in the schema for forward-compat if MMF restores OAuth.",
+            HelpText = "OAuth client secret. For MMF's built-in 'downloader_v2' client, this is the public secret '6b511607-740d-49ad-8e31-3bb8b75dd354' (same for all users — hardcoded in MiniDownloader's source). Leave blank to skip OAuth and use MMF_API_KEY-only mode.",
         },
         // MMF_API_KEY is the primary authenticated-download path after MMF retired their OAuth
         // authorize endpoint. Generate the API key in MMF app registration settings — see HelpText.
@@ -170,21 +170,12 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
             return AuthResult.Failed("MMF_USERNAME and MMF_PASSWORD must be configured in the plugin settings");
 
-        // Priority 1: MMF_API_KEY (the pragmatic 2026-04 path). MMF's /oauth/authorize was
-        // retired around April 2026; the surviving authenticated-download mechanism is to
-        // generate an API key in the app registration page and use it as a long-lived Bearer
-        // token. When MMF_API_KEY is set, save it as 'download_token' in the token store and
-        // call it a day — no browser dance, no refresh logic.
-        var apiKey = context.Config.TryGetValue("MMF_API_KEY", out var ak) ? ak : null;
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            await context.TokenStore.SaveTokenAsync("download_token", apiKey.Trim(), ct);
-            return AuthResult.Success("MMF API key configured — ready to sync with authenticated downloads");
-        }
-
-        // Priority 2: OAuth authorization-code flow. Currently stubbed — MMF's /oauth/authorize
-        // returns 404 as of 2026-04 regardless of client_id. Code retained for forward-compat
-        // if MMF restores OAuth. Checking CLIENT_ID + CLIENT_SECRET + CALLBACK_URL triggers it.
+        // Priority 1: OAuth implicit flow (the real MMF download path, per MiniDownloader).
+        // CLIENT_ID defaults to 'downloader_v2' (MMF's public client).
+        // CLIENT_SECRET for that client is '6b511607-740d-49ad-8e31-3bb8b75dd354' (public).
+        // When these + CALLBACK_URL are set and we don't have a valid token, return
+        // NeedsBrowser(authUrl) so the UI pops MMF's consent screen. The access_token comes
+        // back via URL fragment; our /auth/mmf/callback HTML extracts + posts it.
         var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
         var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
         var callbackUrl = context.Config.TryGetValue("CALLBACK_URL", out var cb) ? cb : null;
@@ -210,19 +201,39 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             var state = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8));
             await context.TokenStore.SaveTokenAsync("oauth_state", state, ct);
 
-            var authUrl = $"https://www.myminifactory.com/oauth/authorize"
+            // CORRECT endpoint: MMF's OAuth lives at auth.myminifactory.com/web/authorize,
+            // NOT www.myminifactory.com/oauth/authorize (the latter 404s for everyone).
+            // Discovered by reading MiniDownloader's own source (inxaos-repo/mmf-downloader
+            // Downloader/Services/AuthService.cs, line 88).
+            //
+            // Uses IMPLICIT flow (response_type=token): the access_token comes back as a URL
+            // fragment on the redirect, extracted by our callback HTML + POSTed back to our
+            // /auth/mmf/callback endpoint as a query param. The legacy code-exchange path in
+            // HandleAuthCallbackAsync is unused in this mode.
+            var authUrl = $"https://auth.myminifactory.com/web/authorize"
                 + $"?client_id={Uri.EscapeDataString(clientId)}"
-                + $"&response_type=code"
+                + $"&response_type=token"
                 + $"&redirect_uri={Uri.EscapeDataString(callbackUrl)}"
-                + $"&scope={Uri.EscapeDataString("read download offline_access")}"
                 + $"&state={state}";
 
             return AuthResult.NeedsBrowser(authUrl, "MMF OAuth authorization required — click to connect");
         }
 
-        // Priority 3: manifest-only mode. No API key, no OAuth. Username+password is enough
+        // Priority 2: MMF_API_KEY fallback (user-generated API key from the MMF developer app
+        // registration page). Lower priority than OAuth because, empirically, MMF's
+        // developer-app API keys don't seem to be accepted on /api/v2 endpoints (all return
+        // 401) while OAuth-flow access_tokens DO work (MiniDownloader proves this). Kept as a
+        // fallback path in case this changes or for users who can't complete the browser flow.
+        var apiKey = context.Config.TryGetValue("MMF_API_KEY", out var ak) ? ak : null;
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            await context.TokenStore.SaveTokenAsync("download_token", apiKey.Trim(), ct);
+            return AuthResult.Success("MMF API key configured — ready to sync with authenticated downloads");
+        }
+
+        // Priority 3: manifest-only mode. No OAuth, no API key. Username+password is enough
         // to do Playwright-based login for the library manifest; downloads will return 403.
-        return AuthResult.Success("Credentials configured — manifest-only mode (add MMF_API_KEY for file downloads)");
+        return AuthResult.Success("Credentials configured — manifest-only mode (add OAuth CLIENT_ID/CLIENT_SECRET or MMF_API_KEY for file downloads)");
     }
 
     public async Task<AuthResult> HandleAuthCallbackAsync(PluginContext context, IDictionary<string, string> callbackParams, CancellationToken ct = default)
