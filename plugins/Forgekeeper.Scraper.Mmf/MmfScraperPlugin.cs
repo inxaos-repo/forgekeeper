@@ -117,6 +117,15 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         },
         new PluginConfigField
         {
+            Key = "VERBOSE_LOGGING",
+            Label = "Verbose login/sync diagnostics",
+            Type = PluginConfigFieldType.String,
+            Required = false,
+            DefaultValue = "false",
+            HelpText = "Set to 'true' to emit detailed step-by-step login + sync logs (Playwright phases, credential shape fingerprint, cookie names, etc.). Off by default — helpful only when diagnosing a new login failure. Errors and final outcomes (Login SUCCESS / Login FAILED) are always logged regardless of this setting.",
+        },
+        new PluginConfigField
+        {
             Key = "CALLBACK_URL",
             Label = "OAuth Callback URL",
             Type = PluginConfigFieldType.Url,
@@ -744,9 +753,11 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     private static async Task<(IPlaywright Playwright, IBrowser Browser, IBrowserContext Context)> GetLoginBrowserContextAsync(
         IEnumerable<(string Name, string Value)> cfCookies,
         string userAgent,
-        ILogger logger)
+        ILogger logger,
+        bool verbose = false)
     {
-        logger.LogInformation("[MMF] Launching headless Chromium for Playwright login...");
+        if (verbose)
+            logger.LogInformation("[MMF] Launching headless Chromium for Playwright login...");
         var playwright = await Playwright.CreateAsync();
         var chromiumPath = Environment.GetEnvironmentVariable("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH");
         // Container-friendly Chromium args. Without these, system Chromium running as root
@@ -790,8 +801,9 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         if (cookiesToSeed.Count > 0)
         {
             await context.AddCookiesAsync(cookiesToSeed);
-            logger.LogInformation("[MMF] Seeded {Count} CF cookies into Playwright login context",
-                cookiesToSeed.Count);
+            if (verbose)
+                logger.LogInformation("[MMF] Seeded {Count} CF cookies into Playwright login context",
+                    cookiesToSeed.Count);
         }
 
         return (playwright, browser, context);
@@ -1170,8 +1182,11 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         }
 
         var flareSolverrUrl = context.Config.TryGetValue("FLARESOLVERR_URL", out var fs) ? fs : "http://flaresolverr.flaresolverr.svc.cluster.local:8191";
+        var verbose = IsVerbose(context);
 
         context.Logger.LogInformation("[MMF] Starting library fetch via FlareSolverr + Playwright login...");
+        if (verbose)
+            context.Logger.LogInformation("[MMF] VERBOSE_LOGGING=true — emitting detailed login/sync trace. Disable via plugin config when not debugging.");
 
         try
         {
@@ -1181,14 +1196,16 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
             if (!string.IsNullOrEmpty(flareSolverrUrl))
             {
-                context.Logger.LogInformation("[MMF] Step 1: Login via FlareSolverr (CF bypass + session)...");
+                if (verbose)
+                    context.Logger.LogInformation("[MMF] Step 1: Login via FlareSolverr (CF bypass + session)...");
                 using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(300) };
                 
                 // 1a: Create FlareSolverr session
                 var createResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
                     new StringContent(JsonSerializer.Serialize(new { cmd = "sessions.create" }), System.Text.Encoding.UTF8, "application/json"), ct);
                 var createBody = await createResp.Content.ReadAsStringAsync(ct);
-                context.Logger.LogInformation("[MMF] FlareSolverr create response: {Body}", createBody.Length > 200 ? createBody[..200] : createBody);
+                if (verbose)
+                    context.Logger.LogInformation("[MMF] FlareSolverr create response: {Body}", createBody.Length > 200 ? createBody[..200] : createBody);
                 var createJson = JsonDocument.Parse(createBody);
                 if (!createJson.RootElement.TryGetProperty("session", out var sessionProp))
                 {
@@ -1196,7 +1213,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     return [];
                 }
                 var fsSession = sessionProp.GetString();
-                context.Logger.LogInformation("[MMF] FlareSolverr session: {Session}", fsSession);
+                if (verbose)
+                    context.Logger.LogInformation("[MMF] FlareSolverr session: {Session}", fsSession);
 
                 // 1b: Get login page via FlareSolverr — CF bypass only.
                 // We harvest the CF-cleared cookies (cf_clearance, __cflb, __cf_bm) to seed into
@@ -1205,7 +1223,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 var loginPageResp = await httpClient.PostAsync($"{flareSolverrUrl}/v1",
                     new StringContent(JsonSerializer.Serialize(new { cmd = "request.get", url = "https://www.myminifactory.com/login", session = fsSession, maxTimeout = 60000 }), System.Text.Encoding.UTF8, "application/json"), ct);
                 var loginPageBody = await loginPageResp.Content.ReadAsStringAsync(ct);
-                context.Logger.LogInformation("[MMF] Login page response length: {Len}", loginPageBody.Length);
+                if (verbose)
+                    context.Logger.LogInformation("[MMF] Login page response length: {Len}", loginPageBody.Length);
                 var loginPageJson = JsonDocument.Parse(loginPageBody);
                 if (!loginPageJson.RootElement.TryGetProperty("solution", out var loginSol))
                 {
@@ -1227,9 +1246,10 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 if (loginSol.TryGetProperty("userAgent", out var fsUaProp))
                     solvedUserAgent = fsUaProp.GetString();
 
-                context.Logger.LogInformation(
-                    "[MMF] FlareSolverr CF GET complete: {Count} cookies harvested, UA captured={HasUA}",
-                    cfCookies.Count, !string.IsNullOrEmpty(solvedUserAgent));
+                if (verbose)
+                    context.Logger.LogInformation(
+                        "[MMF] FlareSolverr CF GET complete: {Count} cookies harvested, UA captured={HasUA}",
+                        cfCookies.Count, !string.IsNullOrEmpty(solvedUserAgent));
 
                 // Destroy FlareSolverr session — done with it after CF cookie harvest.
                 try { await httpClient.PostAsync($"{flareSolverrUrl}/v1",
@@ -1258,7 +1278,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 try
                 {
                     (pwInstance, pwBrowser, pwContext) =
-                        await GetLoginBrowserContextAsync(cfCookies, playwrightUA, context.Logger);
+                        await GetLoginBrowserContextAsync(cfCookies, playwrightUA, context.Logger, verbose);
 
                     var loginPage = await pwContext.NewPageAsync();
 
@@ -1267,7 +1287,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     // server markup returns a bootstrap shell, and the <form> is mounted by React after
                     // JS loads. We wait for NetworkIdle (bounded) so the form is hydrated before we try
                     // to interact with it.
-                    context.Logger.LogInformation("[MMF] Playwright: navigating to /login...");
+                    if (verbose)
+                        context.Logger.LogInformation("[MMF] Playwright: navigating to /login...");
                     await loginPage.GotoAsync(
                         "https://www.myminifactory.com/login",
                         new PageGotoOptions { Timeout = 30000, WaitUntil = WaitUntilState.DOMContentLoaded });
@@ -1305,12 +1326,15 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                         pwFingerprint = Convert.ToHexString(digest)[..8].ToLowerInvariant();
                     }
                     catch { /* never fail diagnostics */ }
-                    context.Logger.LogInformation(
-                        "[MMF] credential shape: username.length={UserLen} password.length={PwLen} " +
-                        "pw.leadWs={LeadWs} pw.trailWs={TrailWs} pw.nonAscii={NonAscii} " +
-                        "pw.asciiPunct={Punct} pw.sha256-8={Fp} (values NEVER logged)",
-                        username.Length, pwLen, pwHasLeadWs, pwHasTrailWs, pwNonAsciiCount,
-                        pwAsciiPunctCnt, pwFingerprint);
+                    if (verbose)
+                    {
+                        context.Logger.LogInformation(
+                            "[MMF] credential shape: username.length={UserLen} password.length={PwLen} " +
+                            "pw.leadWs={LeadWs} pw.trailWs={TrailWs} pw.nonAscii={NonAscii} " +
+                            "pw.asciiPunct={Punct} pw.sha256-8={Fp} (values NEVER logged)",
+                            username.Length, pwLen, pwHasLeadWs, pwHasTrailWs, pwNonAsciiCount,
+                            pwAsciiPunctCnt, pwFingerprint);
+                    }
 
                     // Type credentials. PressSequentiallyAsync fires keydown/keypress/input events
                     // (as opposed to FillAsync which writes to .value directly). Delay=0 keeps it fast.
@@ -1326,12 +1350,13 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                         var domPwLen   = await loginPage.Locator("input[name='_password']").EvaluateAsync<int>("el => el.value.length");
                         if (domUserLen != username.Length || domPwLen != pwLen)
                         {
+                            // MISMATCH is always logged — this is a real problem the operator needs to see.
                             context.Logger.LogWarning(
                                 "[MMF] typed-value length MISMATCH — some characters were NOT delivered to the DOM! " +
                                 "expected user={ExpectedUser} got user={GotUser}; expected pw={ExpectedPw} got pw={GotPw}",
                                 username.Length, domUserLen, pwLen, domPwLen);
                         }
-                        else
+                        else if (verbose)
                         {
                             context.Logger.LogInformation(
                                 "[MMF] DOM value lengths match input: user={UserLen} pw={PwLen}",
@@ -1355,7 +1380,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     // <input> or omits type=submit, ClickAsync waits 30s for it to appear and then
                     // throws a TimeoutException that the outer catch mis-labels as a "post-login
                     // navigation" timeout.
-                    context.Logger.LogInformation("[MMF] Playwright: submitting login form...");
+                    if (verbose)
+                        context.Logger.LogInformation("[MMF] Playwright: submitting login form...");
                     const string SubmitSelector = "[name='_submit']";
                     try
                     {
@@ -1479,7 +1505,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
             // Step 2: Fetch data-library using HttpClient with FlareSolverr cookies
             // No Playwright needed — FlareSolverr already solved CF and logged in
-            context.Logger.LogInformation("[MMF] Step 2: Fetching data-library with session cookies via HttpClient...");
+            if (verbose)
+                context.Logger.LogInformation("[MMF] Step 2: Fetching data-library with session cookies via HttpClient...");
 
             context.Progress.Report(new ScrapeProgress
             {
@@ -1493,7 +1520,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             // Save cookies + user agent for use in ScrapeModelAsync (file downloads)
             await context.TokenStore.SaveTokenAsync("session_cookies", cookieHeader, ct);
             await context.TokenStore.SaveTokenAsync("session_useragent", solvedUserAgent ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", ct);
-            context.Logger.LogInformation("[MMF] Saved session cookies for file downloads");
+            if (verbose)
+                context.Logger.LogInformation("[MMF] Saved session cookies for file downloads");
 
             using var libraryClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
             libraryClient.DefaultRequestHeaders.Add("Cookie", cookieHeader);
@@ -1501,7 +1529,8 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
             var libraryResponse = await libraryClient.GetAsync("https://www.myminifactory.com/api/data-library/objectPreviews", ct);
             var jsonResult = await libraryResponse.Content.ReadAsStringAsync(ct);
-            context.Logger.LogInformation("[MMF] Data-library response: status={Status}, length={Len}", libraryResponse.StatusCode, jsonResult.Length);
+            if (verbose)
+                context.Logger.LogInformation("[MMF] Data-library response: status={Status}, length={Len}", libraryResponse.StatusCode, jsonResult.Length);
 
             if (string.IsNullOrEmpty(jsonResult) || jsonResult.Contains("\"error\""))
             {
@@ -1676,6 +1705,20 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     private static bool IsRestoreMode(PluginContext context)
     {
         if (context.Config.TryGetValue("RESTORE_MODE", out var val))
+            return val.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+        return false;
+    }
+
+    /// <summary>
+    /// Whether verbose login/sync diagnostics are enabled for this plugin context.
+    /// Gate all step-by-step trace logs (Playwright phases, cookie names, credential
+    /// shape fingerprints, DOM length matches, etc.) behind this. Business-critical
+    /// events — Login SUCCESS, Login FAILED, unexpected errors — are ALWAYS logged
+    /// regardless of this setting.
+    /// </summary>
+    private static bool IsVerbose(PluginContext context)
+    {
+        if (context.Config.TryGetValue("VERBOSE_LOGGING", out var val))
             return val.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
         return false;
     }
