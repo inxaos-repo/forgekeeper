@@ -40,7 +40,16 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     public string SourceName => "MyMiniFactory";
     public string Description => "Scrapes your MyMiniFactory purchased/backed library, downloads model files, and generates metadata.json sidecar files.";
     public string Version => "1.0.0";
-    public bool RequiresBrowserAuth => false;
+    // RequiresBrowserAuth drives the admin UI's render of the "Authenticate" button.
+    // With OAuth 2.0 authorization-code flow (PR #18), the plugin DOES need a browser
+    // dance to acquire access_token + refresh_token — user navigates to MMF's /oauth/authorize,
+    // logs in, approves, and MMF redirects back to our /auth/mmf/callback endpoint.
+    //
+    // Before PR #18 this was `false` because the plugin relied entirely on
+    // MMF_USERNAME+MMF_PASSWORD for the Playwright-based login scrape. Manifest sync still
+    // works with just those two; downloads require the OAuth flow which is triggered via
+    // the Authenticate button.
+    public bool RequiresBrowserAuth => true;
 
     public IReadOnlyList<PluginConfigField> ConfigSchema =>
     [

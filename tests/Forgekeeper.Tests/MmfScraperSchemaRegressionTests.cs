@@ -153,12 +153,22 @@ public class MmfScraperSchemaRegressionTests
     }
 
     [Fact]
-    public void RequiresBrowserAuth_IsFalse()
+    public void RequiresBrowserAuth_IsTrue()
     {
-        // The MMF plugin handles its own browser-based login via Playwright
-        // internally; it does NOT delegate to the host's browser-auth flow.
-        // Flipping this to true would cause the host to pop a browser window
-        // the plugin doesn't know about, breaking sync.
-        Assert.False(Plugin.RequiresBrowserAuth);
+        // As of PR #18 (OAuth 2.0 auth-code flow), the plugin DOES need the host to
+        // render an "Authenticate" button. The user-driven browser dance is how we
+        // acquire the access_token / refresh_token pair needed for downloads.
+        //
+        // Before PR #18 this was false — the plugin only did the Playwright-based
+        // username/password login for manifest scraping and never needed the host to
+        // pop a browser. The flag got flipped when we added OAuth so the admin UI
+        // renders the Authenticate button. Without this, the button is hidden and the
+        // plugin cannot acquire OAuth tokens.
+        //
+        // NOTE: the Playwright-based manifest login still runs INSIDE the plugin (it's
+        // a separate code path, username/password). RequiresBrowserAuth=true only
+        // affects UI-button rendering for the OAuth flow; it does not change
+        // AuthenticateAsync's behavior.
+        Assert.True(Plugin.RequiresBrowserAuth);
     }
 }
