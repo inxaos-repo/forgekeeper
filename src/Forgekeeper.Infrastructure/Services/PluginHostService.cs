@@ -854,9 +854,44 @@ public class PluginHostService : BackgroundService
         var dbFactory = _services.GetRequiredService<IDbContextFactory<ForgeDbContext>>();
         await using var db = await dbFactory.CreateDbContextAsync(ct);
 
-        var configs = await db.PluginConfigs
+        // Read raw rows first. Values with IsEncrypted=true are encrypted at rest (see
+        // DbTokenStore + SecretEncryption.Encrypt, applied when the admin UI saves a field
+        // of type="secret"). We MUST decrypt those before handing them to plugins, otherwise
+        // plugins receive the AES+base64 ciphertext and use it as if it were the plaintext
+        // secret, which is a silent auth-failure bug.
+        var rawConfigs = await db.PluginConfigs
             .Where(c => c.PluginSlug == slug && !c.Key.StartsWith("__token__"))
-            .ToDictionaryAsync(c => c.Key, c => c.Value, ct);
+            .Select(c => new { c.Key, c.Value, c.IsEncrypted })
+            .ToListAsync(ct);
+
+        var configs = new Dictionary<string, string>(rawConfigs.Count);
+        foreach (var row in rawConfigs)
+        {
+            if (row.IsEncrypted)
+            {
+                try
+                {
+                    configs[row.Key] = SecretEncryption.Decrypt(row.Value);
+                }
+                catch (Exception ex)
+                {
+                    // Log once per bad key; fall back to the raw stored value so the plugin
+                    // can at least fail fast with a specific error rather than the whole load
+                    // blowing up. The plugin will see the ciphertext and most likely fail auth,
+                    // which operators can resolve by re-saving the secret via the admin UI.
+                    var loggerFactoryForDecrypt = _services.GetRequiredService<ILoggerFactory>();
+                    loggerFactoryForDecrypt.CreateLogger($"Plugin.{slug}.Config").LogError(
+                        ex, "Failed to decrypt plugin config '{Key}' for plugin '{Slug}' — " +
+                        "passing raw stored value through. Resave the field in admin UI to fix.",
+                        row.Key, slug);
+                    configs[row.Key] = row.Value;
+                }
+            }
+            else
+            {
+                configs[row.Key] = row.Value;
+            }
+        }
 
         var sourceDir = Path.Combine(_sourcesDirectory, slug);
         Directory.CreateDirectory(sourceDir);
