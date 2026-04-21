@@ -12,14 +12,20 @@ namespace Forgekeeper.Scraper.Mmf;
 
 /// <summary>
 /// MyMiniFactory library scraper plugin.
-/// 
-/// Authentication: FlareSolverr GET for Cloudflare bypass (cf_clearance cookie harvest),
-///                 then Playwright headless login (GET /login → fill → submit → REMEMBERME).
-///                 Falls back to Bearer token from MiniDownloader download_token.
-/// Manifest: Fetched via FlareSolverr session cookies (data-library API).
-///           Also supports manual JSON upload via the Plugins page.
-/// Scraping: Uses MMF v2 API for model details and file downloads.
-///           403 fallback chain: Bearer → session cookies → Playwright headless browser.
+///
+/// Authentication: OAuth 2.0 implicit flow via auth.myminifactory.com/web/authorize
+///                 (client_id=downloader_v2, response_type=token). The access_token
+///                 is returned as a URL fragment, extracted by our callback HTML, and
+///                 POSTed to /auth/mmf/callback. Token validity is verified via a live
+///                 GET /api/v2/user ping on each AuthenticateAsync call.
+/// Manifest: Primary — FlareSolverr CF bypass + Playwright headless login, then
+///           HttpClient fetch of /api/data-library/objectPreviews with session cookies.
+///           Secondary — manual JSON upload via the Plugins page.
+/// Scraping: MMF v2 API for model details and file download URLs.
+///           Download: Bearer → 302 CDN redirect (no auth forwarded, AWS presigned URLs
+///           reject extra Authorization headers). Fallback chain on 403:
+///           [fallback=cookies] FlareSolverr session cookies, then
+///           [fallback=playwright] headless Playwright browser.
 /// </summary>
 public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 {
@@ -40,15 +46,11 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     public string SourceName => "MyMiniFactory";
     public string Description => "Scrapes your MyMiniFactory purchased/backed library, downloads model files, and generates metadata.json sidecar files.";
     public string Version => "1.0.0";
-    // RequiresBrowserAuth drives the admin UI's render of the "Authenticate" button.
-    // With OAuth 2.0 authorization-code flow (PR #18), the plugin DOES need a browser
-    // dance to acquire access_token — user navigates to MMF's auth.myminifactory.com/web/authorize,
-    // logs in, approves, and MMF redirects back to our /auth/mmf/callback endpoint.
-    //
-    // Before PR #18 this was `false` because the plugin relied entirely on
-    // MMF_USERNAME+MMF_PASSWORD for the Playwright-based login scrape. Manifest sync still
-    // works with just those two; downloads require the OAuth flow which is triggered via
-    // the Authenticate button.
+    // RequiresBrowserAuth=true drives the admin UI's "Authenticate" button.
+    // The OAuth implicit flow requires a browser: user visits MMF's consent screen,
+    // approves, and MMF redirects back to our /auth/mmf/callback with the access_token
+    // in the URL fragment. Without OAuth, manifest sync still works (username+password
+    // Playwright login), but file downloads will 403.
     public bool RequiresBrowserAuth => true;
 
     public IReadOnlyList<PluginConfigField> ConfigSchema =>
@@ -84,19 +86,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Label = "OAuth Client Secret",
             Type = PluginConfigFieldType.Secret,
             Required = false,
-            HelpText = "OAuth client secret. For MMF's built-in 'downloader_v2' client, this is the public secret '6b511607-740d-49ad-8e31-3bb8b75dd354' (same for all users — hardcoded in MiniDownloader's source). Leave blank to skip OAuth and use MMF_API_KEY-only mode.",
-        },
-        // MMF_API_KEY is the primary authenticated-download path after MMF retired their OAuth
-        // authorize endpoint. Generate the API key in MMF app registration settings — see HelpText.
-        // CLIENT_ID + CLIENT_SECRET are retained in schema for future OAuth support but currently
-        // unused; the /oauth/authorize endpoint returns 404 as of 2026-04.
-        new PluginConfigField
-        {
-            Key = "MMF_API_KEY",
-            Label = "MMF API Key (Bearer download token)",
-            Type = PluginConfigFieldType.Secret,
-            Required = false,
-            HelpText = "Long-lived MMF API key for authenticated downloads. Generate at https://www.myminifactory.com → Account → Apps → your app → “Generate New API Key”. This is the UUID-format Bearer token used for /api/v2/objects/{id} and signed download URLs. Leaving this blank puts the plugin in manifest-only mode (discovery works, ZIP downloads return 403).",
+            HelpText = "OAuth client secret. For MMF's built-in 'downloader_v2' client, use the public secret '6b511607-740d-49ad-8e31-3bb8b75dd354' (same for all users — hardcoded in MiniDownloader's source). Leave blank for manifest-only mode (no authenticated file downloads).",
         },
         new PluginConfigField
         {
@@ -170,46 +160,44 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
             return AuthResult.Failed("MMF_USERNAME and MMF_PASSWORD must be configured in the plugin settings");
 
-        // Priority 1: OAuth implicit flow (the real MMF download path, per MiniDownloader).
-        // CLIENT_ID defaults to 'downloader_v2' (MMF's public client).
-        // CLIENT_SECRET for that client is '6b511607-740d-49ad-8e31-3bb8b75dd354' (public).
-        // When these + CALLBACK_URL are set and we don't have a valid token, return
-        // NeedsBrowser(authUrl) so the UI pops MMF's consent screen. The access_token comes
-        // back via URL fragment; our /auth/mmf/callback HTML extracts + posts it.
+        // OAuth implicit flow: CLIENT_ID + CLIENT_SECRET + CALLBACK_URL trigger a browser
+        // consent screen at auth.myminifactory.com/web/authorize. The access_token comes
+        // back as a URL fragment; our callback HTML extracts + POSTs it to /auth/mmf/callback.
+        // Token validity is verified via a live GET /api/v2/user ping (implicit flow doesn't
+        // issue expiry timestamps we can trust locally).
         var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
         var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
         var callbackUrl = context.Config.TryGetValue("CALLBACK_URL", out var cb) ? cb : null;
 
         if (!string.IsNullOrEmpty(clientId) && !string.IsNullOrEmpty(clientSecret) && !string.IsNullOrEmpty(callbackUrl))
         {
-            // Check for a valid, non-expired access token
+            // Check if we have a stored token that's still valid via a live API ping.
+            // Implicit flow doesn't issue expiry timestamps, so we verify by trying the token.
             var existingToken = await context.TokenStore.GetTokenAsync("access_token", ct);
-            var expiresAtStr = await context.TokenStore.GetTokenAsync("token_expires_at", ct);
-            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            if (!string.IsNullOrEmpty(existingToken))
+            {
+                const string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+                using var verifyReq = new HttpRequestMessage(HttpMethod.Get, "https://www.myminifactory.com/api/v2/user");
+                verifyReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", existingToken);
+                verifyReq.Headers.UserAgent.ParseAdd(userAgent);
+                verifyReq.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+                try
+                {
+                    using var resp = await context.HttpClient.SendAsync(verifyReq, ct);
+                    if (resp.IsSuccessStatusCode)
+                        return AuthResult.Success("OAuth token verified against /api/v2/user — ready to sync");
+                    context.Logger.LogDebug("[MMF][auth] Stored token failed live check ({Status}) — requesting re-auth", resp.StatusCode);
+                }
+                catch (Exception ex)
+                {
+                    context.Logger.LogDebug("[MMF][auth] Live token check failed (network: {Error}) — requesting re-auth", ex.Message);
+                }
+            }
 
-            bool tokenValid = !string.IsNullOrEmpty(existingToken)
-                && long.TryParse(expiresAtStr, out var expiresAt)
-                && now < expiresAt - 60; // 60s buffer
-
-            if (tokenValid)
-                return AuthResult.Success("OAuth credentials configured and access token is valid — ready to sync");
-
-            // No valid token — build authorization URL to trigger browser flow
-            // Scope list is a best-guess for MMF's OAuth server; may need tuning.
-            // Known scopes: 'read' (public data), 'user' (profile), 'download' (file downloads).
-            // 'offline_access' requests a refresh_token (not all providers honor it).
-            var state = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8));
+            // No valid token — build authorization URL for implicit flow
+            var state = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
             await context.TokenStore.SaveTokenAsync("oauth_state", state, ct);
 
-            // CORRECT endpoint: MMF's OAuth lives at auth.myminifactory.com/web/authorize,
-            // NOT www.myminifactory.com/oauth/authorize (the latter 404s for everyone).
-            // Discovered by reading MiniDownloader's own source (inxaos-repo/mmf-downloader
-            // Downloader/Services/AuthService.cs, line 88).
-            //
-            // Uses IMPLICIT flow (response_type=token): the access_token comes back as a URL
-            // fragment on the redirect, extracted by our callback HTML + POSTed back to our
-            // /auth/mmf/callback endpoint as a query param. The legacy code-exchange path in
-            // HandleAuthCallbackAsync is unused in this mode.
             var authUrl = $"https://auth.myminifactory.com/web/authorize"
                 + $"?client_id={Uri.EscapeDataString(clientId)}"
                 + $"&response_type=token"
@@ -219,115 +207,29 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             return AuthResult.NeedsBrowser(authUrl, "MMF OAuth authorization required — click to connect");
         }
 
-        // Priority 2: MMF_API_KEY fallback (user-generated API key from the MMF developer app
-        // registration page). Lower priority than OAuth because, empirically, MMF's
-        // developer-app API keys don't seem to be accepted on /api/v2 endpoints (all return
-        // 401) while OAuth-flow access_tokens DO work (MiniDownloader proves this). Kept as a
-        // fallback path in case this changes or for users who can't complete the browser flow.
-        var apiKey = context.Config.TryGetValue("MMF_API_KEY", out var ak) ? ak : null;
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            await context.TokenStore.SaveTokenAsync("download_token", apiKey.Trim(), ct);
-            return AuthResult.Success("MMF API key configured — ready to sync with authenticated downloads");
-        }
-
-        // Priority 3: manifest-only mode. No OAuth, no API key. Username+password is enough
-        // to do Playwright-based login for the library manifest; downloads will return 403.
-        return AuthResult.Success("Credentials configured — manifest-only mode (add OAuth CLIENT_ID/CLIENT_SECRET or MMF_API_KEY for file downloads)");
+        // No OAuth config — manifest-only mode (Playwright login works, downloads will 403)
+        return AuthResult.Success("Credentials configured — manifest-only mode (add OAuth CLIENT_ID/CLIENT_SECRET for file downloads)");
     }
 
     public async Task<AuthResult> HandleAuthCallbackAsync(PluginContext context, IDictionary<string, string> callbackParams, CancellationToken ct = default)
     {
-        // Legacy OAuth implicit flow: access_token returned as a URL fragment parameter.
-        // Retained for back-compat; the new auth-code flow is preferred.
+        // Implicit flow: access_token arrives as a URL fragment, extracted by our callback
+        // page HTML and POSTed to /auth/mmf/callback as a query param.
         if (callbackParams.TryGetValue("access_token", out var accessToken) && !string.IsNullOrEmpty(accessToken))
         {
             await context.TokenStore.SaveTokenAsync("access_token", accessToken, ct);
-            context.Logger.LogInformation("[MMF] Saved access token from legacy implicit-flow callback");
-            return AuthResult.Success("Connected to MyMiniFactory via implicit flow");
-        }
-
-        // Standard OAuth 2.0 authorization-code flow
-        if (callbackParams.TryGetValue("code", out var code) && !string.IsNullOrEmpty(code))
-        {
-            // TODO(v1): validate 'state' param against token store to prevent CSRF.
-            // Skipped in v0 — state is stored in AuthenticateAsync but not verified here yet.
-
-            var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
-            var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
-            var callbackUrl = context.Config.TryGetValue("CALLBACK_URL", out var cb) ? cb : null;
-
-            if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret) || string.IsNullOrEmpty(callbackUrl))
-                return AuthResult.Failed("OAuth callback: CLIENT_ID, CLIENT_SECRET, or CALLBACK_URL missing in plugin config");
-
-            return await ExchangeCodeForTokenAsync(context, code, clientId, clientSecret, callbackUrl, ct);
+            context.Logger.LogInformation("[MMF][auth] Access token saved from OAuth implicit-flow callback");
+            return AuthResult.Success("Connected to MyMiniFactory via OAuth");
         }
 
         if (callbackParams.TryGetValue("error", out var error))
         {
             var errorDesc = callbackParams.TryGetValue("error_description", out var desc) ? desc : "";
+            context.Logger.LogWarning("[MMF][auth] OAuth callback returned error: {Error} — {Desc}", error, errorDesc);
             return AuthResult.Failed($"Auth error: {error} — {errorDesc}");
         }
 
-        return AuthResult.Failed("No authorization code or access_token received in callback");
-    }
-
-    /// <summary>
-    /// Exchanges an authorization code for tokens via MMF's OAuth token endpoint.
-    /// Extracted as a protected virtual method so unit tests can override it.
-    /// </summary>
-    protected virtual async Task<AuthResult> ExchangeCodeForTokenAsync(
-        PluginContext context, string code, string clientId, string clientSecret, string callbackUrl,
-        CancellationToken ct)
-    {
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-            var form = new FormUrlEncodedContent(new Dictionary<string, string>
-            {
-                ["grant_type"]    = "authorization_code",
-                ["code"]          = code,
-                ["client_id"]     = clientId,
-                ["client_secret"] = clientSecret,
-                ["redirect_uri"]  = callbackUrl,
-            });
-
-            var resp = await http.PostAsync("https://www.myminifactory.com/oauth/token", form, ct);
-            var body = await resp.Content.ReadAsStringAsync(ct);
-
-            if (!resp.IsSuccessStatusCode)
-            {
-                // Always log exchange failures — business-critical, not gated on IsVerbose
-                context.Logger.LogError("[MMF] OAuth token exchange failed: {Status} {Body}",
-                    resp.StatusCode, body.Length > 400 ? body[..400] : body);
-                return AuthResult.Failed($"MMF token exchange failed: {resp.StatusCode}");
-            }
-
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            var newAccessToken = root.GetProperty("access_token").GetString() ?? "";
-            string? newRefreshToken = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
-            long expiresIn = root.TryGetProperty("expires_in", out var eip) && eip.ValueKind == JsonValueKind.Number
-                ? eip.GetInt64() : 3600;
-
-            await context.TokenStore.SaveTokenAsync("access_token", newAccessToken, ct);
-            if (!string.IsNullOrEmpty(newRefreshToken))
-                await context.TokenStore.SaveTokenAsync("refresh_token", newRefreshToken, ct);
-            await context.TokenStore.SaveTokenAsync("token_expires_at",
-                (DateTimeOffset.UtcNow + TimeSpan.FromSeconds(expiresIn)).ToUnixTimeSeconds().ToString(), ct);
-
-            // Business-critical outcome — always log (not gated on IsVerbose)
-            context.Logger.LogInformation(
-                "[MMF] OAuth: access_token acquired (expires_in={ExpiresIn}s, has_refresh_token={HasRefresh})",
-                expiresIn, !string.IsNullOrEmpty(newRefreshToken));
-
-            return AuthResult.Success("Connected to MyMiniFactory via OAuth");
-        }
-        catch (Exception ex)
-        {
-            context.Logger.LogError(ex, "[MMF] OAuth token exchange threw");
-            return AuthResult.Failed($"OAuth exchange error: {ex.Message}");
-        }
+        return AuthResult.Failed("No access_token received in callback — ensure the OAuth redirect URI is configured correctly");
     }
 
     public async Task<IReadOnlyList<ScrapedModel>> FetchManifestAsync(PluginContext context, Stream? uploadedManifest = null, CancellationToken ct = default)
@@ -343,15 +245,25 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         });
 
         // If user uploaded a manifest JSON, use it directly (secondary path)
-        if (uploadedManifest is not null)
-        {
-            return await ParseUploadedManifestAsync(uploadedManifest, ct);
-        }
+        IReadOnlyList<ScrapedModel> models = uploadedManifest is not null
+            ? await ParseUploadedManifestAsync(uploadedManifest, ct)
+            : await FetchLibraryViaBrowserAsync(context, ct);
 
-        // Primary path: FlareSolverr login + HttpClient library fetch
-        // Uses FlareSolverr to solve Cloudflare challenge, logs in, then fetches
-        // the data-library API with session cookies via a plain HttpClient.
-        return await FetchLibraryViaBrowserAsync(context, ct);
+        // Log a rollup of non-object entries that will be skipped during scrape.
+        // Bundles and collections have a different API surface; only individual objects
+        // are supported. The skip fires in ScrapeModelAsync per-item; this gives a
+        // production-visible summary at manifest load time.
+        var skipCount = models.Count(m =>
+        {
+            var (_, t) = SplitManifestId(m.ExternalId);
+            return t != "object" || (m.Type != null && m.Type != "object");
+        });
+        if (skipCount > 0)
+            context.Logger.LogInformation(
+                "[MMF] Skipping {Count} non-object entries from manifest (bundles, collections)",
+                skipCount);
+
+        return models;
     }
 
     public async Task<ScrapeResult> ScrapeModelAsync(PluginContext context, ScrapedModel model, CancellationToken ct = default)
@@ -363,25 +275,24 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         var downloadDelayMs = GetDownloadDelayMs(context);
         var restoreMode = IsRestoreMode(context);
 
-        // Ensure OAuth access token is fresh before use (refreshes if within 5 min of expiry)
-        await EnsureFreshAccessTokenAsync(context, ct);
-
-        // Get auth tokens — try download_token (MiniDownloader) or access_token (OAuth)
-        var bearerToken = await context.TokenStore.GetTokenAsync("download_token", ct)
-            ?? await context.TokenStore.GetTokenAsync("access_token", ct);
+        // Get OAuth access_token for authenticated API calls and file downloads
+        var bearerToken = await context.TokenStore.GetTokenAsync("access_token", ct);
 
         // FlareSolverr session cookies — used as fallback when Bearer returns 403
         var sessionCookies = await context.TokenStore.GetTokenAsync("session_cookies", ct);
         var sessionUA = await context.TokenStore.GetTokenAsync("session_useragent", ct);
 
-        // Parse manifest ID — items come as 'object-786967', 'bundle-2447', 'collection-999', etc.
-        // Only 'object' types are supported; bundles/collections have unknown API surface.
+        // Parse manifest ID — items come as 'object-786967', 'bundle-2447', or bare numeric IDs.
+        // For bare numeric IDs, SplitManifestId returns "object" by default; also check
+        // model.Type (populated from the manifest's 'type' field) to catch bundles/collections
+        // that arrive without a prefixed ExternalId.
         var (numericId, idType) = SplitManifestId(model.ExternalId);
-        if (idType != "object")
+        var resolvedType = idType != "object" ? idType : (model.Type ?? "object");
+        if (resolvedType != "object")
         {
             context.Logger.LogInformation(
-                "[MMF] Skipping {Type} entry {Id} ({Name}) — {Type} types are not yet supported (only individual objects)",
-                idType, model.ExternalId, model.Name ?? "<no name>");
+                "[MMF] Skipping {Type} entry {Id} ({Name}) — only individual objects are supported",
+                resolvedType, model.ExternalId, model.Name ?? "<no name>");
             return ScrapeResult.Ok("metadata.json", []);
         }
 
@@ -546,49 +457,22 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
                         try
                         {
-                            context.Logger.LogInformation("[MMF] Downloading: {File} for {Model} (attempt {Attempt}/3)",
+                            context.Logger.LogInformation("[MMF][download] Downloading: {File} for {Model} (attempt {Attempt}/3)",
                                 safeName, model.Name, attempt + 1);
-                            // Disable auto-redirect so we can manually handle the 302 that MMF /download returns.
-                            // MMF redirects to a signed S3 CDN URL; forwarding our Authorization header
-                            // to the CDN causes AWS to reject the presigned URL with 403.
+
+                            // Primary path: Bearer auth + manual CDN redirect (no auth forwarded).
+                            // AllowAutoRedirect=false so we can strip Authorization before following
+                            // the 302 to a signed S3 URL (AWS rejects presigned URLs with extra auth).
                             using var dlHandler = new HttpClientHandler { AllowAutoRedirect = false };
                             using var dlClient = new HttpClient(dlHandler) { Timeout = TimeSpan.FromMinutes(30) };
-                            const string userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-                            dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
 
-                            // Step 1: authenticated GET to MMF — we expect a 302 to a signed CDN URL
-                            using var mmfReq = new HttpRequestMessage(HttpMethod.Get, file.DownloadUrl);
-                            if (!string.IsNullOrEmpty(bearerToken) && !IsCdnUrl(file.DownloadUrl))
-                                mmfReq.Headers.Authorization =
-                                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
-                            using var mmfResp = await dlClient.SendAsync(mmfReq, HttpCompletionOption.ResponseHeadersRead, ct);
-
-                            HttpResponseMessage fileResponse;
-                            if ((int)mmfResp.StatusCode == 302 && mmfResp.Headers.Location is not null)
-                            {
-                                // Step 2: follow the redirect WITHOUT Authorization — AWS S3 rejects
-                                // presigned URLs that carry any additional Authorization header.
-                                var cdnLocation = mmfResp.Headers.Location.IsAbsoluteUri
-                                    ? mmfResp.Headers.Location
-                                    : new Uri(new Uri(file.DownloadUrl), mmfResp.Headers.Location);
-                                context.Logger.LogDebug("[MMF] Following signed-CDN redirect for {File}: {Url}",
-                                    safeName, cdnLocation);
-                                using var cdnReq = new HttpRequestMessage(HttpMethod.Get, cdnLocation);
-                                // No Authorization, no cookies — the presigned URL is self-authenticating
-                                fileResponse = await dlClient.SendAsync(cdnReq, HttpCompletionOption.ResponseHeadersRead, ct);
-                                mmfResp.Dispose(); // done with the 302 response
-                            }
-                            else
-                            {
-                                // Rare: direct 200 body or non-302 error — use as-is and let the
-                                // 403/cookie/Playwright fallback chain below handle failure cases.
-                                fileResponse = mmfResp;
-                            }
+                            using var fileResponse = await DownloadFileWithCleanRedirectAsync(
+                                dlClient, file.DownloadUrl, bearerToken, ct);
 
                             // Check for 404 — don't retry, file doesn't exist
                             if (fileResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
                             {
-                                context.Logger.LogWarning("[MMF] 404 for {File} — skipping (file not found)", safeName);
+                                context.Logger.LogWarning("[MMF][download] 404 for {File} — skipping (file not found)", safeName);
                                 filesFailed++;
                                 break;
                             }
@@ -601,7 +485,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                                     ? (int)Math.Ceiling(retryAfter.Value.TotalSeconds)
                                     : retryBackoffSeconds[Math.Min(attempt, retryBackoffSeconds.Length - 1)];
                                 context.Logger.LogWarning(
-                                    "[MMF] 429 Too Many Requests for {File} — waiting {Wait}s (attempt {Attempt}/3)",
+                                    "[MMF][download] 429 Too Many Requests for {File} — waiting {Wait}s (attempt {Attempt}/3)",
                                     safeName, rateLimitWait, attempt + 1);
                                 await Task.Delay(TimeSpan.FromSeconds(rateLimitWait), ct);
                                 lastDownloadEx = new HttpRequestException($"429 Too Many Requests for {safeName}",
@@ -616,55 +500,30 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                                     $"Server error {(int)fileResponse.StatusCode} for {safeName}",
                                     null, fileResponse.StatusCode);
                                 context.Logger.LogWarning(
-                                    "[MMF] Server error {Status} for {File} (attempt {Attempt}/3)",
+                                    "[MMF][download] Server error {Status} for {File} (attempt {Attempt}/3)",
                                     (int)fileResponse.StatusCode, safeName, attempt + 1);
                                 continue; // next attempt
                             }
 
-                            // 403 fallback chain: Bearer → session cookies → Playwright browser
-                            HttpClient? cookieDlClient = null;
+                            // 403 fallback chain — wrapped in TryFallbackDownloadAsync:
+                            //   [fallback=cookies]   FlareSolverr session cookies
+                            //   [fallback=playwright] headless Playwright browser (Cloudflare bypass)
                             bool downloadedByBrowser = false;
-                            try
+                            if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden)
                             {
-                                // Fallback 1: retry with FlareSolverr session cookies
-                                if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden
-                                    && !string.IsNullOrEmpty(sessionCookies))
-                                {
-                                    context.Logger.LogWarning(
-                                        "[MMF] 403 on Bearer download — retrying with session cookies for {File}", safeName);
-                                    fileResponse.Dispose();
-                                    cookieDlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-                                    cookieDlClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
-                                    cookieDlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-                                        sessionUA ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-                                    fileResponse = await cookieDlClient.GetAsync(file.DownloadUrl, ct);
-                                }
-
-                                // Fallback 2: Playwright headless browser (Cloudflare bypass)
-                                if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden
-                                    && !string.IsNullOrEmpty(bearerToken))
-                                {
-                                    context.Logger.LogWarning(
-                                        "[MMF] 403 on cookie download — retrying with Playwright browser for {File}", safeName);
-                                    fileResponse.Dispose();
-                                    cookieDlClient?.Dispose();
-                                    cookieDlClient = null;
-                                    downloadedByBrowser = await DownloadWithBrowserAsync(
-                                        file.DownloadUrl, filePath, bearerToken, context.Logger, ct);
-                                    if (!downloadedByBrowser)
-                                        throw new Exception($"All download methods (Bearer, cookies, Playwright) returned 403 for {safeName}");
-                                }
-
+                                downloadedByBrowser = await TryFallbackDownloadAsync(
+                                    file.DownloadUrl, filePath, bearerToken,
+                                    sessionCookies, sessionUA, safeName,
+                                    context.Logger, ct);
                                 if (!downloadedByBrowser)
-                                {
-                                    fileResponse.EnsureSuccessStatusCode();
-                                    await using var fs = File.Create(filePath);
-                                    await fileResponse.Content.CopyToAsync(fs, ct);
-                                }
+                                    throw new Exception($"All download methods (Bearer, cookies, Playwright) returned 403 for {safeName}");
                             }
-                            finally
+
+                            if (!downloadedByBrowser)
                             {
-                                cookieDlClient?.Dispose();
+                                fileResponse.EnsureSuccessStatusCode();
+                                await using var fs = File.Create(filePath);
+                                await fileResponse.Content.CopyToAsync(fs, ct);
                             }
 
                             var actualSize = new FileInfo(filePath).Length;
@@ -1027,8 +886,12 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             ExtraHTTPHeaders = new Dictionary<string, string> { ["Accept-Language"] = "en-US,en;q=0.9" }
         });
 
-        // Inject Authorization header on all MMF origin requests
-        await _browserContext.RouteAsync("**/*myminifactory.com/**", async route =>
+        // Inject Authorization header ONLY on www.myminifactory.com (the origin API host).
+        // CDN hosts like dl4.myminifactory.com serve presigned S3 URLs — those reject
+        // presigned requests that carry any additional Authorization header with 403.
+        // Forwarding Bearer to the CDN is what caused "Playwright did not capture CDN URL"
+        // on every download attempt.
+        await _browserContext.RouteAsync("**/www.myminifactory.com/**", async route =>
         {
             var headers = new Dictionary<string, string>(route.Request.Headers)
             {
@@ -2059,6 +1922,99 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         return (tail, prefix);
     }
 
+    /// <summary>
+    /// Downloads a file from <paramref name="url"/> with manual CDN redirect handling.
+    /// The <paramref name="httpClient"/> MUST have AllowAutoRedirect=false.
+    ///
+    /// MMF's /download endpoint returns a 302 to a signed S3/CDN URL. We follow it
+    /// WITHOUT forwarding the Authorization header — AWS presigned URLs are self-authenticating
+    /// and reject any additional Authorization header with 403.
+    ///
+    /// Returns the final HttpResponseMessage; caller owns and must dispose it.
+    /// </summary>
+    internal static async Task<HttpResponseMessage> DownloadFileWithCleanRedirectAsync(
+        HttpClient httpClient,
+        string url,
+        string? bearerToken,
+        CancellationToken ct = default)
+    {
+        const string UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+        var mmfReq = new HttpRequestMessage(HttpMethod.Get, url);
+        mmfReq.Headers.UserAgent.ParseAdd(UserAgent);
+        if (!string.IsNullOrEmpty(bearerToken) && !IsCdnUrl(url))
+            mmfReq.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
+
+        var firstResp = await httpClient.SendAsync(mmfReq, HttpCompletionOption.ResponseHeadersRead, ct);
+
+        if ((int)firstResp.StatusCode == 302 && firstResp.Headers.Location is not null)
+        {
+            var cdnLocation = firstResp.Headers.Location.IsAbsoluteUri
+                ? firstResp.Headers.Location
+                : new Uri(new Uri(url), firstResp.Headers.Location);
+            firstResp.Dispose();
+
+            // Deliberately no Authorization — signed CDN URLs are self-authenticating
+            var cdnReq = new HttpRequestMessage(HttpMethod.Get, cdnLocation);
+            cdnReq.Headers.UserAgent.ParseAdd(UserAgent);
+            return await httpClient.SendAsync(cdnReq, HttpCompletionOption.ResponseHeadersRead, ct);
+        }
+
+        return firstResp;
+    }
+
+    /// <summary>
+    /// 403 fallback chain for file downloads:
+    ///   [fallback=cookies]   — retry with FlareSolverr session cookies (Cloudflare-cleared)
+    ///   [fallback=playwright] — retry with headless Playwright browser
+    ///
+    /// Returns true if the file was downloaded successfully via a fallback path
+    /// (the file is written to <paramref name="filePath"/> in that case).
+    /// Returns false if all fallbacks failed.
+    /// </summary>
+    private async Task<bool> TryFallbackDownloadAsync(
+        string url, string filePath, string? bearerToken,
+        string? sessionCookies, string? sessionUA, string safeName,
+        ILogger logger, CancellationToken ct)
+    {
+        // [fallback=cookies] FlareSolverr session cookies bypass Cloudflare DDoS protection
+        if (!string.IsNullOrEmpty(sessionCookies))
+        {
+            logger.LogWarning("[MMF][fallback=cookies] 403 on Bearer — retrying with session cookies for {File}", safeName);
+            try
+            {
+                using var cookieClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+                cookieClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
+                cookieClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                    sessionUA ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+                using var cookieResp = await cookieClient.GetAsync(url, ct);
+                if (cookieResp.IsSuccessStatusCode)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+                    await using var fs = File.Create(filePath);
+                    await cookieResp.Content.CopyToAsync(fs, ct);
+                    logger.LogInformation("[MMF][fallback=cookies] Download succeeded for {File}", safeName);
+                    return true;
+                }
+                logger.LogWarning("[MMF][fallback=cookies] Cookie download returned {Status} for {File}", cookieResp.StatusCode, safeName);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning("[MMF][fallback=cookies] Cookie download threw for {File}: {Error}", safeName, ex.Message);
+            }
+        }
+
+        // [fallback=playwright] Playwright headless browser — captures CDN redirect via response events
+        if (!string.IsNullOrEmpty(bearerToken))
+        {
+            logger.LogWarning("[MMF][fallback=playwright] Retrying with Playwright browser for {File}", safeName);
+            return await DownloadWithBrowserAsync(url, filePath, bearerToken, logger, ct);
+        }
+
+        return false;
+    }
+
     /// <summary>Check if a URL is a CDN URL (skip Bearer auth for CDN downloads).</summary>
     internal static bool IsCdnUrl(string url)
     {
@@ -2096,96 +2052,6 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
     /// <summary>
     /// Proactively refreshes the OAuth access_token when it is within 5 minutes of expiry.
-    /// On refresh failure, logs a warning but does NOT throw — the bearer-token-null fallback
-    /// path still handles degraded operation (manifest sync continues; downloads will 403).
-    /// </summary>
-    private async Task EnsureFreshAccessTokenAsync(PluginContext context, CancellationToken ct)
-    {
-        var expiresAtStr = await context.TokenStore.GetTokenAsync("token_expires_at", ct);
-        if (string.IsNullOrEmpty(expiresAtStr))
-            return; // No OAuth token in store — nothing to refresh
-
-        if (!long.TryParse(expiresAtStr, out var expiresAt))
-            return;
-
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        if (now < expiresAt - 300)
-            return; // Token still fresh (>5 min remaining)
-
-        // Token is expired or expiring soon — attempt refresh
-        var refreshToken = await context.TokenStore.GetTokenAsync("refresh_token", ct);
-        if (string.IsNullOrEmpty(refreshToken))
-        {
-            context.Logger.LogWarning("[MMF] OAuth access_token is expiring but no refresh_token in store — user must re-authenticate");
-            return;
-        }
-
-        var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
-        var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
-
-        if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
-        {
-            context.Logger.LogWarning("[MMF] OAuth token needs refresh but CLIENT_ID/CLIENT_SECRET not configured");
-            return;
-        }
-
-        if (IsVerbose(context))
-            context.Logger.LogInformation("[MMF] OAuth access_token expiring — attempting refresh");
-
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-            var form = new FormUrlEncodedContent(new Dictionary<string, string>
-            {
-                ["grant_type"]    = "refresh_token",
-                ["refresh_token"] = refreshToken,
-                ["client_id"]     = clientId,
-                ["client_secret"] = clientSecret,
-            });
-
-            var resp = await http.PostAsync("https://www.myminifactory.com/oauth/token", form, ct);
-            var body = await resp.Content.ReadAsStringAsync(ct);
-
-            if (!resp.IsSuccessStatusCode)
-            {
-                context.Logger.LogWarning(
-                    "[MMF] OAuth refresh failed ({Status}) — continuing with existing token (may 403). User may need to re-authenticate.",
-                    resp.StatusCode);
-                return;
-            }
-
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            var newAccessToken = root.GetProperty("access_token").GetString() ?? "";
-            string? newRefreshToken = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
-            long expiresIn = root.TryGetProperty("expires_in", out var eip) && eip.ValueKind == JsonValueKind.Number
-                ? eip.GetInt64() : 3600;
-
-            await context.TokenStore.SaveTokenAsync("access_token", newAccessToken, ct);
-            if (!string.IsNullOrEmpty(newRefreshToken))
-                await context.TokenStore.SaveTokenAsync("refresh_token", newRefreshToken, ct);
-            await context.TokenStore.SaveTokenAsync("token_expires_at",
-                (DateTimeOffset.UtcNow + TimeSpan.FromSeconds(expiresIn)).ToUnixTimeSeconds().ToString(), ct);
-
-            context.Logger.LogInformation(
-                "[MMF] OAuth token refreshed (expires_in={ExpiresIn}s, rotated_refresh={Rotated})",
-                expiresIn, !string.IsNullOrEmpty(newRefreshToken));
-        }
-        catch (Exception ex)
-        {
-            context.Logger.LogWarning(ex, "[MMF] OAuth refresh threw — continuing with existing token");
-        }
-    }
-
-    private static string GetCallbackUrl(PluginContext context)
-    {
-        // Plugin host routes callbacks to /auth/{slug}/callback
-        // The actual URL depends on deployment — use config or default
-        return context.Config.TryGetValue("CALLBACK_URL", out var url) && !string.IsNullOrEmpty(url)
-            ? url
-            : "http://localhost:5000/auth/mmf/callback";
-    }
-
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,

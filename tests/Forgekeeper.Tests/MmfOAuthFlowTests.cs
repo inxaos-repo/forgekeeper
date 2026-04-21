@@ -9,16 +9,17 @@ using Xunit;
 namespace Forgekeeper.Tests;
 
 /// <summary>
-/// Tests for the MMF OAuth 2.0 authorization-code flow (PR: feat/mmf-oauth-authcode-flow).
+/// Tests for the MMF OAuth 2.0 implicit flow.
 ///
 /// Covers:
 ///   - Config schema: CLIENT_SECRET field exists, is Optional, is Secret type
-///   - Legacy implicit-flow callback still works (back-compat)
-///   - Auth-code flow: code → token exchange → save access_token + refresh_token + expires_at
-///   - Auth-code flow: missing config → graceful failure
-///   - Error callback → failure with message
-///   - AuthenticateAsync → returns Failed when credentials missing
-///   - AuthenticateAsync → returns NeedsBrowser when OAuth configured + no valid token
+///   - No MMF_API_KEY field in schema (removed as dead)
+///   - AuthenticateAsync — live /api/v2/user check (4 scenarios via HttpMessageHandler stub)
+///   - AuthenticateAsync — returns NeedsBrowser when OAuth configured + no token
+///   - AuthenticateAsync — returns Failed when credentials missing
+///   - OAuth authorize URL shape: endpoint, response_type, no client_secret, state CSRF guard,
+///     redirect_uri URL-encoded
+///   - HandleAuthCallbackAsync — implicit-flow-only paths (success / error / empty)
 /// </summary>
 public class MmfOAuthFlowTests
 {
@@ -39,8 +40,7 @@ public class MmfOAuthFlowTests
     [Fact]
     public void ConfigSchema_ClientSecret_IsOptional()
     {
-        // CLIENT_SECRET is not Required — file downloads are opt-in.
-        // Manifest sync works without it.
+        // CLIENT_SECRET is not Required — manifest-only sync works without it.
         var plugin = new MmfScraperPlugin();
         var field = plugin.ConfigSchema.FirstOrDefault(f => f.Key == "CLIENT_SECRET");
 
@@ -50,9 +50,18 @@ public class MmfOAuthFlowTests
     }
 
     [Fact]
+    public void ConfigSchema_DoesNotHaveMmfApiKeyField()
+    {
+        // MMF_API_KEY was empirically dead (developer-portal API keys 401 on /api/v2).
+        // Removed to avoid confusion; existing DB rows are silently ignored.
+        var plugin = new MmfScraperPlugin();
+        var field = plugin.ConfigSchema.FirstOrDefault(f => f.Key == "MMF_API_KEY");
+        Assert.Null(field);
+    }
+
+    [Fact]
     public void ConfigSchema_ClientId_HelpText_MentionsClientSecret()
     {
-        // CLIENT_ID help text should reference CLIENT_SECRET to guide users
         var plugin = new MmfScraperPlugin();
         var field = plugin.ConfigSchema.FirstOrDefault(f => f.Key == "CLIENT_ID");
 
@@ -61,7 +70,7 @@ public class MmfOAuthFlowTests
     }
 
     // ─────────────────────────────────────────────
-    // AuthenticateAsync tests
+    // AuthenticateAsync — missing credentials
     // ─────────────────────────────────────────────
 
     [Fact]
@@ -80,6 +89,7 @@ public class MmfOAuthFlowTests
     [Fact]
     public async Task AuthenticateAsync_WithCredentialsOnly_ReturnsSuccess()
     {
+        // Username+password but no OAuth → manifest-only mode (still Authenticated=true)
         var plugin = new MmfScraperPlugin();
         var context = BuildContext(config: new Dictionary<string, string>
         {
@@ -90,40 +100,127 @@ public class MmfOAuthFlowTests
         var result = await plugin.AuthenticateAsync(context);
 
         Assert.True(result.Authenticated);
-        Assert.Null(result.AuthUrl); // No OAuth configured → no browser redirect
+        Assert.Null(result.AuthUrl);
     }
 
+    // ─────────────────────────────────────────────
+    // AuthenticateAsync — live /api/v2/user check
+    // ─────────────────────────────────────────────
+
     [Fact]
-    public async Task AuthenticateAsync_WithOAuthConfig_AndNoToken_ReturnsNeedsBrowser()
+    public async Task AuthenticateAsync_TokenInStore_UserEndpointReturns200_ReturnsSuccess()
     {
-        var tokenStore = new Mock<ITokenStore>();
-        // No stored access_token or expiry
-        tokenStore.Setup(t => t.GetTokenAsync("access_token", It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string?)null);
-        tokenStore.Setup(t => t.GetTokenAsync("token_expires_at", It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string?)null);
-        tokenStore.Setup(t => t.SaveTokenAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+        // Token exists, /api/v2/user returns 200 → plugin trusts it and returns Success
+        var tokenStore = new InMemoryTokenStore();
+        await tokenStore.SaveTokenAsync("access_token", "valid-token");
+
+        var handler = new StaticResponseHandler(
+            new Uri("https://www.myminifactory.com/api/v2/user"),
+            HttpStatusCode.OK,
+            "{\"username\":\"testuser\"}");
 
         var plugin = new MmfScraperPlugin();
         var context = BuildContext(
-            config: new Dictionary<string, string>
-            {
-                ["MMF_USERNAME"]  = "user@example.com",
-                ["MMF_PASSWORD"]  = "hunter2",
-                ["CLIENT_ID"]     = "downloader_v2",
-                ["CLIENT_SECRET"] = "supersecret",
-                ["CALLBACK_URL"]  = "https://forgekeeper.k8s.inxaos.com/auth/mmf/callback",
-            },
-            tokenStore: tokenStore.Object);
+            config: OAuthConfig(),
+            tokenStore: tokenStore,
+            httpClient: new HttpClient(handler));
+
+        var result = await plugin.AuthenticateAsync(context);
+
+        Assert.True(result.Authenticated);
+        Assert.Null(result.AuthUrl);
+        Assert.Contains("verified", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AuthenticateAsync_TokenInStore_UserEndpointReturns401_ReturnsNeedsBrowser()
+    {
+        // Stored token failed verification → force re-auth
+        var tokenStore = new InMemoryTokenStore();
+        await tokenStore.SaveTokenAsync("access_token", "stale-token");
+
+        var handler = new StaticResponseHandler(
+            new Uri("https://www.myminifactory.com/api/v2/user"),
+            HttpStatusCode.Unauthorized,
+            "{\"error\":\"invalid_token\"}");
+
+        var plugin = new MmfScraperPlugin();
+        var context = BuildContext(
+            config: OAuthConfig(),
+            tokenStore: tokenStore,
+            httpClient: new HttpClient(handler));
 
         var result = await plugin.AuthenticateAsync(context);
 
         Assert.False(result.Authenticated);
         Assert.NotNull(result.AuthUrl);
-        // Real MMF OAuth endpoint lives at auth.myminifactory.com/web/authorize (implicit flow).
-        // Discovered from MiniDownloader's source 2026-04-21. www.myminifactory.com/oauth/authorize
-        // 404s for all clients.
+        Assert.Contains("auth.myminifactory.com/web/authorize", result.AuthUrl);
+    }
+
+    [Fact]
+    public async Task AuthenticateAsync_NoTokenInStore_ReturnsNeedsBrowser()
+    {
+        // No stored token at all → trigger browser auth
+        var handler = new StaticResponseHandler(
+            new Uri("https://www.myminifactory.com/api/v2/user"),
+            HttpStatusCode.OK, "{}"); // Should never be called
+
+        var plugin = new MmfScraperPlugin();
+        var context = BuildContext(
+            config: OAuthConfig(),
+            tokenStore: new InMemoryTokenStore(),
+            httpClient: new HttpClient(handler));
+
+        var result = await plugin.AuthenticateAsync(context);
+
+        Assert.False(result.Authenticated);
+        Assert.NotNull(result.AuthUrl);
+        Assert.Contains("auth.myminifactory.com/web/authorize", result.AuthUrl);
+        // The /api/v2/user call should NOT have been made (no token to verify)
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task AuthenticateAsync_HttpClientThrows_GracefullyReturnsNeedsBrowser()
+    {
+        // Network error during live check → degrade gracefully, don't throw
+        var tokenStore = new InMemoryTokenStore();
+        await tokenStore.SaveTokenAsync("access_token", "maybe-valid-token");
+
+        var handler = new ThrowingHandler(new HttpRequestException("Network unreachable"));
+
+        var plugin = new MmfScraperPlugin();
+        var context = BuildContext(
+            config: OAuthConfig(),
+            tokenStore: tokenStore,
+            httpClient: new HttpClient(handler));
+
+        var result = await plugin.AuthenticateAsync(context);
+
+        // Must not throw; should fall back to NeedsBrowser
+        Assert.False(result.Authenticated);
+        Assert.NotNull(result.AuthUrl);
+    }
+
+    // ─────────────────────────────────────────────
+    // AuthenticateAsync — OAuth authorize URL shape
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task AuthenticateAsync_WithOAuthConfig_AndNoToken_ReturnsNeedsBrowser()
+    {
+        var plugin = new MmfScraperPlugin();
+        var context = BuildContext(
+            config: OAuthConfig(),
+            tokenStore: new InMemoryTokenStore(),
+            httpClient: new HttpClient(new StaticResponseHandler(
+                new Uri("https://www.myminifactory.com/api/v2/user"),
+                HttpStatusCode.OK, "{}")));
+
+        var result = await plugin.AuthenticateAsync(context);
+
+        Assert.False(result.Authenticated);
+        Assert.NotNull(result.AuthUrl);
         Assert.Contains("auth.myminifactory.com/web/authorize", result.AuthUrl);
         Assert.Contains("response_type=token", result.AuthUrl);
         Assert.Contains("client_id=", result.AuthUrl);
@@ -131,107 +228,78 @@ public class MmfOAuthFlowTests
     }
 
     [Fact]
-    public async Task AuthenticateAsync_WithOAuthConfig_AndValidToken_ReturnsSuccess()
+    public async Task AuthenticateAsync_AuthUrl_DoesNotContainClientSecret()
     {
-        var futureExpiry = (DateTimeOffset.UtcNow + TimeSpan.FromHours(1)).ToUnixTimeSeconds().ToString();
-        var tokenStore = new Mock<ITokenStore>();
-        tokenStore.Setup(t => t.GetTokenAsync("access_token", It.IsAny<CancellationToken>()))
-            .ReturnsAsync("existing-token-value");
-        tokenStore.Setup(t => t.GetTokenAsync("token_expires_at", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(futureExpiry);
-
+        // Implicit flow: client_secret MUST NOT appear in the authorize URL
+        // (it's a client-side flow; the secret is only used on the token endpoint which we don't call)
         var plugin = new MmfScraperPlugin();
         var context = BuildContext(
-            config: new Dictionary<string, string>
-            {
-                ["MMF_USERNAME"]  = "user@example.com",
-                ["MMF_PASSWORD"]  = "hunter2",
-                ["CLIENT_ID"]     = "downloader_v2",
-                ["CLIENT_SECRET"] = "supersecret",
-                ["CALLBACK_URL"]  = "https://forgekeeper.k8s.inxaos.com/auth/mmf/callback",
-            },
-            tokenStore: tokenStore.Object);
+            config: OAuthConfig(),
+            tokenStore: new InMemoryTokenStore(),
+            httpClient: new HttpClient(new NoCallHandler()));
 
         var result = await plugin.AuthenticateAsync(context);
 
-        Assert.True(result.Authenticated);
-        Assert.Null(result.AuthUrl); // Already have a valid token — no browser needed
+        Assert.NotNull(result.AuthUrl);
+        Assert.DoesNotContain("client_secret", result.AuthUrl, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("6b511607", result.AuthUrl); // the actual public secret value
+    }
+
+    [Fact]
+    public async Task AuthenticateAsync_AuthUrl_HasStateParam_AtLeast16Chars()
+    {
+        // state is a CSRF guard; must be present and long enough to be unpredictable
+        var plugin = new MmfScraperPlugin();
+        var context = BuildContext(
+            config: OAuthConfig(),
+            tokenStore: new InMemoryTokenStore(),
+            httpClient: new HttpClient(new NoCallHandler()));
+
+        var result = await plugin.AuthenticateAsync(context);
+
+        Assert.NotNull(result.AuthUrl);
+        var uri = new Uri(result.AuthUrl!);
+        var qs = System.Web.HttpUtility.ParseQueryString(uri.Query);
+        var state = qs["state"];
+        Assert.NotNull(state);
+        Assert.True(state!.Length >= 16,
+            $"state parameter should be ≥16 chars for CSRF protection, got: '{state}' ({state.Length} chars)");
+    }
+
+    [Fact]
+    public async Task AuthenticateAsync_AuthUrl_RedirectUri_IsUrlEncoded()
+    {
+        // redirect_uri must be URL-encoded so the auth server can parse it correctly
+        var plugin = new MmfScraperPlugin();
+        var context = BuildContext(
+            config: OAuthConfig("https://forgekeeper.k8s.inxaos.com/auth/mmf/callback"),
+            tokenStore: new InMemoryTokenStore(),
+            httpClient: new HttpClient(new NoCallHandler()));
+
+        var result = await plugin.AuthenticateAsync(context);
+
+        Assert.NotNull(result.AuthUrl);
+        // The raw URL should have the redirect_uri encoded (/ → %2F, : → %3A, etc.)
+        Assert.Contains("redirect_uri=https%3A", result.AuthUrl);
     }
 
     // ─────────────────────────────────────────────
-    // HandleAuthCallbackAsync tests
+    // HandleAuthCallbackAsync — implicit flow only
     // ─────────────────────────────────────────────
 
     [Fact]
-    public async Task HandleAuthCallbackAsync_WithAccessToken_LegacyFlow_SavesToken()
+    public async Task HandleAuthCallbackAsync_WithAccessToken_SavesToken_ReturnsSuccess()
     {
-        var tokenStore = new Mock<ITokenStore>();
-        tokenStore.Setup(t => t.SaveTokenAsync("access_token", "tok123", It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask)
-            .Verifiable();
-
+        var tokenStore = new InMemoryTokenStore();
         var plugin = new MmfScraperPlugin();
-        var context = BuildContext(tokenStore: tokenStore.Object);
+        var context = BuildContext(tokenStore: tokenStore);
 
         var result = await plugin.HandleAuthCallbackAsync(
             context,
             new Dictionary<string, string> { ["access_token"] = "tok123" });
 
         Assert.True(result.Authenticated);
-        tokenStore.Verify(t => t.SaveTokenAsync("access_token", "tok123", It.IsAny<CancellationToken>()), Times.Once);
-    }
-
-    [Fact]
-    public async Task HandleAuthCallbackAsync_WithCode_ButMissingClientSecret_ReturnsFailed()
-    {
-        var plugin = new MmfScraperPlugin();
-        var context = BuildContext(config: new Dictionary<string, string>
-        {
-            ["CLIENT_ID"]    = "downloader_v2",
-            // CLIENT_SECRET intentionally omitted
-            ["CALLBACK_URL"] = "https://forgekeeper.k8s.inxaos.com/auth/mmf/callback",
-        });
-
-        var result = await plugin.HandleAuthCallbackAsync(
-            context,
-            new Dictionary<string, string> { ["code"] = "abc123" });
-
-        Assert.False(result.Authenticated);
-        Assert.NotNull(result.Message);
-        Assert.Contains("CLIENT_SECRET", result.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task HandleAuthCallbackAsync_WithCode_Success_SavesAllTokens()
-    {
-        // Use the testable subclass that overrides ExchangeCodeForTokenAsync
-        // to avoid real HTTP calls in unit tests.
-        var tokenStore = new Mock<ITokenStore>();
-        var savedTokens = new Dictionary<string, string>();
-        tokenStore.Setup(t => t.SaveTokenAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, CancellationToken>((k, v, _) => savedTokens[k] = v)
-            .Returns(Task.CompletedTask);
-
-        var plugin = new FakeMmfScraperPlugin();
-        var context = BuildContext(
-            config: new Dictionary<string, string>
-            {
-                ["CLIENT_ID"]     = "downloader_v2",
-                ["CLIENT_SECRET"] = "supersecret",
-                ["CALLBACK_URL"]  = "https://forgekeeper.k8s.inxaos.com/auth/mmf/callback",
-            },
-            tokenStore: tokenStore.Object);
-
-        var result = await plugin.HandleAuthCallbackAsync(
-            context,
-            new Dictionary<string, string> { ["code"] = "authcode_xyz" });
-
-        Assert.True(result.Authenticated);
-        Assert.Contains("access_token", savedTokens.Keys);
-        Assert.Contains("refresh_token", savedTokens.Keys);
-        Assert.Contains("token_expires_at", savedTokens.Keys);
-        Assert.Equal("fake_access_token", savedTokens["access_token"]);
-        Assert.Equal("fake_refresh_token", savedTokens["refresh_token"]);
+        Assert.Equal("tok123", await tokenStore.GetTokenAsync("access_token"));
     }
 
     [Fact]
@@ -265,6 +333,20 @@ public class MmfOAuthFlowTests
 
         Assert.False(result.Authenticated);
         Assert.NotNull(result.Message);
+        Assert.DoesNotContain("authorization code", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task HandleAuthCallbackAsync_WithEmptyAccessToken_ReturnsFailed()
+    {
+        var plugin = new MmfScraperPlugin();
+        var context = BuildContext();
+
+        var result = await plugin.HandleAuthCallbackAsync(
+            context,
+            new Dictionary<string, string> { ["access_token"] = "" });
+
+        Assert.False(result.Authenticated);
     }
 
     // ─────────────────────────────────────────────
@@ -273,38 +355,81 @@ public class MmfOAuthFlowTests
 
     private static PluginContext BuildContext(
         IReadOnlyDictionary<string, string>? config = null,
-        ITokenStore? tokenStore = null)
+        ITokenStore? tokenStore = null,
+        HttpClient? httpClient = null)
     {
-        var ts = tokenStore ?? Mock.Of<ITokenStore>();
         return new PluginContext
         {
             SourceDirectory = "/tmp/test",
             Config = config ?? new Dictionary<string, string>(),
-            HttpClient = new HttpClient(),
+            HttpClient = httpClient ?? new HttpClient(),
             Logger = NullLogger.Instance,
-            TokenStore = ts,
+            TokenStore = tokenStore ?? new InMemoryTokenStore(),
             Progress = new Progress<ScrapeProgress>(),
         };
     }
 
-    /// <summary>
-    /// Test double for MmfScraperPlugin that overrides ExchangeCodeForTokenAsync
-    /// to avoid real HTTP calls. Returns a predictable fake token response.
-    /// </summary>
-    private sealed class FakeMmfScraperPlugin : MmfScraperPlugin
-    {
-        protected override async Task<AuthResult> ExchangeCodeForTokenAsync(
-            PluginContext context, string code, string clientId, string clientSecret, string callbackUrl,
-            CancellationToken ct)
+    /// <summary>Standard OAuth config for tests.</summary>
+    private static Dictionary<string, string> OAuthConfig(string? callbackUrl = null) =>
+        new()
         {
-            // Simulate a successful token exchange without hitting the network
-            await context.TokenStore.SaveTokenAsync("access_token", "fake_access_token", ct);
-            await context.TokenStore.SaveTokenAsync("refresh_token", "fake_refresh_token", ct);
-            await context.TokenStore.SaveTokenAsync(
-                "token_expires_at",
-                (DateTimeOffset.UtcNow + TimeSpan.FromHours(1)).ToUnixTimeSeconds().ToString(),
-                ct);
-            return AuthResult.Success("Connected to MyMiniFactory via OAuth");
+            ["MMF_USERNAME"]  = "user@example.com",
+            ["MMF_PASSWORD"]  = "hunter2",
+            ["CLIENT_ID"]     = "downloader_v2",
+            ["CLIENT_SECRET"] = "6b511607-740d-49ad-8e31-3bb8b75dd354",
+            ["CALLBACK_URL"]  = callbackUrl ?? "https://forgekeeper.k8s.inxaos.com/auth/mmf/callback",
+        };
+
+    // ─────────────────────────────────────────────
+    // Test HttpMessageHandler stubs
+    // ─────────────────────────────────────────────
+
+    /// <summary>Returns a fixed response for requests to a specific URI; throws for others.</summary>
+    private sealed class StaticResponseHandler : HttpMessageHandler
+    {
+        private readonly Uri _expectedUri;
+        private readonly HttpStatusCode _statusCode;
+        private readonly string _body;
+        private int _callCount;
+        public int CallCount => _callCount;
+
+        public StaticResponseHandler(Uri expectedUri, HttpStatusCode statusCode, string body)
+        {
+            _expectedUri = expectedUri;
+            _statusCode = statusCode;
+            _body = body;
         }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsoluteUri != _expectedUri.AbsoluteUri)
+                throw new InvalidOperationException($"Unexpected URI: {request.RequestUri} (expected {_expectedUri})");
+            Interlocked.Increment(ref _callCount);
+            var resp = new HttpResponseMessage(_statusCode)
+            {
+                Content = new StringContent(_body, Encoding.UTF8, "application/json"),
+            };
+            return Task.FromResult(resp);
+        }
+    }
+
+    /// <summary>Always throws; ensures the HttpClient is never called.</summary>
+    private sealed class NoCallHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+            => throw new InvalidOperationException($"HttpClient should not have been called, but got: {request.RequestUri}");
+    }
+
+    /// <summary>Always throws the given exception (simulates network failure).</summary>
+    private sealed class ThrowingHandler : HttpMessageHandler
+    {
+        private readonly Exception _exception;
+        public ThrowingHandler(Exception ex) { _exception = ex; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+            => throw _exception;
     }
 }

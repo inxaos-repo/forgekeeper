@@ -155,31 +155,18 @@ public class MmfScraperSchemaRegressionTests
     [Fact]
     public void RequiresBrowserAuth_IsTrue()
     {
-        // RequiresBrowserAuth=true is needed so the admin UI renders the "Authenticate"
-        // button. Clicking it calls AuthenticateAsync, which:
-        //   1. If MMF_API_KEY is set — save it as download_token in the TokenStore and
-        //      return Success. No actual browser redirect happens.
-        //   2. If (OAuth fields) CLIENT_ID + CLIENT_SECRET + CALLBACK_URL are set but no
-        //      API key — return NeedsBrowser(authUrl). MMF's /oauth/authorize endpoint
-        //      has been 404'ing since ~2026-04; this path is dead but kept for forward
-        //      compat.
-        //   3. Otherwise — manifest-only mode.
-        //
-        // Flipping this to false hides the UI button and there's no other way for the
-        // operator to trigger AuthenticateAsync to save their MMF_API_KEY, so downloads
-        // never work.
+        // RequiresBrowserAuth=true renders the admin UI "Authenticate" button.
+        // With OAuth implicit flow, the user must visit MMF's consent screen in a browser.
+        // Flipping this to false hides the button and breaks the OAuth flow.
         Assert.True(Plugin.RequiresBrowserAuth);
     }
 
     [Fact]
-    public void MmfApiKey_Field_ExistsAndIsOptionalSecret()
+    public void MmfApiKey_Field_DoesNotExist()
     {
-        // Primary authenticated-download path since MMF retired OAuth authorize endpoint.
-        // Field must be Secret type so it encrypts at rest per PR #15.
+        // MMF_API_KEY was removed in PR #23 — developer-portal API keys always 401 on /api/v2.
+        // Removing it prevents user confusion. Any existing DB rows are silently ignored.
         var field = Plugin.ConfigSchema.FirstOrDefault(f => f.Key == "MMF_API_KEY");
-        Assert.NotNull(field);
-        Assert.Equal(PluginConfigFieldType.Secret, field!.Type);
-        Assert.False(field.Required,
-            "MMF_API_KEY is optional — manifest-only mode works without it.");
+        Assert.Null(field);
     }
 }
