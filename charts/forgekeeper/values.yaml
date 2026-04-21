@@ -106,6 +106,12 @@ config:
     minTrigramSimilarity: "0.3"
   security:
     apiKey: ""  # Empty = no auth required
+  plugins:
+    # preferBundled: true = image-bundled plugins win over /data/ on slug conflict (recommended for k8s)
+    # false = /data/ plugins win (legacy, useful for hot-patching without image rebuild)
+    preferBundled: true
+    # warnOnVersionDrift: refuse startup if same plugin version has different DLL hash in app vs data
+    warnOnVersionDrift: false
 
 autoscaling:
   enabled: false

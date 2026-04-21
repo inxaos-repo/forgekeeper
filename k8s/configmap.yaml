@@ -11,9 +11,19 @@ data:
   Storage__BasePaths__0: "/mnt/3dprinting"
   Storage__ThumbnailDir: ".thumbnails"
 
-  # Plugin configuration
-  Forgekeeper__PluginsDirectory: "/app/plugins"
+  # Plugin directories
+  # BuiltinPluginsDirectory: image-baked plugins (read-only, built into container)
+  Forgekeeper__BuiltinPluginsDirectory: "/app/plugins"
+  # PluginsDirectory: NFS-persistent / user-installed plugins
+  Forgekeeper__PluginsDirectory: "/data/plugins"
   Forgekeeper__SourcesDirectory: "/mnt/3dprinting/sources"
+
+  # Plugin precedence: app-over-data wins (image-bundled beats stale NFS)
+  # Change to "false" only if you rely on hot-patching plugins without rebuilding the image.
+  Plugins__PreferBundled: "true"
+  # WarnOnVersionDrift: refuse to start if same plugin version has different DLL hash in both dirs.
+  # Enable in production to catch stale-NFS bugs at boot rather than silently loading wrong code.
+  Plugins__WarnOnVersionDrift: "false"
 
   # Thumbnail generation
   Thumbnails__Enabled: "true"

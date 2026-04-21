@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Security.Cryptography;
 using Forgekeeper.Core.Models;
 using Forgekeeper.Infrastructure.Data;
 using Forgekeeper.PluginSdk;
@@ -26,10 +27,13 @@ public class PluginHostService : BackgroundService
     private readonly ConcurrentDictionary<string, PluginSyncStatus> _syncStatuses = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _syncLocks = new();
     private readonly string _pluginsDirectory;
+    private readonly string _builtinPluginsDirectory;
     private readonly string _sourcesDirectory;
     private CancellationToken _appStoppingToken;
     private readonly bool _forceLoadIncompatible;
     private readonly bool _hotReloadEnabled;
+    private readonly bool _preferBundled;
+    private readonly bool _warnOnVersionDrift;
 
     public PluginHostService(
         IServiceProvider services,
@@ -42,10 +46,13 @@ public class PluginHostService : BackgroundService
         _logger = logger;
         _manifestValidator = manifestValidator;
         _sdkChecker = sdkChecker;
-        _pluginsDirectory = configuration["Forgekeeper:PluginsDirectory"] ?? "/app/plugins";
+        _builtinPluginsDirectory = configuration["Forgekeeper:BuiltinPluginsDirectory"] ?? "/app/plugins";
+        _pluginsDirectory = configuration["Forgekeeper:PluginsDirectory"] ?? "/data/plugins";
         _sourcesDirectory = configuration["Forgekeeper:SourcesDirectory"] ?? "/mnt/3dprinting/sources";
         _forceLoadIncompatible = configuration.GetValue<bool>("Plugins:ForceLoadIncompatible", false);
         _hotReloadEnabled = configuration.GetValue<bool>("Plugins:HotReloadEnabled", false);
+        _preferBundled = configuration.GetValue<bool>("Plugins:PreferBundled", false);
+        _warnOnVersionDrift = configuration.GetValue<bool>("Plugins:WarnOnVersionDrift", false);
     }
 
     /// <summary>Get all loaded plugins.</summary>
@@ -85,7 +92,9 @@ public class PluginHostService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Plugin host starting, scanning {Dir}", _pluginsDirectory);
+        _logger.LogInformation(
+            "Plugin host starting — builtin: {BuiltinDir}, installed: {InstalledDir}",
+            _builtinPluginsDirectory, _pluginsDirectory);
 
         _appStoppingToken = stoppingToken;
         await DiscoverPluginsAsync(stoppingToken);
@@ -413,18 +422,189 @@ public class PluginHostService : BackgroundService
         }
     }
 
+    // ─── Pre-load directory info (used for conflict detection before DLL loading) ──────────────
+
+    private sealed record PluginDirInfo(
+        string Dir,
+        string? Slug,
+        string? Version,
+        long DllBytes,
+        DateTime DllMtime,
+        string? DllPath);
+
+    private List<PluginDirInfo> GatherPluginDirInfos(string baseDir)
+    {
+        var results = new List<PluginDirInfo>();
+        if (!Directory.Exists(baseDir)) return results;
+
+        foreach (var pluginDir in Directory.GetDirectories(baseDir))
+        {
+            // Try to read manifest for slug/version without loading the DLL
+            string? slug = null;
+            string? version = null;
+            try
+            {
+                var manifest = _manifestValidator.LoadManifest(pluginDir);
+                slug = manifest?.Slug;
+                version = manifest?.Version;
+            }
+            catch { /* manifest is optional */ }
+
+            // Fall back to directory name as slug identifier
+            slug ??= Path.GetFileName(pluginDir);
+
+            // Find primary DLL (for size/mtime metadata in conflict warnings)
+            string? dllPath = null;
+            long dllBytes = 0;
+            DateTime dllMtime = DateTime.MinValue;
+            try
+            {
+                dllPath = Directory
+                    .GetFiles(pluginDir, "*.dll")
+                    .Where(f => !Path.GetFileName(f).StartsWith("Forgekeeper.PluginSdk",
+                        StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(f => new FileInfo(f).Length)
+                    .FirstOrDefault();
+
+                if (dllPath != null)
+                {
+                    var fi = new FileInfo(dllPath);
+                    dllBytes = fi.Length;
+                    dllMtime = fi.LastWriteTimeUtc;
+                }
+            }
+            catch { /* best-effort */ }
+
+            results.Add(new PluginDirInfo(pluginDir, slug, version, dllBytes, dllMtime, dllPath));
+        }
+
+        return results;
+    }
+
+    private static string ComputeMd5(string filePath)
+    {
+        using var md5 = MD5.Create();
+        using var stream = File.OpenRead(filePath);
+        var hash = md5.ComputeHash(stream);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    // ─── Plugin discovery (dual-directory, conflict-aware) ────────────────────────────────────
+
     private async Task DiscoverPluginsAsync(CancellationToken ct)
     {
-        if (!Directory.Exists(_pluginsDirectory))
+        // Emit startup precedence banner (R3)
+        _logger.LogInformation(
+            "Plugin source precedence: {Mode}",
+            _preferBundled
+                ? "app-over-data (image-bundled plugins win; /data/ override is ignored when bundled copy exists)"
+                : "data-over-app (legacy; /data/ plugins override image-bundled — set Plugins:PreferBundled=true for immutable deployments)");
+
+        // Gather lightweight info from both directories (no DLL loading yet)
+        var builtinEntries = GatherPluginDirInfos(_builtinPluginsDirectory);
+        var installedEntries = GatherPluginDirInfos(_pluginsDirectory);
+
+        if (builtinEntries.Count == 0 && installedEntries.Count == 0)
         {
-            _logger.LogWarning("Plugins directory does not exist: {Dir}", _pluginsDirectory);
+            _logger.LogWarning(
+                "No plugin directories found in either {BuiltinDir} or {InstalledDir}",
+                _builtinPluginsDirectory, _pluginsDirectory);
             return;
         }
 
-        foreach (var pluginDir in Directory.GetDirectories(_pluginsDirectory))
+        // Build slug → info maps for conflict detection
+        var builtinBySlug = builtinEntries
+            .GroupBy(e => e.Slug!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var installedBySlug = installedEntries
+            .GroupBy(e => e.Slug!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        // R2: Detect and warn about conflicts BEFORE any DLL is loaded
+        bool abortDueToHashDrift = false;
+        var conflictSlugs = new HashSet<string>(
+            builtinBySlug.Keys.Intersect(installedBySlug.Keys, StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var slug in conflictSlugs)
         {
-            await LoadPluginFromDirAsync(pluginDir, ct);
+            var builtin = builtinBySlug[slug];
+            var installed = installedBySlug[slug];
+            var winner = _preferBundled ? builtin : installed;
+
+            _logger.LogWarning("Plugin '{Slug}' found in multiple locations:", slug);
+            _logger.LogWarning(
+                "  {Dir} (v{Version}, {Bytes} bytes, mtime {Mtime:yyyy-MM-dd HH:mm} UTC) [image-bundled]",
+                builtin.Dir,
+                builtin.Version ?? "?",
+                builtin.DllBytes,
+                builtin.DllMtime);
+            _logger.LogWarning(
+                "  {Dir} (v{Version}, {Bytes} bytes, mtime {Mtime:yyyy-MM-dd HH:mm} UTC) [installed]",
+                installed.Dir,
+                installed.Version ?? "?",
+                installed.DllBytes,
+                installed.DllMtime);
+            _logger.LogWarning(
+                "Loading from {Dir} (current precedence: {Mode}). Set Plugins:PreferBundled={Toggle} to reverse.",
+                winner.Dir,
+                _preferBundled ? "app-over-data" : "data-over-app",
+                !_preferBundled);
+
+            // R4: Hash drift check — same version, different bytes → likely stale /data/ after rebuild
+            if (_warnOnVersionDrift
+                && builtin.Version != null
+                && builtin.Version == installed.Version
+                && builtin.DllPath != null
+                && installed.DllPath != null)
+            {
+                try
+                {
+                    var builtinHash = ComputeMd5(builtin.DllPath);
+                    var installedHash = ComputeMd5(installed.DllPath);
+
+                    if (!string.Equals(builtinHash, installedHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogError(
+                            "Plugin '{Slug}' v{Version} hash drift detected!",
+                            slug, builtin.Version);
+                        _logger.LogError(
+                            "  {Path} = {Hash}",
+                            builtin.DllPath, builtinHash);
+                        _logger.LogError(
+                            "  {Path} = {Hash}",
+                            installed.DllPath, installedHash);
+                        _logger.LogError(
+                            "Same version, different bytes — likely stale /data/ after image rebuild. Aborting.");
+                        _logger.LogError(
+                            "To resolve: delete {InstalledDir}, or set Plugins:WarnOnVersionDrift=false.",
+                            installed.Dir);
+                        abortDueToHashDrift = true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Plugin '{Slug}': could not compute hash for drift check — skipping", slug);
+                }
+            }
         }
+
+        if (abortDueToHashDrift)
+            throw new InvalidOperationException(
+                "Plugin hash drift detected. Remove stale /data/ plugin(s) or set Plugins:WarnOnVersionDrift=false to proceed.");
+
+        // Load in precedence order:
+        //   PreferBundled=false (default): builtin first, installed overwrites conflicts (data wins)
+        //   PreferBundled=true:            installed first, builtin overwrites conflicts (app wins)
+        var firstPassEntries  = _preferBundled ? installedEntries : builtinEntries;
+        var secondPassEntries = _preferBundled ? builtinEntries   : installedEntries;
+
+        foreach (var entry in firstPassEntries)
+            await LoadPluginFromDirAsync(entry.Dir, ct);
+
+        foreach (var entry in secondPassEntries)
+            await LoadPluginFromDirAsync(entry.Dir, ct);
     }
 
     /// <summary>
@@ -521,8 +701,10 @@ public class PluginHostService : BackgroundService
                         Source = DetermineSource(pluginDir),
                         SourceDirectory = pluginDir,
                     };
-                    _logger.LogInformation("Loaded plugin: {Name} v{Version} ({Slug})",
-                        scraper.SourceName, scraper.Version, scraper.SourceSlug);
+                    // R1: Always log the full DLL path so stale-file bugs are instantly visible
+                    _logger.LogInformation(
+                        "Loaded plugin: {Name} v{Version} ({Slug}) from {DllPath}",
+                        scraper.SourceName, scraper.Version, scraper.SourceSlug, dll);
                 }
             }
         }
@@ -569,6 +751,11 @@ public class PluginHostService : BackgroundService
 
         // Re-load from collected directories + scan for new ones
         var dirsToLoad = new HashSet<string>(pluginDirs, StringComparer.OrdinalIgnoreCase);
+        if (Directory.Exists(_builtinPluginsDirectory))
+        {
+            foreach (var dir in Directory.GetDirectories(_builtinPluginsDirectory))
+                dirsToLoad.Add(dir);
+        }
         if (Directory.Exists(_pluginsDirectory))
         {
             foreach (var dir in Directory.GetDirectories(_pluginsDirectory))

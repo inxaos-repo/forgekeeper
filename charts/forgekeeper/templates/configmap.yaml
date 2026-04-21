@@ -11,3 +11,9 @@ data:
   Thumbnails__Format: {{ .Values.config.thumbnails.format | quote }}
   Thumbnails__Renderer: {{ .Values.config.thumbnails.renderer | quote }}
   Search__MinTrigramSimilarity: {{ .Values.config.search.minTrigramSimilarity | quote }}
+  # Plugin directory configuration
+  Forgekeeper__BuiltinPluginsDirectory: "/app/plugins"
+  Forgekeeper__PluginsDirectory: {{ .Values.persistence.plugins.mountPath | quote }}
+  # app-over-data = image-bundled plugins win (recommended for immutable-infra)
+  Plugins__PreferBundled: {{ .Values.config.plugins.preferBundled | default true | quote }}
+  Plugins__WarnOnVersionDrift: {{ .Values.config.plugins.warnOnVersionDrift | default false | quote }}
