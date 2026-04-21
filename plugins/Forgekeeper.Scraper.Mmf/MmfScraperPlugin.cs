@@ -84,10 +84,20 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Label = "OAuth Client Secret",
             Type = PluginConfigFieldType.Secret,
             Required = false,
-            HelpText = "OAuth client secret from your MMF app registration. Required for the authorization-code flow (downloads). Leave blank if you only want to sync the library manifest (no file downloads).",
+            HelpText = "(OAuth flow, currently stubbed) OAuth client secret. Historically used with the /oauth/authorize + /oauth/token flow, but MMF removed those endpoints in 2026. Use MMF_API_KEY instead. Left in the schema for forward-compat if MMF restores OAuth.",
         },
-        // CLIENT_ID + CLIENT_SECRET enable the OAuth 2.0 authorization-code flow.
-        // Without CLIENT_SECRET the plugin falls back to manifest-only mode (no file downloads).
+        // MMF_API_KEY is the primary authenticated-download path after MMF retired their OAuth
+        // authorize endpoint. Generate the API key in MMF app registration settings — see HelpText.
+        // CLIENT_ID + CLIENT_SECRET are retained in schema for future OAuth support but currently
+        // unused; the /oauth/authorize endpoint returns 404 as of 2026-04.
+        new PluginConfigField
+        {
+            Key = "MMF_API_KEY",
+            Label = "MMF API Key (Bearer download token)",
+            Type = PluginConfigFieldType.Secret,
+            Required = false,
+            HelpText = "Long-lived MMF API key for authenticated downloads. Generate at https://www.myminifactory.com → Account → Apps → your app → “Generate New API Key”. This is the UUID-format Bearer token used for /api/v2/objects/{id} and signed download URLs. Leaving this blank puts the plugin in manifest-only mode (discovery works, ZIP downloads return 403).",
+        },
         new PluginConfigField
         {
             Key = "FLARESOLVERR_URL",
@@ -160,8 +170,21 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
             return AuthResult.Failed("MMF_USERNAME and MMF_PASSWORD must be configured in the plugin settings");
 
-        // Check if OAuth authorization-code flow is configured (CLIENT_ID + CLIENT_SECRET + CALLBACK_URL).
-        // If configured, verify we have a valid (non-expired) access_token; if not, trigger re-auth.
+        // Priority 1: MMF_API_KEY (the pragmatic 2026-04 path). MMF's /oauth/authorize was
+        // retired around April 2026; the surviving authenticated-download mechanism is to
+        // generate an API key in the app registration page and use it as a long-lived Bearer
+        // token. When MMF_API_KEY is set, save it as 'download_token' in the token store and
+        // call it a day — no browser dance, no refresh logic.
+        var apiKey = context.Config.TryGetValue("MMF_API_KEY", out var ak) ? ak : null;
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            await context.TokenStore.SaveTokenAsync("download_token", apiKey.Trim(), ct);
+            return AuthResult.Success("MMF API key configured — ready to sync with authenticated downloads");
+        }
+
+        // Priority 2: OAuth authorization-code flow. Currently stubbed — MMF's /oauth/authorize
+        // returns 404 as of 2026-04 regardless of client_id. Code retained for forward-compat
+        // if MMF restores OAuth. Checking CLIENT_ID + CLIENT_SECRET + CALLBACK_URL triggers it.
         var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
         var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
         var callbackUrl = context.Config.TryGetValue("CALLBACK_URL", out var cb) ? cb : null;
@@ -197,8 +220,9 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             return AuthResult.NeedsBrowser(authUrl, "MMF OAuth authorization required — click to connect");
         }
 
-        // Credentials configured; OAuth not configured (manifest-only mode)
-        return AuthResult.Success("Credentials configured — ready to sync (manifest only; add CLIENT_SECRET for file downloads)");
+        // Priority 3: manifest-only mode. No API key, no OAuth. Username+password is enough
+        // to do Playwright-based login for the library manifest; downloads will return 403.
+        return AuthResult.Success("Credentials configured — manifest-only mode (add MMF_API_KEY for file downloads)");
     }
 
     public async Task<AuthResult> HandleAuthCallbackAsync(PluginContext context, IDictionary<string, string> callbackParams, CancellationToken ct = default)
