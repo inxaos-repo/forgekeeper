@@ -674,20 +674,32 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
     /// <summary>
     /// Builds a signal-dense excerpt of an HTML page for diagnostic logging.
-    /// Strips <script> and <style> blocks (MMF's login page front-loads ~10 KB of
-    /// NewRelic / GTM / matomo JS before the actual form markup starts, which made
-    /// the old 1500-char cap useless — every excerpt was pure analytics noise).
-    /// Also collapses runs of whitespace so real DOM content dominates the budget.
+    /// MMF's login page front-loads ~10 KB of <head> markup (meta tags, link preloads,
+    /// NewRelic / GTM / matomo scripts) before the actual <body> content starts, which
+    /// made excerpt caps of 1500 / 3000 chars useless — every sample was pure boilerplate.
+    /// This helper aggressively removes everything we don't care about for debugging:
+    ///   1. The entire <head>…</head> block (meta, link, scripts, styles, analytics).
+    ///   2. Any remaining <script> or <style> blocks outside of <head>.
+    ///   3. Most HTML comments (<!-- … -->).
+    ///   4. Runs of whitespace collapsed to a single space.
+    /// The result is body markup only: form fields, error messages, flash notices, etc.
     /// </summary>
     private static string BuildDomExcerpt(string html, int maxChars = 3000)
     {
         if (string.IsNullOrEmpty(html)) return "";
 
-        var stripped = System.Text.RegularExpressions.Regex.Replace(
-            html,
-            @"<(script|style)[^>]*>.*?</\1>",
-            "",
-            System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        const System.Text.RegularExpressions.RegexOptions Opts =
+            System.Text.RegularExpressions.RegexOptions.Singleline |
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase;
+
+        var stripped = html;
+        // 1. Drop entire <head>…</head>.
+        stripped = System.Text.RegularExpressions.Regex.Replace(stripped, @"<head[^>]*>.*?</head>", "", Opts);
+        // 2. Drop any <script> or <style> blocks that live outside <head>.
+        stripped = System.Text.RegularExpressions.Regex.Replace(stripped, @"<(script|style)[^>]*>.*?</\1>", "", Opts);
+        // 3. Drop HTML comments.
+        stripped = System.Text.RegularExpressions.Regex.Replace(stripped, @"<!--.*?-->", "", Opts);
+        // 4. Collapse whitespace.
         stripped = System.Text.RegularExpressions.Regex.Replace(stripped, @"\s+", " ").Trim();
 
         return stripped.Length > maxChars ? stripped[..maxChars] + "…" : stripped;
