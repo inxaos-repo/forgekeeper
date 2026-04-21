@@ -1214,17 +1214,46 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     if (!await loginPage.IsCheckedAsync("input[name='_remember_me']"))
                         await loginPage.CheckAsync("input[name='_remember_me']");
 
+                    // Wait for the submit button to exist and be ready for interaction BEFORE clicking.
+                    // Selector uses [name='_submit'] only — works for both <button name="_submit"> and
+                    // <input name="_submit"> variants MMF may render. The stricter
+                    // button[type='submit'][name='_submit'] selector was fragile: if MMF renders an
+                    // <input> or omits type=submit, ClickAsync waits 30s for it to appear and then
+                    // throws a TimeoutException that the outer catch mis-labels as a "post-login
+                    // navigation" timeout.
+                    context.Logger.LogInformation("[MMF] Playwright: submitting login form...");
+                    const string SubmitSelector = "[name='_submit']";
+                    try
+                    {
+                        await loginPage.WaitForSelectorAsync(
+                            SubmitSelector,
+                            new PageWaitForSelectorOptions
+                            {
+                                Timeout = 15000,
+                                State   = WaitForSelectorState.Visible,
+                            });
+                    }
+                    catch (TimeoutException)
+                    {
+                        // Selector missing = DOM shape changed on MMF's side. Dump current HTML so
+                        // we can see what's actually there without a fresh debugging round-trip.
+                        var html = await loginPage.ContentAsync();
+                        var excerpt = html.Length > 1500 ? html[..1500] + "…" : html;
+                        context.Logger.LogError(
+                            "[MMF] Submit button not found on /login (selector={Selector}, url={Url}). DOM excerpt: {Excerpt}",
+                            SubmitSelector, loginPage.Url, excerpt);
+                        await loginPage.CloseAsync();
+                        throw;
+                    }
+
                     // Set up the navigation waiter BEFORE clicking so a fast redirect isn't missed.
                     // The form's action attribute POSTs to /login_check — we don't navigate manually.
-                    // Predicate excludes both "/login" and "login_check" (the intermediate POST target);
-                    // "/login_check" contains "/login" so the original predicate already skips it, but
-                    // being explicit avoids confusion. Timeout bumped to 60 s — on-disk Chromium + CF
-                    // edge can take ~20 s just for GET /login, leaving no headroom at 30 s.
-                    context.Logger.LogInformation("[MMF] Playwright: submitting login form...");
+                    // Predicate excludes both "/login" and "login_check" (the intermediate POST target).
+                    // Timeout 60s — on-disk Chromium + CF edge can take ~20 s just for GET /login.
                     var navTask = loginPage.WaitForURLAsync(
                         url => !url.Contains("/login") && !url.Contains("login_check"),
                         new PageWaitForURLOptions { Timeout = 60000 });
-                    await loginPage.ClickAsync("button[type='submit'][name='_submit']");
+                    await loginPage.ClickAsync(SubmitSelector);
                     try
                     {
                         await navTask;
@@ -1272,8 +1301,12 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 }
                 catch (TimeoutException tex)
                 {
+                    // Generic outer-catch timeout. Inner code paths log their own specific diagnostic
+                    // (selector-missing dumps the DOM, WaitForURLAsync falls through to the cookie
+                    // check). If we end up HERE, it's something else — probably GotoAsync or a hang
+                    // Playwright hasn't surfaced elsewhere. Log the message verbatim so we can tell.
                     context.Logger.LogError(
-                        "[MMF] Playwright login timed out waiting for post-login navigation: {Error}",
+                        "[MMF] Playwright login threw TimeoutException in unclassified location: {Error}",
                         tex.Message);
                 }
                 catch (Exception pwEx)
