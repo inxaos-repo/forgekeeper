@@ -18,14 +18,17 @@ namespace Forgekeeper.Scraper.Mmf;
 ///                 is returned as a URL fragment, extracted by our callback HTML, and
 ///                 POSTed to /auth/mmf/callback. Token validity is verified via a live
 ///                 GET /api/v2/user ping on each AuthenticateAsync call.
-/// Manifest: Primary — FlareSolverr CF bypass + Playwright headless login, then
-///           HttpClient fetch of /api/data-library/objectPreviews with session cookies.
+/// Manifest: Primary — FlareSolverr CF bypass + Playwright headless login; manifest is
+///           fetched INSIDE the Playwright page via page.EvaluateAsync(fetch(...)) so the
+///           request carries Chromium's TLS fingerprint (CF's cf_clearance is bound to it).
+///           HttpClient with the same cookies gets 403 HTML challenge (fingerprint mismatch).
 ///           Secondary — manual JSON upload via the Plugins page.
 /// Scraping: MMF v2 API for model details and file download URLs.
 ///           Download: Bearer → 302 CDN redirect (no auth forwarded, AWS presigned URLs
 ///           reject extra Authorization headers). Fallback chain on 403:
-///           [fallback=cookies] FlareSolverr session cookies, then
-///           [fallback=playwright] headless Playwright browser.
+///           [fallback=cf-playwright] CF HTML challenge → Playwright directly (same TLS fix),
+///           [fallback=cookies]       non-CF 403 → FlareSolverr session cookies, then
+///           [fallback=playwright]    headless Playwright browser.
 /// </summary>
 public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 {
@@ -318,11 +321,22 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 if (response.IsSuccessStatusCode)
                 {
                     var objJson = await response.Content.ReadAsStringAsync(ct);
-                    // HTML response guard (CF error pages, etc.)
+                    // HTML response guard (CF TLS fingerprint mismatch — challenge page instead of JSON).
+                    // Fall back to Playwright EvaluateAsync which runs inside Chromium (the fingerprint
+                    // CF issued the clearance to).
                     if (objJson.TrimStart().StartsWith("<"))
                     {
-                        context.Logger.LogWarning("[MMF] Got HTML response for model {Id} — CF block?", model.ExternalId);
-                        return ScrapeResult.Failure($"HTML response for {model.Name} (possible CF block)");
+                        context.Logger.LogWarning(
+                            "[MMF] Got HTML response for model {Id} — CF challenge, trying Playwright fallback",
+                            model.ExternalId);
+                        objJson = numericId is null ? "" : await FetchObjectDetailsViaBrowserAsync(numericId, bearerToken, context.Logger, ct) ?? "";
+                        if (string.IsNullOrEmpty(objJson) || objJson.TrimStart().StartsWith("<"))
+                        {
+                            context.Logger.LogError(
+                                "[MMF] Playwright fallback also returned HTML/empty for model {Id} — CF challenge unresolved",
+                                model.ExternalId);
+                            return ScrapeResult.Failure($"CF HTML challenge for {model.Name} (Playwright fallback also failed)");
+                        }
                     }
                     // Parse everything manually — MMF API types are wildly inconsistent
                     using var objDoc = JsonDocument.Parse(objJson);
@@ -506,17 +520,29 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                             }
 
                             // 403 fallback chain — wrapped in TryFallbackDownloadAsync:
-                            //   [fallback=cookies]   FlareSolverr session cookies
-                            //   [fallback=playwright] headless Playwright browser (Cloudflare bypass)
+                            //   [fallback=cf-playwright] CF HTML challenge → skip cookies (same TLS issue), Playwright only
+                            //   [fallback=cookies]       non-CF 403 → FlareSolverr session cookies
+                            //   [fallback=playwright]    headless Playwright browser (Cloudflare bypass)
                             bool downloadedByBrowser = false;
                             if (fileResponse.StatusCode == System.Net.HttpStatusCode.Forbidden)
                             {
+                                // Peek at body to detect CF HTML challenge pages.
+                                // CF TLS fingerprint mismatch — cookies via HttpClient have the same
+                                // fingerprint problem, so skip the cookie fallback and go straight to
+                                // Playwright (Chromium — the fingerprint CF actually issued to).
+                                var forbiddenBody = await fileResponse.Content.ReadAsStringAsync(ct);
+                                var isCfChallenge = IsCfHtmlChallenge(fileResponse, forbiddenBody);
+                                if (isCfChallenge)
+                                    context.Logger.LogWarning(
+                                        "[MMF][download] 403 CF HTML challenge for {File} — skipping cookie fallback, routing through Playwright",
+                                        safeName);
                                 downloadedByBrowser = await TryFallbackDownloadAsync(
                                     file.DownloadUrl, filePath, bearerToken,
-                                    sessionCookies, sessionUA, safeName,
-                                    context.Logger, ct);
+                                    isCfChallenge ? null : sessionCookies,  // skip cookies for CF TLS fingerprint issue
+                                    sessionUA, safeName, context.Logger, ct);
                                 if (!downloadedByBrowser)
-                                    throw new Exception($"All download methods (Bearer, cookies, Playwright) returned 403 for {safeName}");
+                                    throw new Exception(
+                                        $"All download methods ({(isCfChallenge ? "Bearer, Playwright (CF HTML challenge)" : "Bearer, cookies, Playwright")}) returned 403 for {safeName}");
                             }
 
                             if (!downloadedByBrowser)
@@ -940,8 +966,9 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
                 if (cdnUrl != null)
                 {
-                    logger.LogDebug("[MMF] Browser CDN redirect: {Url}",
-                        cdnUrl.Length > 100 ? cdnUrl[..100] : cdnUrl);
+                    logger.LogInformation("[MMF] Captured CDN URL for {File}: {Url}",
+                        Path.GetFileName(filePath),
+                        cdnUrl.Length > 100 ? cdnUrl[..100] + "..." : cdnUrl);
 
                     using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
                     dlClient.DefaultRequestHeaders.UserAgent.ParseAdd(
@@ -956,15 +983,21 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                         await using var output = File.Create(filePath);
                         await using var stream = await cdnResponse.Content.ReadAsStreamAsync(ct);
                         await stream.CopyToAsync(output, ct);
-                        logger.LogInformation("[MMF] Browser download succeeded: {File}", Path.GetFileName(filePath));
+                        var bytes = new FileInfo(filePath).Length;
+                        logger.LogInformation("[MMF] CDN fetch returned {Status} ({Bytes} bytes) for {File}",
+                            cdnResponse.StatusCode, bytes, Path.GetFileName(filePath));
                         return true;
                     }
 
-                    logger.LogWarning("[MMF] Browser CDN download failed: {Status}", cdnResponse.StatusCode);
+                    logger.LogWarning("[MMF] CDN fetch returned {Status} ({Bytes} bytes) for {File} — download failed",
+                        cdnResponse.StatusCode,
+                        (await cdnResponse.Content.ReadAsByteArrayAsync(ct)).Length,
+                        Path.GetFileName(filePath));
                 }
                 else
                 {
-                    logger.LogWarning("[MMF] Playwright did not capture CDN URL for {Url}", url);
+                    logger.LogWarning("[MMF] Playwright did not capture CDN URL for {File} (url={Url})",
+                        Path.GetFileName(filePath), url);
                 }
             }
             finally
@@ -1253,6 +1286,9 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             // Step 1: Get CF cookies via FlareSolverr
             var cfCookies = new List<(string Name, string Value)>();
             string? solvedUserAgent = null;
+            // Holds the library JSON fetched INSIDE the Playwright browser context (CF-proof).
+            // Set in Step 2 inline (before loginPage.CloseAsync) and consumed below.
+            string? browserLibraryJson = null;
 
             if (!string.IsNullOrEmpty(flareSolverrUrl))
             {
@@ -1504,6 +1540,61 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                             "[MMF] Login SUCCESS via Playwright: finalUrl={Url}, cookies={Count}, REMEMBERME=True",
                             finalUrl, cfCookies.Count);
                         loginSuccess = true;
+
+                        // ── Step 2 (inline): Fetch library manifest INSIDE Playwright ──
+                        //
+                        // CF's cf_clearance cookie is bound to the originating Chromium TLS
+                        // fingerprint. HttpClient has a different fingerprint, so CF rejects the
+                        // cookie and returns a 403 HTML challenge page even when the cookie is
+                        // valid. Running the fetch inside page.EvaluateAsync keeps us in the
+                        // Chromium context that earned the clearance — CF honours it.
+                        //
+                        // Reference: inxaos-repo/mmf-downloader ManifestService.cs:177.
+                        if (verbose)
+                            context.Logger.LogInformation("[MMF] Step 2: fetching manifest via page.EvaluateAsync inside Playwright...");
+
+                        context.Progress.Report(new ScrapeProgress
+                        {
+                            Status = "fetching_manifest",
+                            CurrentItem = "Fetching library manifest via Playwright...",
+                        });
+
+                        try
+                        {
+                            // Navigate to /my/collections to establish an authenticated page
+                            // context before running the fetch. This is a lightweight page that
+                            // confirms we're logged in and seeds the session cookies correctly.
+                            try
+                            {
+                                await loginPage.GotoAsync(
+                                    "https://www.myminifactory.com/my/collections",
+                                    new PageGotoOptions { Timeout = 30000, WaitUntil = WaitUntilState.DOMContentLoaded });
+                                try { await loginPage.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 10000 }); } catch { }
+                            }
+                            catch (Exception navEx)
+                            {
+                                context.Logger.LogWarning(navEx, "[MMF] Step 2: nav to /my/collections failed — proceeding with direct fetch");
+                            }
+
+                            browserLibraryJson = await loginPage.EvaluateAsync<string>(@"
+                                async () => {
+                                    const resp = await fetch('/api/data-library/objectPreviews', {
+                                        credentials: 'include',
+                                        headers: { 'Accept': 'application/json' }
+                                    });
+                                    if (!resp.ok) return JSON.stringify({ error: resp.status, statusText: resp.statusText });
+                                    const data = await resp.json();
+                                    return JSON.stringify(data);
+                                }
+                            ");
+                            context.Logger.LogInformation(
+                                "[MMF] Step 2 via Playwright EvaluateAsync: {Len} chars",
+                                browserLibraryJson?.Length ?? 0);
+                        }
+                        catch (Exception fetchEx)
+                        {
+                            context.Logger.LogError(fetchEx, "[MMF] Step 2 EvaluateAsync fetch failed — will surface error below");
+                        }
                     }
                     else
                     {
@@ -1563,38 +1654,24 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 }
             }
 
-            // Step 2: Fetch data-library using HttpClient with FlareSolverr cookies
-            // No Playwright needed — FlareSolverr already solved CF and logged in
+            // Step 2 result: manifest was fetched INSIDE the Playwright browser context above
+            // (CF-proof — uses Chromium's TLS fingerprint). Save cookies for download fallbacks.
             if (verbose)
-                context.Logger.LogInformation("[MMF] Step 2: Fetching data-library with session cookies via HttpClient...");
+                context.Logger.LogInformation("[MMF] Step 2: using manifest from Playwright EvaluateAsync");
 
-            context.Progress.Report(new ScrapeProgress
-            {
-                Status = "fetching_manifest",
-                CurrentItem = "Fetching library data with session cookies...",
-            });
-
-            // Build cookie header from FlareSolverr cookies
+            // Build + save cookie header for ScrapeModelAsync download fallbacks.
+            // These are still useful when CF is NOT challenging (fast-path HttpClient downloads).
             var cookieHeader = string.Join("; ", cfCookies.Select(c => $"{c.Name}={c.Value}"));
-            
-            // Save cookies + user agent for use in ScrapeModelAsync (file downloads)
             await context.TokenStore.SaveTokenAsync("session_cookies", cookieHeader, ct);
             await context.TokenStore.SaveTokenAsync("session_useragent", solvedUserAgent ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", ct);
             if (verbose)
                 context.Logger.LogInformation("[MMF] Saved session cookies for file downloads");
 
-            using var libraryClient = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-            libraryClient.DefaultRequestHeaders.Add("Cookie", cookieHeader);
-            libraryClient.DefaultRequestHeaders.Add("User-Agent", solvedUserAgent ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-
-            var libraryResponse = await libraryClient.GetAsync("https://www.myminifactory.com/api/data-library/objectPreviews", ct);
-            var jsonResult = await libraryResponse.Content.ReadAsStringAsync(ct);
-            if (verbose)
-                context.Logger.LogInformation("[MMF] Data-library response: status={Status}, length={Len}", libraryResponse.StatusCode, jsonResult.Length);
-
+            var jsonResult = browserLibraryJson;
             if (string.IsNullOrEmpty(jsonResult) || jsonResult.Contains("\"error\""))
             {
-                context.Logger.LogError("[MMF] Failed to fetch library: {Result}", jsonResult?.Substring(0, Math.Min(200, jsonResult?.Length ?? 0)));
+                context.Logger.LogError("[MMF] Step 2 manifest failed: {Result}",
+                    jsonResult?.Substring(0, Math.Min(200, jsonResult?.Length ?? 0)) ?? "(null — EvaluateAsync did not run or threw)");
                 return [];
             }
 
@@ -2021,6 +2098,76 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         return url.Contains("cdn.myminifactory.com", StringComparison.OrdinalIgnoreCase)
             || url.Contains("dl.myminifactory.com", StringComparison.OrdinalIgnoreCase)
             || url.Contains("dl4.myminifactory.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="response"/> looks like a Cloudflare HTML
+    /// challenge page (status 403/503, body starts with <c>&lt;</c>).
+    ///
+    /// CF challenge pages arise from TLS fingerprint mismatch: the browser that earned the
+    /// <c>cf_clearance</c> cookie used Chromium's TLS stack; .NET HttpClient presents a
+    /// different fingerprint, so CF rejects the cookie and returns an HTML challenge even when
+    /// the cookie value is technically correct.
+    /// </summary>
+    internal static bool IsCfHtmlChallenge(HttpResponseMessage response, string body)
+    {
+        // Success responses are never CF challenges
+        if (response.IsSuccessStatusCode) return false;
+
+        // Body must start with '<' (HTML document)
+        var trimmed = body.TrimStart();
+        if (!trimmed.StartsWith("<")) return false;
+
+        // CF challenges are usually 403 or 503
+        var status = (int)response.StatusCode;
+        if (status != 403 && status != 503) return false;
+
+        // Content-type may be text/html or application/octet-stream; body start is decisive
+        return true;
+    }
+
+    /// <summary>
+    /// Fetch <c>/api/v2/objects/{numericId}</c> inside a Playwright browser context as a
+    /// CF-proof fallback when the HttpClient call returns an HTML challenge page.
+    ///
+    /// The <see cref="GetBrowserContextAsync"/> route handler injects Bearer auth
+    /// for <c>www.myminifactory.com</c> requests, so the fetch picks it up automatically.
+    /// </summary>
+    private async Task<string?> FetchObjectDetailsViaBrowserAsync(
+        string numericId, string bearerToken, ILogger logger, CancellationToken ct)
+    {
+        try
+        {
+            var browserCtx = await GetBrowserContextAsync(bearerToken, logger);
+            var page = await browserCtx.NewPageAsync();
+            try
+            {
+                // Route handler already injects Bearer for www.myminifactory.com —
+                // no need to add Authorization manually in the JS fetch.
+                var apiPath = $"/api/v2/objects/{numericId}";
+                var json = await page.EvaluateAsync<string>(@"async (path) => {
+                    const resp = await fetch(path, {
+                        credentials: 'include',
+                        headers: { 'Accept': 'application/json' }
+                    });
+                    if (!resp.ok) return JSON.stringify({ error: resp.status, statusText: resp.statusText });
+                    return await resp.text();
+                }", apiPath);
+                logger.LogInformation(
+                    "[MMF] FetchObjectDetailsViaBrowserAsync for {Id}: {Len} chars",
+                    numericId, json?.Length ?? 0);
+                return json;
+            }
+            finally
+            {
+                await page.CloseAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[MMF] FetchObjectDetailsViaBrowserAsync threw for {Id}", numericId);
+            return null;
+        }
     }
 
     /// <summary>Find an existing file by exact path or fuzzy search in subdirectories.</summary>
