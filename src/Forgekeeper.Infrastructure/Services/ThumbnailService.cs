@@ -84,10 +84,49 @@ public class ThumbnailService : IThumbnailService
         return _rendererAvailable.Value;
     }
 
+    /// <summary>
+    /// Returns true for macOS metadata sidecar files that are NOT real STLs:
+    /// anything inside an <c>__MACOSX/</c> archive-junk directory, or any file
+    /// whose basename starts with <c>._</c> or <c>.__</c> (AppleDouble / resource-fork
+    /// dotfiles that ZIP uploads from macOS creators scatter throughout libraries).
+    ///
+    /// stl-thumb panics on these (<c>Option::unwrap()</c> on <c>None</c> in src/mesh.rs:128:34).
+    /// Filtering them at the thumbnail boundary eliminates the panic-warn class of
+    /// log spam without touching real STL handling.
+    ///
+    /// The basename rule is strictly the basename — paths like <c>/foo/._hidden/real.stl</c>
+    /// where the dotfile pattern is in a parent component are NOT filtered.
+    /// </summary>
+    internal static bool IsMacOSJunkFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        // Normalise path separators before doing the substring check so Windows-style
+        // paths (\__MACOSX\) are caught alongside POSIX ones. stl-thumb on Linux will
+        // almost always see POSIX paths, but the cost is trivial and the defence is cheap.
+        var normalised = path.Replace('\\', '/');
+        if (normalised.Contains("/__MACOSX/", StringComparison.Ordinal))
+            return true;
+
+        var filename = Path.GetFileName(path);
+        return filename.StartsWith("._", StringComparison.Ordinal)
+            || filename.StartsWith(".__", StringComparison.Ordinal);
+    }
+
     public async Task GenerateThumbnailAsync(string stlPath, string outputPath, CancellationToken ct = default)
     {
         if (!IsRendererAvailable())
             return;
+
+        if (IsMacOSJunkFile(stlPath))
+        {
+            // macOS fork / __MACOSX archive-junk file — stl-thumb panics on these.
+            // Skip silently at debug level; we get thousands of these per batch
+            // and don't want to spam info-level logs with every skip.
+            _logger.LogDebug("[thumbnail] Skipping macOS junk file: {Path}", stlPath);
+            return;
+        }
 
         var renderer = _config.GetValue("Thumbnails:Renderer", "stl-thumb");
         var sizeRaw = _config.GetValue("Thumbnails:Size", "256")!;
