@@ -715,7 +715,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
             // A3: a model whose every download failed is NOT a success. Previously this
             // returned Ok, so a dead token produced "7,324 scraped, 0 bytes".
-            if (filesFailed > 0 && filesDownloaded == 0 && filesSkipped == 0)
+            if (!IsScrapeSuccessful(filesDownloaded, filesSkipped, filesFailed))
             {
                 context.Logger.LogWarning("[MMF] All {Failed} downloads failed for {Name}", filesFailed, model.Name);
                 return ScrapeResult.Failure($"All {filesFailed} downloads failed for {model.Name}");
@@ -1801,6 +1801,13 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         return string.IsNullOrWhiteSpace(publicUrl) ? null : $"{publicUrl.Trim().TrimEnd('/')}/auth/mmf/callback";
     }
 
+    /// <summary>
+    /// A3: a scrape is only a success if something is on disk or nothing was attempted.
+    /// Every attempted download failing (0 downloaded, 0 already present) is a failure.
+    /// </summary>
+    internal static bool IsScrapeSuccessful(int filesDownloaded, int filesSkipped, int filesFailed) =>
+        !(filesFailed > 0 && filesDownloaded == 0 && filesSkipped == 0);
+
     /// <summary>401 always; 403 only when the body is JSON (an HTML 403 is a Cloudflare challenge).</summary>
     internal static async Task<bool> IsTokenExpiredResponseAsync(HttpResponseMessage response, CancellationToken ct)
     {
@@ -2012,9 +2019,12 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     }
 
     /// <summary>Create a pre-configured HttpClient for MMF API calls with Bearer auth.</summary>
+    /// <summary>Test seam: when set, API clients use this handler instead of the network.</summary>
+    internal static HttpMessageHandler? ApiHandlerOverride { get; set; }
+
     private static HttpClient CreateApiClient(string bearerToken)
     {
-        var client = new HttpClient
+        var client = new HttpClient(ApiHandlerOverride ?? new HttpClientHandler(), disposeHandler: ApiHandlerOverride == null)
         {
             BaseAddress = new Uri("https://www.myminifactory.com"),
             Timeout = TimeSpan.FromSeconds(120),

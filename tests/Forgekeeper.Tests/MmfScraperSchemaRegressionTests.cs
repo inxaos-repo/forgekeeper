@@ -19,7 +19,7 @@ namespace Forgekeeper.Tests;
 ///       production sync becomes noisy and the password fingerprint log line
 ///       returns. Test catches that immediately.
 ///
-///   (c) Required fields stay required. If someone makes <c>MMF_USERNAME</c>
+///   (c) Required-ness is deliberate (MMF_USERNAME/MMF_PASSWORD optional since Phase 1 A2). If someone changes <c>MMF_USERNAME</c>
 ///       optional, the plugin can load with no auth and silently fail later
 ///       (harder-to-diagnose than a clear startup error).
 ///
@@ -44,18 +44,19 @@ public class MmfScraperSchemaRegressionTests
         var field = Plugin.ConfigSchema.FirstOrDefault(f => f.Key == "MMF_PASSWORD");
         Assert.NotNull(field);
         Assert.Equal(PluginConfigFieldType.Secret, field!.Type);
-        Assert.True(field.Required,
-            "MMF_PASSWORD must stay Required — making it optional allows the plugin to load with no password and fail silently at sync time.");
+        // Phase 1 (A2): optional — manifest upload + OAuth token need no password.
+        Assert.False(field.Required,
+            "MMF_PASSWORD is optional since Phase 1 (only the legacy headless-browser login uses it).");
     }
 
     [Fact]
-    public void MmfUsername_Field_IsRequiredString()
+    public void MmfUsername_Field_IsOptionalString()
     {
         var field = Plugin.ConfigSchema.FirstOrDefault(f => f.Key == "MMF_USERNAME");
         Assert.NotNull(field);
         Assert.Equal(PluginConfigFieldType.String, field!.Type);
-        Assert.True(field.Required,
-            "MMF_USERNAME must stay Required.");
+        Assert.False(field.Required,
+            "MMF_USERNAME is optional since Phase 1 (A2).");
     }
 
     [Fact]
