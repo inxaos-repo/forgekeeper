@@ -166,7 +166,7 @@ public class PluginHostService : BackgroundService
             var dbFactory = _services.GetRequiredService<IDbContextFactory<ForgeDbContext>>();
             await using var db = await dbFactory.CreateDbContextAsync(ct);
             var lastRun = await db.SyncRuns
-                .Where(r => r.PluginSlug == slug && (r.Status == "running" || r.Status == "failed") && r.LastProcessedIndex > 0)
+                .Where(r => r.PluginSlug == slug && (r.Status == "running" || r.Status == "failed" || r.Status == "paused") && r.LastProcessedIndex > 0)
                 .OrderByDescending(r => r.StartedAt)
                 .FirstOrDefaultAsync(ct);
             if (lastRun != null)
@@ -220,6 +220,7 @@ public class PluginHostService : BackgroundService
         status.IsRunning = true;
         status.LastSyncAt = DateTime.UtcNow;
         status.Error = null;
+        status.NeedsReauth = false;
 
         // Create SyncRun record
         var syncRunId = Guid.NewGuid();
@@ -240,6 +241,7 @@ public class PluginHostService : BackgroundService
         }
 
         int scraped = 0, failed = 0, skipped = 0;
+        int? pausedAtIndex = null;
         string syncStatus = "completed";
         string? syncError = null;
 
@@ -310,6 +312,50 @@ public class PluginHostService : BackgroundService
                 }
             }
 
+            // D5 step 1: index existing folders by source id (DB first, then metadata.json)
+            // so items are matched by identity before falling back to fuzzy name matching.
+            var idIndex = await BuildSourceIdIndexAsync(slug, context.SourceDirectory, dbFactory, ct);
+            _logger.LogInformation("[{Slug}] Source-id index: {Db} ids from DB, {Meta} ids from metadata.json",
+                slug, idIndex.DbCount, idIndex.MetadataCount);
+
+            var dryRun = context.Config.TryGetValue("DRY_RUN", out var dr) && IsTrue(dr);
+            var rehomeApply = context.Config.TryGetValue("REHOME_UNKNOWN_APPLY", out var ra) && IsTrue(ra);
+            var reportDir = Path.Combine(context.SourceDirectory, ".forgekeeper-reports");
+            var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+
+            if (dryRun)
+            {
+                // DRY_RUN: classify every item and write a report. No downloads, no folders created.
+                var entries = manifest
+                    .Select(m => LibraryReconciler.Classify(m, idIndex, context.SourceDirectory,
+                        (c, n) => FindExistingModelDir(context.SourceDirectory, c, n), SanitizePath))
+                    .ToList();
+                var (jsonPath, csvPath) = LibraryReconciler.WriteReport(reportDir, $"dryrun-{slug}-{stamp}", entries);
+                var plan = UnknownRehomePlanner.Plan(context.SourceDirectory, manifest, SanitizePath);
+                var (rjson, _) = UnknownRehomePlanner.WriteReport(reportDir, $"rehome-unknown-{slug}-{stamp}", plan);
+                _logger.LogWarning(
+                    "[{Slug}] DRY RUN — no downloads. {ById} by-id, {ByName} by-name, {New} new, {Conflict} conflict. Report: {Json} / {Csv}. Unknown re-home plan ({Movable} movable of {Total}): {Rehome}",
+                    slug,
+                    entries.Count(e => e.Status == ReconcileStatus.OnDiskById),
+                    entries.Count(e => e.Status == ReconcileStatus.OnDiskByName),
+                    entries.Count(e => e.Status == ReconcileStatus.New),
+                    entries.Count(e => e.Status == ReconcileStatus.Conflict),
+                    jsonPath, csvPath, plan.Count(p => p.Status == RehomeStatus.Movable), plan.Count, rjson);
+                status.LastReportPath = jsonPath;
+                syncStatus = "dry-run";
+                return;
+            }
+
+            if (rehomeApply)
+            {
+                // Explicit opt-in only (default off). Moves unknown/* folders whose id is in the manifest.
+                var plan = UnknownRehomePlanner.Plan(context.SourceDirectory, manifest, SanitizePath);
+                UnknownRehomePlanner.WriteReport(reportDir, $"rehome-unknown-applied-{slug}-{stamp}", plan);
+                var moved = UnknownRehomePlanner.Apply(plan);
+                _logger.LogWarning("[{Slug}] REHOME_UNKNOWN_APPLY: moved {Moved} folders out of unknown/", slug, moved);
+                idIndex = await BuildSourceIdIndexAsync(slug, context.SourceDirectory, dbFactory, ct);
+            }
+
             // Scrape each model
             int processedSinceLastUpdate = 0;
             int manifestIndex = 0;
@@ -335,13 +381,29 @@ public class PluginHostService : BackgroundService
                 var creatorDir = SanitizePath(model.CreatorName ?? "unknown");
                 var modelName = SanitizePath(model.Name);
 
-                // Fuzzy match: find existing directory that matches (handles name variations)
-                var modelDir = FindExistingModelDir(context.SourceDirectory, creatorDir, modelName)
+                // D5: identity first (DB → metadata.json), then fuzzy name match.
+                var idMatches = idIndex.Lookup(model.ExternalId);
+                if (idMatches.Count > 1)
+                    _logger.LogWarning("[{Slug}] {Id} is claimed by {Count} folders; using the first", slug, model.ExternalId, idMatches.Count);
+                var modelDir = idMatches.FirstOrDefault()
+                    ?? FindExistingModelDir(context.SourceDirectory, creatorDir, modelName)
                     ?? Path.Combine(context.SourceDirectory, creatorDir, modelName);
                 Directory.CreateDirectory(modelDir);
                 context.ModelDirectory = modelDir;
 
                 var result = await loaded.Scraper.ScrapeModelAsync(context, model, ct);
+                if (result.AuthExpired)
+                {
+                    // A3: token expired — checkpoint at THIS item and pause. Resuming
+                    // (after re-auth) restarts here instead of marking the rest as done.
+                    syncStatus = "paused";
+                    syncError = result.Error ?? "Authentication expired";
+                    status.Error = syncError;
+                    status.NeedsReauth = true;
+                    pausedAtIndex = currentIndex;
+                    _logger.LogWarning("[{Slug}] Sync paused at index {Index}: {Error}", slug, currentIndex, syncError);
+                    break;
+                }
                 if (result.Success)
                     scraped++;
                 else
@@ -412,6 +474,7 @@ public class PluginHostService : BackgroundService
                     run.FailedModels = failed;
                     run.SkippedModels = skipped;
                     run.Error = syncError;
+                    if (pausedAtIndex.HasValue) run.LastProcessedIndex = pausedAtIndex.Value;
                     await db.SaveChangesAsync();
                 }
             }
@@ -924,6 +987,33 @@ public class PluginHostService : BackgroundService
         return TimeSpan.Zero; // Disabled by default
     }
 
+    private static bool IsTrue(string? v) =>
+        v != null && (v.Equals("true", StringComparison.OrdinalIgnoreCase) || v == "1" || v.Equals("yes", StringComparison.OrdinalIgnoreCase));
+
+    private async Task<SourceIdIndex> BuildSourceIdIndexAsync(
+        string slug, string sourceDir, IDbContextFactory<ForgeDbContext> dbFactory, CancellationToken ct)
+    {
+        var index = new SourceIdIndex();
+        if (Enum.TryParse<Core.Enums.SourceType>(slug, ignoreCase: true, out var source))
+        {
+            try
+            {
+                await using var db = await dbFactory.CreateDbContextAsync(ct);
+                var rows = await db.Models
+                    .Where(m => m.Source == source && m.SourceId != null)
+                    .Select(m => new { m.SourceId, m.BasePath })
+                    .ToListAsync(ct);
+                foreach (var r in rows) index.AddFromDb(r.SourceId, r.BasePath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[{Slug}] Could not load source ids from DB; using metadata.json only", slug);
+            }
+        }
+        index.ScanMetadata(sourceDir);
+        return index;
+    }
+
     private static string SanitizePath(string name)
     {
         var invalid = Path.GetInvalidFileNameChars();
@@ -1024,6 +1114,12 @@ public class PluginSyncStatus
     public int FailedModels { get; set; }
     public string? Error { get; set; }
     public ScrapeProgress? CurrentProgress { get; set; }
+
+    /// <summary>Set when a sync paused because the source rejected our token; cleared on next sync start.</summary>
+    public bool NeedsReauth { get; set; }
+
+    /// <summary>Path of the last DRY_RUN report (JSON), if any.</summary>
+    public string? LastReportPath { get; set; }
     
     /// <summary>CTS for cancelling the current sync. Set when sync starts, cleared when it ends.</summary>
     public CancellationTokenSource? SyncCts { get; set; }
