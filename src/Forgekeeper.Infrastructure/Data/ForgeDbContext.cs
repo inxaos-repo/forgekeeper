@@ -1,5 +1,6 @@
 using Forgekeeper.Core.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Forgekeeper.Infrastructure.Data;
 
@@ -19,6 +20,18 @@ public class ForgeDbContext : DbContext
     public DbSet<SavedTemplate> SavedTemplates => Set<SavedTemplate>();
     public DbSet<SyncRun> SyncRuns => Set<SyncRun>();
     public DbSet<FileIssue> FileIssues => Set<FileIssue>();
+
+    /// <summary>
+    /// #37: Npgsql refuses DateTime Kind=Local for timestamptz. Normalise every DateTime on
+    /// write (Local → UTC, Unspecified → assumed UTC) and mark reads as UTC, so a stray
+    /// Local value (e.g. parsed from metadata.json with an offset) can never fail a save.
+    /// </summary>
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+        configurationBuilder.Properties<DateTime>().HaveConversion<UtcDateTimeConverter>();
+        configurationBuilder.Properties<DateTime?>().HaveConversion<UtcNullableDateTimeConverter>();
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -291,4 +304,30 @@ public class ForgeDbContext : DbContext
             entity.HasIndex(e => e.DirectoryPath).IsUnique();
         });
     }
+}
+
+/// <summary>#37: always persist DateTime as UTC.</summary>
+public sealed class UtcDateTimeConverter : ValueConverter<DateTime, DateTime>
+{
+    public UtcDateTimeConverter() : base(v => UtcDateTime.Normalize(v), v => DateTime.SpecifyKind(v, DateTimeKind.Utc)) { }
+}
+
+/// <summary>#37: always persist DateTime? as UTC.</summary>
+public sealed class UtcNullableDateTimeConverter : ValueConverter<DateTime?, DateTime?>
+{
+    public UtcNullableDateTimeConverter()
+        : base(v => v.HasValue ? UtcDateTime.Normalize(v.Value) : v,
+               v => v.HasValue ? DateTime.SpecifyKind(v.Value, DateTimeKind.Utc) : v) { }
+}
+
+public static class UtcDateTime
+{
+    public static DateTime Normalize(DateTime v) => v.Kind switch
+    {
+        DateTimeKind.Utc => v,
+        DateTimeKind.Local => v.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(v, DateTimeKind.Utc),
+    };
+
+    public static DateTime? Normalize(DateTime? v) => v.HasValue ? Normalize(v.Value) : null;
 }
