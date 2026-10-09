@@ -249,7 +249,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
         // If user uploaded a manifest JSON, use it directly (secondary path)
         IReadOnlyList<ScrapedModel> models = uploadedManifest is not null
-            ? await ParseUploadedManifestAsync(uploadedManifest, ct)
+            ? await ParseUploadedManifestAsync(uploadedManifest, ct, context.Logger)
             : await FetchLibraryViaBrowserAsync(context, ct);
 
         // Log a rollup of non-object entries that will be skipped during scrape.
@@ -1218,48 +1218,13 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
     // --- Private helpers ---
 
-    private static async Task<IReadOnlyList<ScrapedModel>> ParseUploadedManifestAsync(Stream manifestStream, CancellationToken ct)
+    private static async Task<IReadOnlyList<ScrapedModel>> ParseUploadedManifestAsync(
+        Stream manifestStream, CancellationToken ct, ILogger? logger = null)
     {
-        var doc = await JsonDocument.ParseAsync(manifestStream, cancellationToken: ct);
-        var models = new List<ScrapedModel>();
-
-        // MMF data-library exports vary in structure.
-        // Handle both array-of-objects and { items: [...] } formats.
-        JsonElement items;
-        if (doc.RootElement.ValueKind == JsonValueKind.Array)
-            items = doc.RootElement;
-        else if (doc.RootElement.TryGetProperty("items", out var itemsProp))
-            items = itemsProp;
-        else if (doc.RootElement.TryGetProperty("objects", out var objectsProp))
-            items = objectsProp;
-        else
-            return models;
-
-        foreach (var item in items.EnumerateArray())
-        {
-            var id = item.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
-            var name = item.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null;
-            if (id is null || name is null) continue;
-
-            var creatorName = item.TryGetProperty("designer", out var designer)
-                && designer.TryGetProperty("name", out var designerName)
-                    ? designerName.GetString()
-                    : null;
-            var creatorId = item.TryGetProperty("designer", out var d2)
-                && d2.TryGetProperty("id", out var did)
-                    ? did.ToString()
-                    : null;
-
-            models.Add(new ScrapedModel
-            {
-                ExternalId = id,
-                Name = name,
-                CreatorName = creatorName,
-                CreatorId = creatorId,
-                Type = item.TryGetProperty("type", out var t) ? t.GetString() : null,
-            });
-        }
-
+        var (models, stats) = await MmfManifestParser.ParseAsync(manifestStream, ct);
+        logger?.LogInformation(
+            "MMF manifest: {Rows} rows → {Distinct} distinct → {Unique} unique items ({Multi} multi-source, {NoCreator} rows without creator)",
+            stats.Rows, stats.DistinctRows, stats.UniqueItems, stats.MultiSourceItems, stats.RowsWithoutCreator);
         return models;
     }
 
@@ -1677,7 +1642,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
             // Parse manifest
             using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(jsonResult));
-            var models = await ParseUploadedManifestAsync(stream, ct);
+            var models = await ParseUploadedManifestAsync(stream, ct, context.Logger);
             context.Logger.LogInformation("[MMF] Library manifest: {Count} models found!", models.Count);
             return models;
         }
