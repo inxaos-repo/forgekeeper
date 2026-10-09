@@ -97,6 +97,7 @@ public class PluginHostService : BackgroundService
             _builtinPluginsDirectory, _pluginsDirectory);
 
         _appStoppingToken = stoppingToken;
+        await MarkStaleRunsAsync(stoppingToken);
         await DiscoverPluginsAsync(stoppingToken);
 
         _logger.LogInformation("Loaded {Count} plugin(s): {Slugs}",
@@ -201,7 +202,42 @@ public class PluginHostService : BackgroundService
             return AuthResult.Failed($"Plugin '{slug}' not found");
 
         var context = await BuildPluginContextAsync(slug, loaded.Scraper, ct);
-        return await loaded.Scraper.HandleAuthCallbackAsync(context, callbackParams, ct);
+        var result = await loaded.Scraper.HandleAuthCallbackAsync(context, callbackParams, ct);
+        if (result.Authenticated && _syncStatuses.TryGetValue(slug, out var st)) st.NeedsReauth = false;
+        return result;
+    }
+
+    /// <summary>
+    /// #27: at startup no sync can be in flight, so any SyncRun still "running" was orphaned by a
+    /// restart/crash. Mark it failed (keeping LastProcessedIndex so resume still works).
+    /// </summary>
+    internal async Task<int> MarkStaleRunsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var dbFactory = _services.GetRequiredService<IDbContextFactory<ForgeDbContext>>();
+            await using var db = await dbFactory.CreateDbContextAsync(ct);
+            var stale = await db.SyncRuns.Where(r => r.Status == "running").ToListAsync(ct);
+            foreach (var r in stale)
+            {
+                r.Status = "failed";
+                r.CompletedAt ??= DateTime.UtcNow;
+                r.Error = string.IsNullOrEmpty(r.Error)
+                    ? "Abandoned: Forgekeeper restarted while this sync was running"
+                    : r.Error + " | Abandoned: Forgekeeper restarted while this sync was running";
+            }
+            if (stale.Count > 0)
+            {
+                await db.SaveChangesAsync(ct);
+                _logger.LogWarning("Marked {Count} stale running sync run(s) as failed (abandoned)", stale.Count);
+            }
+            return stale.Count;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Stale sync-run cleanup failed");
+            return 0;
+        }
     }
 
     internal async Task RunSyncAsync(string slug, CancellationToken ct, int startIndex = 0)
@@ -375,6 +411,15 @@ public class PluginHostService : BackgroundService
                 idIndex = await BuildSourceIdIndexAsync(slug, context.SourceDirectory, dbFactory, ct);
             }
 
+            // Phase 2 selection: New-only (default for plugins that declare NEW_ONLY), MAX_ITEMS cap, force.
+            var forceRedownload = IsTrue(GetConfigOrDefault(loaded.Scraper, context.Config, "FORCE_REDOWNLOAD"));
+            var newOnly = !forceRedownload && !IsTrue(GetConfigOrDefault(loaded.Scraper, context.Config, "RESTORE_MODE")) && IsTrue(GetConfigOrDefault(loaded.Scraper, context.Config, "NEW_ONLY"));
+            var maxItems = int.TryParse(GetConfigOrDefault(loaded.Scraper, context.Config, "MAX_ITEMS"), out var mi) && mi > 0 ? mi : 0;
+            var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int attempted = 0;
+            if (newOnly || maxItems > 0)
+                _logger.LogInformation("[{Slug}] Selection: newOnly={NewOnly}, force={Force}, maxItems={Max}", slug, newOnly, forceRedownload, maxItems);
+
             // Scrape each model
             int processedSinceLastUpdate = 0;
             int manifestIndex = 0;
@@ -396,6 +441,33 @@ public class PluginHostService : BackgroundService
                     processedSinceLastUpdate++;
                     continue;
                 }
+
+                // Duplicate manifest rows (8,140 rows → 5,290 unique ids): process each id once.
+                if (!string.IsNullOrEmpty(model.ExternalId) && !seenIds.Add(model.ExternalId))
+                {
+                    skipped++;
+                    processedSinceLastUpdate++;
+                    continue;
+                }
+
+                // Phase 2: only download items classified New; never re-download by id unless forced.
+                if (newOnly && !IsSelectedForDownload(model, idIndex, context.SourceDirectory))
+                {
+                    skipped++;
+                    processedSinceLastUpdate++;
+                    continue;
+                }
+
+                if (maxItems > 0 && attempted >= maxItems)
+                {
+                    syncStatus = "paused";
+                    syncError = $"MAX_ITEMS={maxItems} reached — resume to continue";
+                    status.Error = syncError;
+                    pausedAtIndex = currentIndex;
+                    _logger.LogWarning("[{Slug}] {Msg} (checkpoint index {Index})", slug, syncError, currentIndex);
+                    break;
+                }
+                attempted++;
 
                 var creatorDir = SanitizePath(model.CreatorName ?? "unknown");
                 var modelName = SanitizePath(model.Name);
@@ -462,6 +534,16 @@ public class PluginHostService : BackgroundService
 
             _logger.LogInformation("[{Slug}] Sync complete: {Scraped} scraped, {Failed} failed, {Skipped} skipped",
                 slug, scraped, failed, skipped);
+        }
+        catch (PluginAuthExpiredException ex)
+        {
+            // Phase 2: session rejected (e.g. during the manifest fetch) — pause, don't fail.
+            status.Error = ex.Message;
+            status.NeedsReauth = true;
+            syncStatus = "paused";
+            syncError = ex.Message;
+            pausedAtIndex ??= startIndex;
+            _logger.LogWarning("[{Slug}] Sync paused — reconnect needed: {Error}", slug, ex.Message);
         }
         catch (Exception ex)
         {
@@ -1068,6 +1150,17 @@ public class PluginHostService : BackgroundService
 
         return TimeSpan.Zero; // Disabled by default
     }
+
+    /// <summary>True when an item is New (not on disk by id or name) — the only items a New-only sync downloads.</summary>
+    internal static bool IsSelectedForDownload(ScrapedModel model, SourceIdIndex idIndex, string sourceDir) =>
+        LibraryReconciler.Classify(model, idIndex, sourceDir,
+            (c, n) => FindExistingModelDir(sourceDir, c, n), SanitizePath).Status == ReconcileStatus.New;
+
+    /// <summary>Config value, falling back to the plugin schema's DefaultValue.</summary>
+    internal static string? GetConfigOrDefault(ILibraryScraper scraper, IReadOnlyDictionary<string, string> config, string key) =>
+        config.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v)
+            ? v
+            : scraper.ConfigSchema.FirstOrDefault(f => f.Key == key)?.DefaultValue;
 
     private static bool IsTrue(string? v) =>
         v != null && (v.Equals("true", StringComparison.OrdinalIgnoreCase) || v == "1" || v.Equals("yes", StringComparison.OrdinalIgnoreCase));
