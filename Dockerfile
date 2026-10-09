@@ -61,9 +61,12 @@ FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
 # Install stl-thumb + system dependencies + Chromium for Playwright
-RUN apt-get update && \
+# p7zip-rar (Debian non-free) provides the RAR/RAR5 decoder; p7zip-full alone lists the
+# Rar5 format but fails every entry with "Unsupported Method".
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
-    wget ca-certificates curl p7zip-full \
+    wget ca-certificates curl p7zip-full p7zip-rar \
     libegl1 libgl1 libxkbcommon0 \
     # Chromium and Playwright browser deps
     chromium \
@@ -79,6 +82,9 @@ RUN apt-get update && \
     dpkg -i /tmp/stl-thumb.deb || apt-get install -f -y && \
     rm -f /tmp/stl-thumb.deb && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Fail the build if the RAR codec is missing (MMF ships many .rar archives)
+RUN test -f /usr/lib/p7zip/Codecs/Rar.so
 
 # Copy published application
 COPY --from=build /app/publish .
