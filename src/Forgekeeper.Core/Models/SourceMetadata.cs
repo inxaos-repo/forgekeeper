@@ -43,6 +43,17 @@ public class SourceMetadata
     [JsonPropertyName("acquisition")]
     public MetadataAcquisition? Acquisition { get; set; }
 
+    /// <summary>All acquisition records (an item can come from several sources).</summary>
+    [JsonPropertyName("acquisitions")]
+    public List<MetadataAcquisitionEntry>? Acquisitions { get; set; }
+
+    [JsonPropertyName("libraryAddedAt")]
+    public DateTime? LibraryAddedAt { get; set; }
+
+    /// <summary>Prefixed parent bundle id (e.g. "bundle-3147") for bundle children.</summary>
+    [JsonPropertyName("bundleId")]
+    public string? BundleId { get; set; }
+
     [JsonPropertyName("images")]
     public List<MetadataImage>? Images { get; set; }
 
@@ -128,6 +139,21 @@ public class MetadataAcquisition
 
     [JsonPropertyName("campaignId")]
     public string? CampaignId { get; set; }
+}
+
+public class MetadataAcquisitionEntry
+{
+    [JsonPropertyName("source")]
+    public string? Source { get; set; }
+
+    [JsonPropertyName("method")]
+    public string? Method { get; set; }
+
+    [JsonPropertyName("reference")]
+    public string? Reference { get; set; }
+
+    [JsonPropertyName("acquiredAt")]
+    public DateTime? AcquiredAt { get; set; }
 }
 
 public class MetadataImage

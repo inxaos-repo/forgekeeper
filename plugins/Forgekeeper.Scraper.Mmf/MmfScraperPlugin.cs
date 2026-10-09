@@ -1663,14 +1663,16 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             ["metadataVersion"] = 3,
             ["source"] = "mmf",
             ["externalId"] = model.ExternalId,
-            ["externalUrl"] = details?.Url ?? $"https://www.myminifactory.com/object/{model.ExternalId}",
+            ["externalUrl"] = details?.Url ?? (model.ExternalId.StartsWith("bundle-", StringComparison.OrdinalIgnoreCase)
+                ? $"https://www.myminifactory.com/bundle/{MmfManifestParser.NumericId(model.ExternalId)}"
+                : $"https://www.myminifactory.com/object/{MmfManifestParser.NumericId(model.ExternalId)}"),
             ["name"] = details?.Name ?? model.Name,
             ["description"] = details?.Description,
             ["type"] = details?.Type ?? model.Type,
             ["creator"] = new Dictionary<string, object?>
             {
                 ["externalId"] = model.CreatorId ?? details?.Designer?.Id?.ToString(),
-                ["username"] = details?.Designer?.Username ?? model.CreatorName,
+                ["username"] = details?.Designer?.Username ?? model.CreatorUsername ?? model.CreatorName,
                 ["displayName"] = details?.Designer?.Name ?? model.CreatorName,
                 ["profileUrl"] = details?.Designer?.ProfileUrl,
             },
@@ -1679,6 +1681,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 ["created"] = details?.CreatedAt,
                 ["updated"] = details?.UpdatedAt ?? model.UpdatedAt,
                 ["published"] = details?.PublishedAt,
+                ["addedToLibrary"] = model.LibraryAddedAt,
                 ["lastSynced"] = DateTime.UtcNow,
             },
             ["files"] = files.Select(f => new Dictionary<string, object?>
@@ -1691,12 +1694,41 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         };
 
         // Merge tags: source tags + existing user tags (deduplicated)
-        var sourceTags = details?.Tags?.Select(t => t.Name).Where(n => n != null).ToList() ?? new List<string?>();
+        var sourceTags = (details?.Tags?.Select(t => t.Name) ?? Enumerable.Empty<string?>())
+            .Concat(model.Tags)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var userTags = GetExistingList(existing, "userTags");
         var allTags = sourceTags.Concat(userTags).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         metadata["tags"] = allTags;
         metadata["sourceTags"] = sourceTags; // Track which came from MMF
         metadata["userTags"] = userTags;     // Track user-added tags
+
+        // D3: acquisition provenance (SDK 1.1). One entry per distinct manifest source row.
+        metadata["acquisitions"] = model.Acquisitions.Select(a => new Dictionary<string, object?>
+        {
+            ["source"] = a.Source,
+            ["method"] = a.Method ?? MmfManifestParser.MapAcquisitionMethod(a.Source),
+            ["reference"] = a.Reference,
+            ["acquiredAt"] = a.AcquiredAt,
+        }).ToList();
+        // Primary acquisition in the shape FileScannerService already understands.
+        // Precedence: purchase > campaign > tribe > subscription > user group > free.
+        var primary = model.Acquisitions
+            .OrderBy(a => Array.IndexOf(AcquisitionPrecedence, a.Method ?? "Unknown") is var i && i < 0 ? 99 : i)
+            .FirstOrDefault();
+        if (primary != null)
+        {
+            metadata["acquisition"] = new Dictionary<string, object?>
+            {
+                ["method"] = primary.Method ?? MmfManifestParser.MapAcquisitionMethod(primary.Source),
+                ["orderId"] = primary.Source.Equals("PURCHASE", StringComparison.OrdinalIgnoreCase) ? primary.Reference : null,
+                ["campaignId"] = primary.Source.Equals("FRONTIER", StringComparison.OrdinalIgnoreCase) ? primary.Reference : null,
+            };
+        }
+        metadata["libraryAddedAt"] = model.LibraryAddedAt;
+        metadata["bundleId"] = model.BundleId;
 
         if (details?.Images is { Count: > 0 })
         {
@@ -1731,6 +1763,9 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
         return metadata;
     }
+
+    private static readonly string[] AcquisitionPrecedence =
+        ["Purchase", "Campaign", "Tribe", "Subscription", "UserGroup", "Gift", "Free", "Unknown"];
 
     /// <summary>Extract a DateTime from nested metadata (e.g., dates.lastSynced).</summary>
     private static DateTime? GetDateFromMetadata(Dictionary<string, object?> metadata, string dateKey)
