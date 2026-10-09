@@ -30,7 +30,7 @@ namespace Forgekeeper.Scraper.Mmf;
 ///           [fallback=cookies]       non-CF 403 → FlareSolverr session cookies, then
 ///           [fallback=playwright]    headless Playwright browser.
 /// </summary>
-public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
+public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 {
     // Playwright browser — lazily created on first 403 fallback, shared across models in a sync
     private IPlaywright? _playwright;
@@ -119,6 +119,41 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         },
         new PluginConfigField
         {
+            Key = "MMF_SESSION",
+            Label = "MMF Website Session (cookies)",
+            Type = PluginConfigFieldType.Secret,
+            Required = false,
+            HelpText = "Phase 2 primary auth. Paste the Cookie header (or cookie-export JSON / Playwright storageState) from a logged-in myminifactory.com browser tab. It is moved into the encrypted token store on the next auth/sync. Alternatively POST it to /api/v1/plugins/mmf/session.",
+        },
+        new PluginConfigField
+        {
+            Key = "MAX_ITEMS",
+            Label = "Max Items Per Sync",
+            Type = PluginConfigFieldType.Number,
+            Required = false,
+            DefaultValue = "0",
+            HelpText = "Cap on items processed per sync (0 = unlimited). Use 5 for a cautious first real run.",
+        },
+        new PluginConfigField
+        {
+            Key = "NEW_ONLY",
+            Label = "Download New Items Only",
+            Type = PluginConfigFieldType.String,
+            Required = false,
+            DefaultValue = "true",
+            HelpText = "Only process manifest items classified New (not on disk by ID or name). Set 'false' to revisit everything.",
+        },
+        new PluginConfigField
+        {
+            Key = "FORCE_REDOWNLOAD",
+            Label = "Force Re-download",
+            Type = PluginConfigFieldType.String,
+            Required = false,
+            DefaultValue = "false",
+            HelpText = "Set 'true' to re-download items already on disk (overrides NEW_ONLY and the existing-archive check).",
+        },
+        new PluginConfigField
+        {
             Key = "RESTORE_MODE",
             Label = "Restore Mode",
             Type = PluginConfigFieldType.String,
@@ -165,6 +200,20 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         // back as a URL fragment; our callback HTML extracts + POSTs it to /auth/mmf/callback.
         // Token validity is verified via a live GET /api/v2/user ping (implicit flow doesn't
         // issue expiry timestamps we can trust locally).
+        // Phase 2: a pasted MMF_SESSION config value is imported into the token store once.
+        if (context.Config.TryGetValue("MMF_SESSION", out var pasted) && !string.IsNullOrWhiteSpace(pasted))
+        {
+            var current = await context.TokenStore.GetTokenAsync(MmfSession.CookieKey, ct);
+            string? normalized = null;
+            try { normalized = MmfSession.NormalizeCookieInput(pasted); } catch { }
+            if (normalized != null && normalized != current)
+                await ImportSessionAsync(context, pasted, null, ct);
+        }
+        // Session first: if a non-expired session is saved, we're good (expiry is detected on use).
+        var sessionCreds = await GetCredentialsAsync(context, ct);
+        if (sessionCreds.HasSession)
+            return AuthResult.Success("Using saved MMF website session");
+
         var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) && !string.IsNullOrWhiteSpace(cid) ? cid : "downloader_v2";
         var callbackUrl = ResolveCallbackUrl(context.Config);
 
@@ -213,6 +262,13 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
     public async Task<AuthResult> HandleAuthCallbackAsync(PluginContext context, IDictionary<string, string> callbackParams, CancellationToken ct = default)
     {
+        // Phase 2: session import (POST /api/v1/plugins/mmf/session routes here).
+        if (callbackParams.TryGetValue("session_cookies", out var rawCookies) && !string.IsNullOrWhiteSpace(rawCookies))
+        {
+            callbackParams.TryGetValue("user_agent", out var ua);
+            return await ImportSessionAsync(context, rawCookies, ua, ct);
+        }
+
         // Implicit flow: access_token arrives as a URL fragment, extracted by our callback
         // page HTML and POSTed to /auth/mmf/callback as a query param.
         if (callbackParams.TryGetValue("access_token", out var accessToken) && !string.IsNullOrEmpty(accessToken))
@@ -245,9 +301,18 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         });
 
         // If user uploaded a manifest JSON, use it directly (secondary path)
-        IReadOnlyList<ScrapedModel> models = uploadedManifest is not null
-            ? await ParseUploadedManifestAsync(uploadedManifest, ct, context.Logger)
-            : await FetchLibraryViaBrowserAsync(context, ct);
+        // Phase 2: real sync uses the saved session; an uploaded manifest is the fallback;
+        // the legacy headless browser is last resort.
+        IReadOnlyList<ScrapedModel> models;
+        if (uploadedManifest is not null)
+            models = await ParseUploadedManifestAsync(uploadedManifest, ct, context.Logger);
+        else
+        {
+            var creds = await GetCredentialsAsync(context, ct);
+            models = creds.HasSession
+                ? await FetchLibraryViaSessionAsync(context, creds, ct)
+                : await FetchLibraryViaBrowserAsync(context, ct);
+        }
 
         // Log a rollup of non-object entries that will be skipped during scrape.
         // Bundles and collections have a different API surface; only individual objects
@@ -295,6 +360,12 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 resolvedType, model.ExternalId, model.Name ?? "<no name>");
             return ScrapeResult.Ok("metadata.json", []);
         }
+
+        // Phase 2: session-first path. Falls through to the legacy OAuth path only when
+        // there is no (non-expired) session.
+        var phase2Creds = await GetCredentialsAsync(context, ct);
+        if (phase2Creds.HasSession && !string.IsNullOrEmpty(numericId))
+            return await ScrapeViaSessionAsync(context, model, numericId, phase2Creds, ct);
 
         context.Progress.Report(new ScrapeProgress
         {

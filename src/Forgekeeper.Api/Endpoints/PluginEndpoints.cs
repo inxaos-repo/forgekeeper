@@ -178,6 +178,64 @@ public static class PluginEndpoints
             return Results.BadRequest(new { authenticated = false, message = result.Message });
         }).WithName("PluginAuth");
 
+        // POST /api/v1/plugins/{slug}/session — Phase 2: import a website session.
+        // Body: text/plain Cookie header, or JSON {"cookies": "<header | cookie JSON array | storageState>", "userAgent": "..."}.
+        // Cookie values are stored encrypted in the token store and never echoed back.
+        group.MapPost("/{slug}/session", async (
+            string slug,
+            HttpRequest request,
+            PluginHostService pluginHost,
+            CancellationToken ct) =>
+        {
+            if (pluginHost.GetPlugin(slug) is null) return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
+            using var reader = new StreamReader(request.Body);
+            var raw = await reader.ReadToEndAsync(ct);
+            if (string.IsNullOrWhiteSpace(raw)) return Results.BadRequest(new { message = "Empty body" });
+            string cookies = raw;
+            string? userAgent = request.Headers.UserAgent.ToString();
+            if (request.ContentType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(raw);
+                    var root = doc.RootElement;
+                    if (root.ValueKind == System.Text.Json.JsonValueKind.Object && root.TryGetProperty("cookies", out var c))
+                    {
+                        cookies = c.ValueKind == System.Text.Json.JsonValueKind.String ? c.GetString()! : c.GetRawText();
+                        if (root.TryGetProperty("userAgent", out var u) && u.ValueKind == System.Text.Json.JsonValueKind.String)
+                            userAgent = u.GetString();
+                    }
+                }
+                catch (System.Text.Json.JsonException) { return Results.BadRequest(new { message = "Invalid JSON" }); }
+            }
+            var result = await pluginHost.HandleAuthCallbackAsync(slug,
+                new Dictionary<string, string> { ["session_cookies"] = cookies, ["user_agent"] = userAgent ?? "" }, ct);
+            return result.Authenticated
+                ? Results.Ok(new { authenticated = true, message = result.Message })
+                : Results.BadRequest(new { authenticated = false, message = result.Message });
+        }).WithName("PluginSessionImport");
+
+        // GET /api/v1/plugins/{slug}/session — session status (no secret values).
+        group.MapGet("/{slug}/session", async (string slug, PluginHostService pluginHost, CancellationToken ct) =>
+        {
+            if (pluginHost.GetPlugin(slug) is null) return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
+            var context = await pluginHost.CreateContextAsync(slug, ct);
+            var cookies = await context.TokenStore.GetTokenAsync("session_cookies", ct);
+            var state = await context.TokenStore.GetTokenAsync("session_state", ct);
+            var savedAt = await context.TokenStore.GetTokenAsync("session_saved_at", ct);
+            var cookieNames = string.IsNullOrEmpty(cookies) ? Array.Empty<string>()
+                : cookies.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(p => p.Split('=', 2)[0]).ToArray();
+            var connected = cookieNames.Length > 0 && !string.Equals(state, "expired", StringComparison.OrdinalIgnoreCase);
+            return Results.Ok(new
+            {
+                connected,
+                state = cookieNames.Length == 0 ? "none" : (state ?? "unknown"),
+                reconnectNeeded = !connected,
+                savedAt,
+                cookieNames,
+            });
+        }).WithName("PluginSessionStatus");
+
         // GET /api/v1/plugins/{slug}/progress — stream SSE sync progress
         group.MapGet("/{slug}/progress", async (
             string slug,
