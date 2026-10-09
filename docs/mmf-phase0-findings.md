@@ -1,5 +1,7 @@
 # MMF modernization: Phase 0 findings (2026-10-08)
 
+**Status: Phase 0 COMPLETE (2026-10-08).** Browser-side results (0.1–0.4, 0.6) were provided by Damon from his logged-in browser on 2026-10-08.
+
 Collected by Bob on the live cluster with read-only access. No sync was triggered, nothing on NFS was changed, no cluster resources were modified, and no secret values were read or printed.
 
 ## 0.5 Current auth failure
@@ -58,69 +60,37 @@ The Deployment has **no `MMF_*` env vars and no `envFrom`**. There is also no MM
 - First entries (alphabetical sample): `"Beastmen Unleashed" - November '23 Fantasy Module and Battlemaps`, `(0111) Male ranger hunter post - apocalyptic sci-fi sniper with antigas mask`, `(FREE) Shipping Containers x2 for FDM`, `(T.M.T.F) Tank McTank Face`, `- Septembre Release`, `001 OLD RUINS` … `026 TECH BAZAAR` (a 26-item numbered terrain set), `10 Vertical Stones`, `10 miniatures - EARLY BIRD - complete RPG ogres expansion game - …`, `100MM Wide Cliff Expansion for Bridges and Dwarf Door`, `101 PRECINCT FORTRESS` … `113 CHAOS FANE`, `12 Days of ME 2023`, `12 Month Loyalty Reward - Etheum Rig`, `12 miniatures - 32mm - Heroes of the Blade - DRAGONBLADE`.
 - To get the full list for the Phase 1 re-home, generate it read-only: `ls -1 /library/sources/mmf/unknown`. Then match each folder's `metadata.json` ID against the manifest.
 
+## 0.1 Login methods
+- Damon set an MMF password. **Both Facebook and password login now work.**
+- The `MMF_PASSWORD` stored in Forgekeeper is the old one. Damon will update it himself in the UI.
+
+## 0.2 OAuth client
+- The MMF developer app `forgekeeper` (app id 2277) exists, with redirect `https://forgekeeper.k8s.inxaos.com/auth/mmf/callback`.
+- **It has no client secret.** The authorization-code flow and refresh tokens are not available; only the implicit flow is.
+- The `CLIENT_SECRET` stored in `plugin_configs` is probably MiniDownloader's shared `downloader_v2` secret (C2).
+
+## 0.3 Pagination / repeated rows
+- **There is no pagination.** `/api/data-library/objectPreviews` ignores `page`, `offset` and `per_page`.
+- Two fetches were identical: **8,138 rows, 5,290 unique ids, 856 ids repeated** (a sample showed consecutive ids each repeated 4×). firstId `bundle-3147`, lastId `object-2652`.
+- The repeats come from the endpoint, not the export (the export had 8,140 rows). Most likely there is one row per grant or tier-month. **D2 dedupe is required.**
+
 ## 0.4 Bundles 3147 / 2652 / 2447
-Public fetches of `https://www.myminifactory.com/bundle/{id}` return **403 Cloudflare "Just a moment…"**, and web search has no indexed pages for them. **Needs Damon** (logged-in browser). Paste this in the browser console:
+Children by manifest `bundleId`:
+- `bundle-3147` → 621435, 613514, 613054, 613047
+- `bundle-2652` → 639853, 639852, 639851
+- `bundle-2447` → 612498, 490382, 454324
 
-```js
-for (const id of [3147, 2652, 2447]) {
-  const r = await fetch(`/api/v2/bundles/${id}`, {credentials:'include'});
-  console.log(id, r.status, r.ok ? (await r.json()) : '');
-}
-// If that 404s, open https://www.myminifactory.com/bundle/<id> and copy the item list.
-```
+Notes:
+- The bundle row itself also carries its own `bundleId`, so exclude it when listing children.
+- Damon checked the bundle pages by eye, and they match. There's no need to download bundle archives.
+- `/api/v2/bundles/{id}` returns 404 (no such endpoint), and fetching `/bundle/{id}` from a script returns 403 (Cloudflare).
 
-## 0.3 Pagination / repeated rows (needs Damon)
-Paste in the console on myminifactory.com while logged in:
-
-```js
-(async () => {
-  const summarize = async (qs) => {
-    const r = await fetch('/api/data-library/objectPreviews' + qs, {credentials:'include', headers:{accept:'application/json'}});
-    const ct = r.headers.get('content-type'); if (!r.ok || !ct?.includes('json')) return {qs, status:r.status, ct};
-    const j = await r.json();
-    const rows = Array.isArray(j) ? j : (j.items || j.data || j.objects || j.results || []);
-    const ids = rows.map(x => x.id);
-    const counts = {}; ids.forEach(i => counts[i] = (counts[i]||0)+1);
-    const dup = Object.entries(counts).filter(([,n]) => n>1);
-    return {qs, status:r.status, topKeys:Array.isArray(j)?'array':Object.keys(j), rows:rows.length, distinct:new Set(ids).size,
-            dupIds:dup.length, dupSample:dup.slice(0,5), firstId:ids[0], lastId:ids.at(-1),
-            pagingHints:Array.isArray(j)?null:{total:j.total??j.totalCount??j.count, next:j.next??j.nextPage, page:j.page}};
-  };
-  const out = [];
-  out.push(await summarize(''));
-  out.push(await summarize(''));          // re-fetch: are the counts stable?
-  out.push(await summarize('?page=2'));
-  out.push(await summarize('?offset=100'));
-  out.push(await summarize('?page=2&per_page=100'));
-  console.table(out.map(o => ({...o, topKeys:String(o.topKeys), dupSample:JSON.stringify(o.dupSample), pagingHints:JSON.stringify(o.pagingHints)})));
-  // For a repeated id, check how the repeats differ:
-  // (await (await fetch('/api/data-library/objectPreviews',{credentials:'include'})).json()) → filter by id, compare source/release/yearmonth
-})();
-```
-If `?page=2` / `?offset=` returns the same `firstId` and `rows` as the unparameterized call, there is no pagination.
-
-## 0.6 Session download (needs Damon)
-Replace `<id>` with a known object ID from your library (for example one from the fixture). This reports only metadata; it doesn't save the file:
-
-```js
-(async () => {
-  const id = '<id>';   // numeric object id
-  for (const url of [`/download/object-${id}`, `/download/${id}`]) {
-    const r = await fetch(url, {credentials:'include', redirect:'follow'});
-    console.log(url, {status:r.status, redirected:r.redirected, finalHost:new URL(r.url).host,
-      contentType:r.headers.get('content-type'), contentLength:r.headers.get('content-length')});
-    r.body?.cancel();
-  }
-})();
-```
-A `200` with a `zip`/`octet-stream` content type means session download works and Phase 2c OAuth becomes optional. A `text/html` response or a 302 to a login page means it doesn't.
-
-## Still needs Damon
-- **0.1** Set an MMF password (Forgot password on the Facebook-linked email) and confirm that both login methods work.
-- **0.2** Request an OAuth authorization-code client with redirect `https://forgekeeper.k8s.inxaos.com/auth/mmf/callback`.
-- **0.3** Run the pagination snippet above.
-- **0.4** Run the bundle snippet above, or read the bundle pages.
-- **0.6** Run the session-download snippet above.
+## 0.6 Session download (KEY finding)
+- With only the logged-in website session cookies (no OAuth token), `/api/v2/objects/{id}` and `/api/v2/objects/{id}/files` return **200 JSON** including `download_url` (`https://www.myminifactory.com/download/{id}?archive_id=...`) and `archive_download_url`.
+- Fetching that `download_url` with the session **redirected cross-origin to a file host, which returned 200**. The browser blocked the read with CORS only, which doesn't apply server-side. Test object: 802018.
+- Plain `/download/{id}` without `archive_id` returns an HTML page, so always use the `download_url` from the files API.
+- **Conclusion:** a persisted website session can list the manifest, list files AND download. OAuth is optional, and the ~6h implicit token expiry is not a blocker.
+- **Recommendation:** Phase 2 makes `MmfSession` (storageState) the primary path for everything, with the implicit OAuth flow as a fallback.
 
 ## Side findings worth issues
 - Orphaned `sync_runs` rows stuck in `running` (4 from 04-21).
