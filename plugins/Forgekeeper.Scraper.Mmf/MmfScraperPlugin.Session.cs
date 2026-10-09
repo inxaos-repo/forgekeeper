@@ -147,9 +147,15 @@ public partial class MmfScraperPlugin
             var root = doc.RootElement;
             details = ParseModelDetails(root);
             targets = ResolveDownloadTargets(root, model.Name);
+            if (targets.Count == 0)
+            {
+                // #38: some objects (e.g. rules/PDF-only or not-yet-released items) expose no
+                // download link at all. Log the shape (key names only) and skip, don't fail.
+                var shape = DescribeFilesShape(root);
+                context.Logger.LogWarning("[MMF][session] {Id} ({Name}) has no download links; shape: {Shape}", numericId, model.Name, shape);
+                return ScrapeResult.Skip($"No downloadable files exposed by MMF for {numericId} ({shape})");
+            }
         }
-        if (targets.Count == 0)
-            return ScrapeResult.Failure($"No archive_download_url or files.items[].download_url for {numericId}");
 
         Directory.CreateDirectory(modelDir);
         var files = new List<DownloadedFile>();
@@ -262,6 +268,19 @@ public partial class MmfScraperPlugin
             result.Add(new MmfDownloadTarget(url, name, isArchive, size));
         }
         return result;
+    }
+
+    /// <summary>Key names / counts only (never values) describing where files would live.</summary>
+    internal static string DescribeFilesShape(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return "non-object";
+        if (!root.TryGetProperty("files", out var f) || f.ValueKind == JsonValueKind.Null) return "files=absent";
+        if (f.ValueKind == JsonValueKind.Array) return $"files=array[{f.GetArrayLength()}]";
+        if (f.ValueKind != JsonValueKind.Object) return $"files={f.ValueKind}";
+        var keys = string.Join(",", f.EnumerateObject().Select(p => p.Name));
+        var items = f.TryGetProperty("items", out var it) && it.ValueKind == JsonValueKind.Array ? it.GetArrayLength() : -1;
+        var withUrl = items > 0 ? it.EnumerateArray().Count(i => i.ValueKind == JsonValueKind.Object && Str(i, "download_url") is not null) : 0;
+        return $"files{{{keys}}} items={items} withDownloadUrl={withUrl}";
     }
 
     private static string Absolute(string url) =>

@@ -277,6 +277,7 @@ public class PluginHostService : BackgroundService
         }
 
         int scraped = 0, failed = 0, skipped = 0;
+        int filesDownloaded = 0; long bytesDownloaded = 0;
         int? pausedAtIndex = null;
         string syncStatus = "completed";
         string? syncError = null;
@@ -511,7 +512,17 @@ public class PluginHostService : BackgroundService
                     break;
                 }
                 if (result.Success)
+                {
                     scraped++;
+                    var (fc, fb) = CountDownloaded(result.Files);
+                    filesDownloaded += fc;
+                    bytesDownloaded += fb;
+                }
+                else if (result.Skipped)
+                {
+                    skipped++;
+                    _logger.LogInformation("[{Slug}] Skipped {Model}: {Reason}", slug, model.Name, result.Error);
+                }
                 else
                 {
                     failed++;
@@ -536,6 +547,8 @@ public class PluginHostService : BackgroundService
                             run.ScrapedModels = scraped;
                             run.FailedModels = failed;
                             run.SkippedModels = skipped;
+                            run.FilesDownloaded = filesDownloaded;
+                            run.BytesDownloaded = bytesDownloaded;
                             run.LastProcessedIndex = currentIndex + 1; // next index to process
                             await db.SaveChangesAsync(ct);
                         }
@@ -589,6 +602,8 @@ public class PluginHostService : BackgroundService
                     run.ScrapedModels = scraped;
                     run.FailedModels = failed;
                     run.SkippedModels = skipped;
+                    run.FilesDownloaded = filesDownloaded;
+                    run.BytesDownloaded = bytesDownloaded;
                     run.Error = syncError;
                     if (pausedAtIndex.HasValue) run.LastProcessedIndex = pausedAtIndex.Value;
                     await db.SaveChangesAsync();
@@ -1334,6 +1349,24 @@ public class PluginHostService : BackgroundService
                 sb.Append(char.ToLowerInvariant(c));
         }
         return sb.ToString();
+    }
+
+    /// <summary>#38: files/bytes actually downloaded for one item (falls back to on-disk size).</summary>
+    internal static (int Files, long Bytes) CountDownloaded(IReadOnlyList<DownloadedFile>? files)
+    {
+        if (files is null) return (0, 0);
+        int n = 0; long b = 0;
+        foreach (var f in files)
+        {
+            n++;
+            var size = f.Size;
+            if (size <= 0)
+            {
+                try { if (File.Exists(f.LocalPath)) size = new FileInfo(f.LocalPath).Length; } catch { }
+            }
+            b += Math.Max(0, size);
+        }
+        return (n, b);
     }
 }
 

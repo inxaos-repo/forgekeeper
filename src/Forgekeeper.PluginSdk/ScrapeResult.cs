@@ -27,6 +27,14 @@ public class ScrapeResult
     /// </summary>
     public bool AuthExpired { get; init; }
 
+    /// <summary>
+    /// SDK 1.1: the item was deliberately not downloaded (e.g. the source exposes no
+    /// downloadable files for it). Counted as skipped, not failed. <see cref="Error"/> holds the reason.
+    /// </summary>
+    public bool Skipped { get; init; }
+
+    public static ScrapeResult Skip(string reason) => new() { Success = false, Skipped = true, Error = reason };
+
     public static ScrapeResult TokenExpired(string error) =>
         new() { Success = false, AuthExpired = true, Error = error };
 

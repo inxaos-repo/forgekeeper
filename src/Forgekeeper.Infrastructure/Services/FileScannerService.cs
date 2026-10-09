@@ -354,16 +354,16 @@ public class FileScannerService : IScannerService
         model.SourceUrl = metadata?.ExternalUrl;
         model.Description = metadata?.Description;
         model.Extra = metadata?.Extra != null ? JsonSerializer.Serialize(metadata.Extra) : null;
-        model.ExternalCreatedAt = metadata?.Dates?.Created;
-        model.ExternalUpdatedAt = metadata?.Dates?.Updated;
-        model.DownloadedAt = metadata?.Dates?.Downloaded;
+        model.ExternalCreatedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Created);
+        model.ExternalUpdatedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Updated);
+        model.DownloadedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Downloaded);
         model.LastScannedAt = DateTime.UtcNow;
         model.UpdatedAt = DateTime.UtcNow;
 
         // Denormalized fields from metadata
         model.LicenseType = metadata?.License?.Type;
         model.CollectionName = metadata?.Collection?.Name;
-        model.PublishedAt = metadata?.Dates?.Published;
+        model.PublishedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Published);
         model.PrintSettings = metadata?.PrintSettings;
 
         // Acquisition fields from metadata
