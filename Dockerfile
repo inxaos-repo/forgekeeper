@@ -63,7 +63,7 @@ WORKDIR /app
 # Install stl-thumb + system dependencies + Chromium for Playwright
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    wget ca-certificates curl \
+    wget ca-certificates curl p7zip-full \
     libegl1 libgl1 libxkbcommon0 \
     # Chromium and Playwright browser deps
     chromium \
