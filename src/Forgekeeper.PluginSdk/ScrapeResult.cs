@@ -20,6 +20,16 @@ public class ScrapeResult
     /// <summary>Error message if the scrape failed.</summary>
     public string? Error { get; init; }
 
+    /// <summary>
+    /// SDK 1.1: the source rejected our credentials (expired/revoked token). The host
+    /// must stop the sync, checkpoint at this item, and ask the user to re-authenticate
+    /// rather than continuing (every following item would fail the same way).
+    /// </summary>
+    public bool AuthExpired { get; init; }
+
+    public static ScrapeResult TokenExpired(string error) =>
+        new() { Success = false, AuthExpired = true, Error = error };
+
     public static ScrapeResult Failure(string error) => new() { Success = false, Error = error };
 
     public static ScrapeResult Ok(string metadataFile, IReadOnlyList<DownloadedFile> files) =>

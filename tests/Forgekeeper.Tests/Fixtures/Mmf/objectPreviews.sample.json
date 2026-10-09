@@ -1,0 +1,258 @@
+{
+  "_comment": "Redacted, synthetic MMF library manifest (objectPreviews shape, Phase 0 live schema). 13 rows -> 12 distinct -> 11 unique ids. Covers all six source kinds, an exact repeated row, a multi-source item, a bundle + its children (bundle row carries its own bundleId), the object-3147/bundle-3147 collision, and a legacy designer.* row.",
+  "objectPreviews": [
+    {
+      "originalId": 100,
+      "id": "object-100",
+      "type": "object",
+      "name": "Redacted Knight",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "PURCHASE",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator A",
+      "creatorId": "1001",
+      "creatorUsername": "redacted-a",
+      "order": {
+        "id": 9001,
+        "reference": "ORD-REDACTED-1"
+      }
+    },
+    {
+      "originalId": 100,
+      "id": "object-100",
+      "type": "object",
+      "name": "Redacted Knight",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "PURCHASE",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator A",
+      "creatorId": "1001",
+      "creatorUsername": "redacted-a",
+      "order": {
+        "id": 9001,
+        "reference": "ORD-REDACTED-1"
+      }
+    },
+    {
+      "originalId": 100,
+      "id": "object-100",
+      "type": "object",
+      "name": "Redacted Knight",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "THE_ADVENTURE",
+      "libraryAddedAt": "2024-05-01T00:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator A",
+      "creatorId": "1001",
+      "creatorUsername": "redacted-a",
+      "release": "2024-05"
+    },
+    {
+      "originalId": 200,
+      "id": "object-200",
+      "type": "object",
+      "name": "Redacted Dragon",
+      "tags": [
+        "dragon",
+        {
+          "name": "tribe-reward"
+        }
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "TRIBE",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator B",
+      "creatorId": "1002",
+      "creatorUsername": "redacted-b"
+    },
+    {
+      "originalId": 300,
+      "id": "object-300",
+      "type": "object",
+      "name": "Redacted Siege Tower",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "FRONTIER",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator B",
+      "creatorId": "1002",
+      "creatorUsername": "redacted-b",
+      "campaignId": 77
+    },
+    {
+      "originalId": 400,
+      "id": "object-400",
+      "type": "object",
+      "name": "Redacted Group Share",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "USER_GROUP",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator A",
+      "creatorId": "1001",
+      "creatorUsername": "redacted-a"
+    },
+    {
+      "originalId": 450,
+      "id": "object-450",
+      "type": "object",
+      "name": "Redacted Free Goblin",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "DOWNLOAD",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator C",
+      "creatorId": "1003",
+      "creatorUsername": "redacted-c"
+    },
+    {
+      "originalId": 500,
+      "id": "bundle-500",
+      "type": "bundle",
+      "name": "Redacted Warband Bundle",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "PURCHASE",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator B",
+      "creatorId": "1002",
+      "creatorUsername": "redacted-b",
+      "bundleId": 500
+    },
+    {
+      "originalId": 501,
+      "id": "object-501",
+      "type": "object",
+      "name": "Redacted Warband Archer",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "PURCHASE",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator B",
+      "creatorId": "1002",
+      "creatorUsername": "redacted-b",
+      "bundleId": 500
+    },
+    {
+      "originalId": 502,
+      "id": "object-502",
+      "type": "object",
+      "name": "Redacted Warband Captain",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "PURCHASE",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator B",
+      "creatorId": "1002",
+      "creatorUsername": "redacted-b",
+      "bundleId": 500
+    },
+    {
+      "originalId": 3147,
+      "id": "object-3147",
+      "type": "object",
+      "name": "Redacted Collision Model",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "DOWNLOAD",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator A",
+      "creatorId": "1001",
+      "creatorUsername": "redacted-a"
+    },
+    {
+      "originalId": 3147,
+      "id": "bundle-3147",
+      "type": "bundle",
+      "name": "Redacted Collision Model",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "PURCHASE",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "creatorName": "Redacted Creator A",
+      "creatorId": "1001",
+      "creatorUsername": "redacted-a",
+      "bundleId": 3147
+    },
+    {
+      "originalId": 600,
+      "id": "object-600",
+      "type": "object",
+      "name": "Redacted Legacy Row",
+      "tags": [
+        "fantasy"
+      ],
+      "createdAt": "2023-01-01T00:00:00Z",
+      "updatedAt": "2024-01-01T00:00:00Z",
+      "publishedAt": "2023-01-02T00:00:00Z",
+      "source": "PURCHASE",
+      "libraryAddedAt": "2024-02-01T10:00:00Z",
+      "creatorAvatar": "https://example.invalid/avatar.png",
+      "designer": {
+        "id": 1004,
+        "name": "Redacted Legacy Creator",
+        "username": "redacted-legacy"
+      }
+    }
+  ]
+}

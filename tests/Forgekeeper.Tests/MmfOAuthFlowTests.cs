@@ -60,13 +60,14 @@ public class MmfOAuthFlowTests
     }
 
     [Fact]
-    public void ConfigSchema_ClientId_HelpText_MentionsClientSecret()
+    public void ConfigSchema_ClientId_HelpText_MentionsImplicitFlow()
     {
+        // Phase 0/1: downloader_v2 uses the implicit flow — no client secret exists.
         var plugin = new MmfScraperPlugin();
         var field = plugin.ConfigSchema.FirstOrDefault(f => f.Key == "CLIENT_ID");
 
         Assert.NotNull(field);
-        Assert.Contains("CLIENT_SECRET", field!.HelpText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("implicit", field!.HelpText, StringComparison.OrdinalIgnoreCase);
     }
 
     // ─────────────────────────────────────────────
@@ -74,15 +75,16 @@ public class MmfOAuthFlowTests
     // ─────────────────────────────────────────────
 
     [Fact]
-    public async Task AuthenticateAsync_WithNoCredentials_ReturnsFailed()
+    public async Task AuthenticateAsync_WithNoCredentials_DoesNotFail()
     {
+        // Phase 1 (A2): credentials are optional. With no callback either → manifest-only.
         var plugin = new MmfScraperPlugin();
         var context = BuildContext(config: new Dictionary<string, string>());
+        if (MmfScraperPlugin.ResolveCallbackUrl(context.Config) != null) return; // env supplies PublicUrl
 
         var result = await plugin.AuthenticateAsync(context);
 
-        Assert.False(result.Authenticated);
-        Assert.Null(result.AuthUrl);
+        Assert.True(result.Authenticated);
         Assert.NotNull(result.Message);
     }
 

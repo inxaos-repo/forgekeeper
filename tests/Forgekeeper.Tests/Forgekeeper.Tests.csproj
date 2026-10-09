@@ -30,4 +30,8 @@
     <ProjectReference Include="../../plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

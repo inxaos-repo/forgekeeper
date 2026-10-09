@@ -48,7 +48,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     public string SourceSlug => "mmf";
     public string SourceName => "MyMiniFactory";
     public string Description => "Scrapes your MyMiniFactory purchased/backed library, downloads model files, and generates metadata.json sidecar files.";
-    public string Version => "1.0.0";
+    public string Version => "1.1.0";
     // RequiresBrowserAuth=true drives the admin UI's "Authenticate" button.
     // The OAuth implicit flow requires a browser: user visits MMF's consent screen,
     // approves, and MMF redirects back to our /auth/mmf/callback with the access_token
@@ -63,16 +63,16 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Key = "MMF_USERNAME",
             Label = "MyMiniFactory Email",
             Type = PluginConfigFieldType.String,
-            Required = true,
-            HelpText = "Your MyMiniFactory login email address.",
+            Required = false,
+            HelpText = "Optional. Your MyMiniFactory login email — only needed for the legacy headless-browser manifest fetch. Not needed when you upload a library manifest and connect via OAuth.",
         },
         new PluginConfigField
         {
             Key = "MMF_PASSWORD",
             Label = "MyMiniFactory Password",
             Type = PluginConfigFieldType.Secret,
-            Required = true,
-            HelpText = "Your MyMiniFactory password. Stored encrypted.",
+            Required = false,
+            HelpText = "Optional. Your MyMiniFactory password (legacy headless-browser login only). Stored encrypted.",
         },
         new PluginConfigField
         {
@@ -81,7 +81,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Type = PluginConfigFieldType.String,
             Required = false,
             DefaultValue = "downloader_v2",
-            HelpText = "MMF OAuth client ID. Default 'downloader_v2' works for most users. Pair with CLIENT_SECRET to enable the authorization-code flow for authenticated file downloads.",
+            HelpText = "MMF OAuth client ID. Default 'downloader_v2' works for most users. Uses the OAuth implicit flow (browser consent) for authenticated file downloads.",
         },
         new PluginConfigField
         {
@@ -89,7 +89,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Label = "OAuth Client Secret",
             Type = PluginConfigFieldType.Secret,
             Required = false,
-            HelpText = "OAuth client secret. For MMF's built-in 'downloader_v2' client, use the public secret '6b511607-740d-49ad-8e31-3bb8b75dd354' (same for all users — hardcoded in MiniDownloader's source). Leave blank for manifest-only mode (no authenticated file downloads).",
+            HelpText = "Optional and normally unused — MMF's downloader_v2 client uses the implicit flow, which needs no secret. Only set this if you registered your own confidential OAuth client.",
         },
         new PluginConfigField
         {
@@ -150,29 +150,26 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Label = "OAuth Callback URL",
             Type = PluginConfigFieldType.Url,
             Required = false,
-            DefaultValue = "https://forgekeeper.k8s.inxaos.com/auth/mmf/callback",
-            HelpText = "The URL MMF redirects to after OAuth authorization. Must match your MMF app's registered redirect URI.",
+            HelpText = "The URL MMF redirects to after OAuth authorization. Leave blank to derive it from Forgekeeper__PublicUrl (<PublicUrl>/auth/mmf/callback). Must match the client's registered redirect URI.",
         },
     ];
 
     public async Task<AuthResult> AuthenticateAsync(PluginContext context, CancellationToken ct = default)
     {
-        var username = context.Config.TryGetValue("MMF_USERNAME", out var u) ? u : null;
-        var password = context.Config.TryGetValue("MMF_PASSWORD", out var p) ? p : null;
-
-        if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
-            return AuthResult.Failed("MMF_USERNAME and MMF_PASSWORD must be configured in the plugin settings");
+        // A2: MMF_USERNAME / MMF_PASSWORD are optional. The library manifest can be
+        // uploaded and downloads use the OAuth token, so credentials are only needed
+        // for the legacy headless-browser manifest fetch.
 
         // OAuth implicit flow: CLIENT_ID + CLIENT_SECRET + CALLBACK_URL trigger a browser
         // consent screen at auth.myminifactory.com/web/authorize. The access_token comes
         // back as a URL fragment; our callback HTML extracts + POSTs it to /auth/mmf/callback.
         // Token validity is verified via a live GET /api/v2/user ping (implicit flow doesn't
         // issue expiry timestamps we can trust locally).
-        var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
-        var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
-        var callbackUrl = context.Config.TryGetValue("CALLBACK_URL", out var cb) ? cb : null;
+        var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) && !string.IsNullOrWhiteSpace(cid) ? cid : "downloader_v2";
+        var callbackUrl = ResolveCallbackUrl(context.Config);
 
-        if (!string.IsNullOrEmpty(clientId) && !string.IsNullOrEmpty(clientSecret) && !string.IsNullOrEmpty(callbackUrl))
+        // Implicit flow needs no client secret (Phase 0: none exists for downloader_v2).
+        if (!string.IsNullOrEmpty(callbackUrl))
         {
             // Check if we have a stored token that's still valid via a live API ping.
             // Implicit flow doesn't issue expiry timestamps, so we verify by trying the token.
@@ -211,7 +208,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         }
 
         // No OAuth config — manifest-only mode (Playwright login works, downloads will 403)
-        return AuthResult.Success("Credentials configured — manifest-only mode (add OAuth CLIENT_ID/CLIENT_SECRET for file downloads)");
+        return AuthResult.Success("No OAuth callback configured — manifest-only mode (set Forgekeeper__PublicUrl or CALLBACK_URL to enable file downloads)");
     }
 
     public async Task<AuthResult> HandleAuthCallbackAsync(PluginContext context, IDictionary<string, string> callbackParams, CancellationToken ct = default)
@@ -249,7 +246,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
         // If user uploaded a manifest JSON, use it directly (secondary path)
         IReadOnlyList<ScrapedModel> models = uploadedManifest is not null
-            ? await ParseUploadedManifestAsync(uploadedManifest, ct)
+            ? await ParseUploadedManifestAsync(uploadedManifest, ct, context.Logger)
             : await FetchLibraryViaBrowserAsync(context, ct);
 
         // Log a rollup of non-object entries that will be skipped during scrape.
@@ -307,6 +304,13 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
         int filesDownloaded = 0, filesSkipped = 0, filesFailed = 0;
 
+        if (string.IsNullOrEmpty(bearerToken) && string.IsNullOrEmpty(sessionCookies) && !restoreMode)
+        {
+            // Nothing can be downloaded without credentials — pause rather than
+            // marking every remaining item as scraped.
+            return ScrapeResult.TokenExpired("No MMF access token — connect MyMiniFactory to resume");
+        }
+
         try
         {
             // ── Step 1: Fetch model details from v2 API ──
@@ -357,6 +361,18 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 {
                     context.Logger.LogDebug("[MMF] 404 for model {Id} ({Name}) — skipping", model.ExternalId, model.Name);
                     return ScrapeResult.Ok("metadata.json", []); // 404 = skip, still write metadata
+                }
+                else if (await IsTokenExpiredResponseAsync(response, ct))
+                {
+                    // A3: 401, or a JSON 403 from /api/v2, means the OAuth token is dead.
+                    // Every subsequent item would fail the same way — clear the token and
+                    // tell the host to pause + checkpoint instead of "succeeding" with 0 bytes.
+                    context.Logger.LogWarning(
+                        "[MMF] API {Status} for model {Id} — access token expired/revoked; pausing sync for re-auth",
+                        (int)response.StatusCode, model.ExternalId);
+                    await context.TokenStore.DeleteTokenAsync("access_token", ct);
+                    return ScrapeResult.TokenExpired(
+                        $"MMF access token rejected ({(int)response.StatusCode}) — reconnect MyMiniFactory to resume");
                 }
                 else
                 {
@@ -696,6 +712,14 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             var metadata = BuildMetadata(model, details, downloadedFiles, existingMetadata);
             var json = JsonSerializer.Serialize(metadata, JsonWriteOptions);
             await File.WriteAllTextAsync(metadataPath, json, ct);
+
+            // A3: a model whose every download failed is NOT a success. Previously this
+            // returned Ok, so a dead token produced "7,324 scraped, 0 bytes".
+            if (!IsScrapeSuccessful(filesDownloaded, filesSkipped, filesFailed))
+            {
+                context.Logger.LogWarning("[MMF] All {Failed} downloads failed for {Name}", filesFailed, model.Name);
+                return ScrapeResult.Failure($"All {filesFailed} downloads failed for {model.Name}");
+            }
 
             if (filesDownloaded > 0)
                 context.Logger.LogInformation("[MMF] {Model}: {Downloaded} downloaded, {Skipped} skipped, {Failed} failed", 
@@ -1218,48 +1242,13 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
     // --- Private helpers ---
 
-    private static async Task<IReadOnlyList<ScrapedModel>> ParseUploadedManifestAsync(Stream manifestStream, CancellationToken ct)
+    private static async Task<IReadOnlyList<ScrapedModel>> ParseUploadedManifestAsync(
+        Stream manifestStream, CancellationToken ct, ILogger? logger = null)
     {
-        var doc = await JsonDocument.ParseAsync(manifestStream, cancellationToken: ct);
-        var models = new List<ScrapedModel>();
-
-        // MMF data-library exports vary in structure.
-        // Handle both array-of-objects and { items: [...] } formats.
-        JsonElement items;
-        if (doc.RootElement.ValueKind == JsonValueKind.Array)
-            items = doc.RootElement;
-        else if (doc.RootElement.TryGetProperty("items", out var itemsProp))
-            items = itemsProp;
-        else if (doc.RootElement.TryGetProperty("objects", out var objectsProp))
-            items = objectsProp;
-        else
-            return models;
-
-        foreach (var item in items.EnumerateArray())
-        {
-            var id = item.TryGetProperty("id", out var idProp) ? idProp.ToString() : null;
-            var name = item.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null;
-            if (id is null || name is null) continue;
-
-            var creatorName = item.TryGetProperty("designer", out var designer)
-                && designer.TryGetProperty("name", out var designerName)
-                    ? designerName.GetString()
-                    : null;
-            var creatorId = item.TryGetProperty("designer", out var d2)
-                && d2.TryGetProperty("id", out var did)
-                    ? did.ToString()
-                    : null;
-
-            models.Add(new ScrapedModel
-            {
-                ExternalId = id,
-                Name = name,
-                CreatorName = creatorName,
-                CreatorId = creatorId,
-                Type = item.TryGetProperty("type", out var t) ? t.GetString() : null,
-            });
-        }
-
+        var (models, stats) = await MmfManifestParser.ParseAsync(manifestStream, ct);
+        logger?.LogInformation(
+            "MMF manifest: {Rows} rows → {Distinct} distinct → {Unique} unique items ({Multi} multi-source, {NoCreator} rows without creator)",
+            stats.Rows, stats.DistinctRows, stats.UniqueItems, stats.MultiSourceItems, stats.RowsWithoutCreator);
         return models;
     }
 
@@ -1677,7 +1666,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
             // Parse manifest
             using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(jsonResult));
-            var models = await ParseUploadedManifestAsync(stream, ct);
+            var models = await ParseUploadedManifestAsync(stream, ct, context.Logger);
             context.Logger.LogInformation("[MMF] Library manifest: {Count} models found!", models.Count);
             return models;
         }
@@ -1698,14 +1687,16 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             ["metadataVersion"] = 3,
             ["source"] = "mmf",
             ["externalId"] = model.ExternalId,
-            ["externalUrl"] = details?.Url ?? $"https://www.myminifactory.com/object/{model.ExternalId}",
+            ["externalUrl"] = details?.Url ?? (model.ExternalId.StartsWith("bundle-", StringComparison.OrdinalIgnoreCase)
+                ? $"https://www.myminifactory.com/bundle/{MmfManifestParser.NumericId(model.ExternalId)}"
+                : $"https://www.myminifactory.com/object/{MmfManifestParser.NumericId(model.ExternalId)}"),
             ["name"] = details?.Name ?? model.Name,
             ["description"] = details?.Description,
             ["type"] = details?.Type ?? model.Type,
             ["creator"] = new Dictionary<string, object?>
             {
                 ["externalId"] = model.CreatorId ?? details?.Designer?.Id?.ToString(),
-                ["username"] = details?.Designer?.Username ?? model.CreatorName,
+                ["username"] = details?.Designer?.Username ?? model.CreatorUsername ?? model.CreatorName,
                 ["displayName"] = details?.Designer?.Name ?? model.CreatorName,
                 ["profileUrl"] = details?.Designer?.ProfileUrl,
             },
@@ -1714,6 +1705,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 ["created"] = details?.CreatedAt,
                 ["updated"] = details?.UpdatedAt ?? model.UpdatedAt,
                 ["published"] = details?.PublishedAt,
+                ["addedToLibrary"] = model.LibraryAddedAt,
                 ["lastSynced"] = DateTime.UtcNow,
             },
             ["files"] = files.Select(f => new Dictionary<string, object?>
@@ -1726,12 +1718,41 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         };
 
         // Merge tags: source tags + existing user tags (deduplicated)
-        var sourceTags = details?.Tags?.Select(t => t.Name).Where(n => n != null).ToList() ?? new List<string?>();
+        var sourceTags = (details?.Tags?.Select(t => t.Name) ?? Enumerable.Empty<string?>())
+            .Concat(model.Tags)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var userTags = GetExistingList(existing, "userTags");
         var allTags = sourceTags.Concat(userTags).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         metadata["tags"] = allTags;
         metadata["sourceTags"] = sourceTags; // Track which came from MMF
         metadata["userTags"] = userTags;     // Track user-added tags
+
+        // D3: acquisition provenance (SDK 1.1). One entry per distinct manifest source row.
+        metadata["acquisitions"] = model.Acquisitions.Select(a => new Dictionary<string, object?>
+        {
+            ["source"] = a.Source,
+            ["method"] = a.Method ?? MmfManifestParser.MapAcquisitionMethod(a.Source),
+            ["reference"] = a.Reference,
+            ["acquiredAt"] = a.AcquiredAt,
+        }).ToList();
+        // Primary acquisition in the shape FileScannerService already understands.
+        // Precedence: purchase > campaign > tribe > subscription > user group > free.
+        var primary = model.Acquisitions
+            .OrderBy(a => Array.IndexOf(AcquisitionPrecedence, a.Method ?? "Unknown") is var i && i < 0 ? 99 : i)
+            .FirstOrDefault();
+        if (primary != null)
+        {
+            metadata["acquisition"] = new Dictionary<string, object?>
+            {
+                ["method"] = primary.Method ?? MmfManifestParser.MapAcquisitionMethod(primary.Source),
+                ["orderId"] = primary.Source.Equals("PURCHASE", StringComparison.OrdinalIgnoreCase) ? primary.Reference : null,
+                ["campaignId"] = primary.Source.Equals("FRONTIER", StringComparison.OrdinalIgnoreCase) ? primary.Reference : null,
+            };
+        }
+        metadata["libraryAddedAt"] = model.LibraryAddedAt;
+        metadata["bundleId"] = model.BundleId;
 
         if (details?.Images is { Count: > 0 })
         {
@@ -1766,6 +1787,40 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
         return metadata;
     }
+
+    /// <summary>
+    /// C2: CALLBACK_URL if set, else &lt;Forgekeeper__PublicUrl&gt;/auth/mmf/callback
+    /// (plugin config first, then process environment). Null if neither is available.
+    /// </summary>
+    internal static string? ResolveCallbackUrl(IReadOnlyDictionary<string, string> config, Func<string, string?>? env = null)
+    {
+        if (config.TryGetValue("CALLBACK_URL", out var cb) && !string.IsNullOrWhiteSpace(cb)) return cb.Trim();
+        env ??= Environment.GetEnvironmentVariable;
+        var publicUrl = config.TryGetValue("Forgekeeper__PublicUrl", out var pu) && !string.IsNullOrWhiteSpace(pu)
+            ? pu : env("Forgekeeper__PublicUrl");
+        return string.IsNullOrWhiteSpace(publicUrl) ? null : $"{publicUrl.Trim().TrimEnd('/')}/auth/mmf/callback";
+    }
+
+    /// <summary>
+    /// A3: a scrape is only a success if something is on disk or nothing was attempted.
+    /// Every attempted download failing (0 downloaded, 0 already present) is a failure.
+    /// </summary>
+    internal static bool IsScrapeSuccessful(int filesDownloaded, int filesSkipped, int filesFailed) =>
+        !(filesFailed > 0 && filesDownloaded == 0 && filesSkipped == 0);
+
+    /// <summary>401 always; 403 only when the body is JSON (an HTML 403 is a Cloudflare challenge).</summary>
+    internal static async Task<bool> IsTokenExpiredResponseAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized) return true;
+        if (response.StatusCode != System.Net.HttpStatusCode.Forbidden) return false;
+        var mediaType = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (mediaType.Contains("json", StringComparison.OrdinalIgnoreCase)) return true;
+        var body = (await response.Content.ReadAsStringAsync(ct)).TrimStart();
+        return body.StartsWith("{") || body.StartsWith("[");
+    }
+
+    private static readonly string[] AcquisitionPrecedence =
+        ["Purchase", "Campaign", "Tribe", "Subscription", "UserGroup", "Gift", "Free", "Unknown"];
 
     /// <summary>Extract a DateTime from nested metadata (e.g., dates.lastSynced).</summary>
     private static DateTime? GetDateFromMetadata(Dictionary<string, object?> metadata, string dateKey)
@@ -1964,9 +2019,12 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     }
 
     /// <summary>Create a pre-configured HttpClient for MMF API calls with Bearer auth.</summary>
+    /// <summary>Test seam: when set, API clients use this handler instead of the network.</summary>
+    internal static HttpMessageHandler? ApiHandlerOverride { get; set; }
+
     private static HttpClient CreateApiClient(string bearerToken)
     {
-        var client = new HttpClient
+        var client = new HttpClient(ApiHandlerOverride ?? new HttpClientHandler(), disposeHandler: ApiHandlerOverride == null)
         {
             BaseAddress = new Uri("https://www.myminifactory.com"),
             Timeout = TimeSpan.FromSeconds(120),

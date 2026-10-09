@@ -104,6 +104,7 @@ public class ForgeDbContext : DbContext
             entity.HasIndex(e => e.BasePath).IsUnique();
             entity.HasIndex(e => e.CreatorId);
             entity.HasIndex(e => e.Source);
+            entity.HasIndex(e => new { e.Source, e.SourceId }).HasDatabaseName("ix_models_source_source_id");
             entity.HasIndex(e => e.LicenseType);
             entity.HasIndex(e => e.CollectionName);
             entity.HasIndex(e => e.AcquisitionMethod);

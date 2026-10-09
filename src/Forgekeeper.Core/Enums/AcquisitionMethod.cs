@@ -7,5 +7,9 @@ public enum AcquisitionMethod
     Subscription,
     Free,
     Campaign,
-    Gift
+    Gift,
+    /// <summary>Creator tribe (MMF TRIBE) membership.</summary>
+    Tribe,
+    /// <summary>Group / shared-library access (MMF USER_GROUP).</summary>
+    UserGroup
 }
