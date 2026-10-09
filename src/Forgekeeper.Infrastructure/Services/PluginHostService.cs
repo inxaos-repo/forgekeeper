@@ -305,10 +305,13 @@ public class PluginHostService : BackgroundService
             // DRY_RUN + an uploaded manifest on disk => fully offline: no login, no
             // FlareSolverr/Playwright, no auth gate (nothing is downloaded). Issue #33.
             var dryRunEarly = context.Config.TryGetValue("DRY_RUN", out var dre) && IsTrue(dre);
-            var storedManifest = dryRunEarly ? UploadedManifestStore.GetLatest(context.SourceDirectory, slug) : null;
+            // #34/#35: an uploaded manifest takes priority over the live library fetch for
+            // real syncs too (auth still runs — downloads need it). DRY_RUN + manifest stays fully offline.
+            var storedManifest = UploadedManifestStore.GetLatest(context.SourceDirectory, slug);
+            var manifestSource = ChooseManifestSource(dryRunEarly, storedManifest != null);
 
             IReadOnlyList<ScrapedModel> manifest;
-            if (storedManifest != null)
+            if (manifestSource == ManifestSource.UploadedOffline)
             {
                 _logger.LogWarning("[{Slug}] DRY RUN (offline) using uploaded manifest {Path} ({Rows} rows, uploaded {At:u}); skipping authentication",
                     slug, storedManifest.Path, storedManifest.RowCount, storedManifest.UploadedAt);
@@ -335,8 +338,18 @@ public class PluginHostService : BackgroundService
                 _logger.LogInformation("[{Slug}] Using fallback download token for sync", slug);
             }
 
-            // Fetch manifest (live)
-            manifest = await loaded.Scraper.FetchManifestAsync(context, null, ct);
+            if (manifestSource == ManifestSource.Uploaded)
+            {
+                _logger.LogInformation("[{Slug}] Using uploaded manifest {Path} ({Rows} rows, uploaded {At:u}) instead of the live library fetch",
+                    slug, storedManifest!.Path, storedManifest.RowCount, storedManifest.UploadedAt);
+                await using var fs = File.OpenRead(storedManifest.Path);
+                manifest = await loaded.Scraper.FetchManifestAsync(context, fs, ct);
+            }
+            else
+            {
+                // Fetch manifest (live)
+                manifest = await loaded.Scraper.FetchManifestAsync(context, null, ct);
+            }
             }
             status.TotalModels = manifest.Count;
             _logger.LogInformation("[{Slug}] Manifest has {Count} models", slug, manifest.Count);
@@ -479,10 +492,12 @@ public class PluginHostService : BackgroundService
                 var modelDir = idMatches.FirstOrDefault()
                     ?? FindExistingModelDir(context.SourceDirectory, creatorDir, modelName)
                     ?? Path.Combine(context.SourceDirectory, creatorDir, modelName);
-                Directory.CreateDirectory(modelDir);
+                var createdDirs = CreateDirectoryTracked(modelDir);
                 context.ModelDirectory = modelDir;
 
                 var result = await loaded.Scraper.ScrapeModelAsync(context, model, ct);
+                if (!result.Success)
+                    RemoveEmptyCreatedDirs(createdDirs, _logger);
                 if (result.AuthExpired)
                 {
                     // A3: token expired — checkpoint at THIS item and pause. Resuming
@@ -1161,6 +1176,65 @@ public class PluginHostService : BackgroundService
         config.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v)
             ? v
             : scraper.ConfigSchema.FirstOrDefault(f => f.Key == key)?.DefaultValue;
+
+    public enum ManifestSource { Live, Uploaded, UploadedOffline }
+
+    /// <summary>#34/#35: uploaded manifest beats the live fetch; with DRY_RUN it is fully offline.</summary>
+    internal static ManifestSource ChooseManifestSource(bool dryRun, bool hasUploadedManifest) =>
+        !hasUploadedManifest ? ManifestSource.Live
+        : dryRun ? ManifestSource.UploadedOffline
+        : ManifestSource.Uploaded;
+
+    /// <summary>Host-level settings every scraper honours; declared so PUT /config does not drop them.</summary>
+    public static readonly IReadOnlyList<PluginConfigField> HostConfigFields =
+    [
+        new PluginConfigField
+        {
+            Key = "DRY_RUN", Label = "Dry Run", Type = PluginConfigFieldType.String, Required = false,
+            DefaultValue = "false",
+            HelpText = "Host setting. 'true' = classify the manifest and write a report; no downloads, no folders created.",
+        },
+        new PluginConfigField
+        {
+            Key = "REHOME_UNKNOWN_APPLY", Label = "Apply Re-home of Unknown Folders", Type = PluginConfigFieldType.String,
+            Required = false, DefaultValue = "false",
+            HelpText = "Host setting. 'true' = apply the re-home plan from the last dry run.",
+        },
+    ];
+
+    /// <summary>The plugin's declared schema plus host-level fields it doesn't declare itself.</summary>
+    public static IReadOnlyList<PluginConfigField> EffectiveConfigSchema(IEnumerable<PluginConfigField> pluginSchema)
+    {
+        var list = pluginSchema.ToList();
+        foreach (var f in HostConfigFields)
+            if (!list.Any(p => string.Equals(p.Key, f.Key, StringComparison.Ordinal))) list.Add(f);
+        return list;
+    }
+
+    /// <summary>Create <paramref name="dir"/> and return the directories that did not exist before (deepest first).</summary>
+    internal static List<string> CreateDirectoryTracked(string dir)
+    {
+        var created = new List<string>();
+        var d = new DirectoryInfo(Path.GetFullPath(dir));
+        while (d != null && !d.Exists) { created.Add(d.FullName); d = d.Parent; }
+        Directory.CreateDirectory(dir);
+        return created;
+    }
+
+    /// <summary>Remove directories created in this run if they are (still) empty. Never touches pre-existing ones.</summary>
+    internal static void RemoveEmptyCreatedDirs(IEnumerable<string> createdDeepestFirst, ILogger? logger = null)
+    {
+        foreach (var d in createdDeepestFirst)
+        {
+            try
+            {
+                if (!Directory.Exists(d) || Directory.EnumerateFileSystemEntries(d).Any()) break;
+                Directory.Delete(d, recursive: false);
+                logger?.LogInformation("Removed empty folder created by failed item: {Dir}", d);
+            }
+            catch (Exception ex) { logger?.LogDebug(ex, "Could not remove {Dir}", d); break; }
+        }
+    }
 
     private static bool IsTrue(string? v) =>
         v != null && (v.Equals("true", StringComparison.OrdinalIgnoreCase) || v == "1" || v.Equals("yes", StringComparison.OrdinalIgnoreCase));

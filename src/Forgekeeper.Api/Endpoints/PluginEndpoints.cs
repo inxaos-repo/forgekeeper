@@ -55,7 +55,7 @@ public static class PluginEndpoints
                 .Where(c => c.PluginSlug == slug && !c.Key.StartsWith("__token__"))
                 .ToDictionaryAsync(c => c.Key, c => c, ct);
 
-            var fields = plugin.ConfigSchema.Select(f => new PluginConfigResponse
+            var fields = PluginHostService.EffectiveConfigSchema(plugin.ConfigSchema).Select(f => new PluginConfigResponse
             {
                 Key = f.Key,
                 Label = f.Label,
@@ -86,12 +86,17 @@ public static class PluginEndpoints
             var plugin = pluginHost.GetPlugin(slug);
             if (plugin is null) return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
 
-            var validKeys = plugin.ConfigSchema.ToDictionary(f => f.Key, f => f);
+            var validKeys = PluginHostService.EffectiveConfigSchema(plugin.ConfigSchema)
+                .ToDictionary(f => f.Key, f => f);
+            var ignored = new List<string>();
 
             foreach (var (key, value) in configValues)
             {
                 if (!validKeys.TryGetValue(key, out var field))
-                    continue; // Skip unknown keys
+                {
+                    ignored.Add(key); // unknown keys are reported, never silently dropped
+                    continue;
+                }
 
                 var entry = await db.PluginConfigs
                     .FirstOrDefaultAsync(c => c.PluginSlug == slug && c.Key == key, ct);
@@ -124,7 +129,7 @@ public static class PluginEndpoints
             }
 
             await db.SaveChangesAsync(ct);
-            return Results.Ok(new { message = "Config updated" });
+            return Results.Ok(new { message = "Config updated", ignored });
         }).WithName("UpdatePluginConfig");
 
         // POST /api/v1/plugins/{slug}/sync — trigger sync for a plugin
