@@ -12,23 +12,25 @@ public static class ScanEndpoints
     {
         var group = app.MapGroup("/api/v1/scan").WithTags("Scanner");
 
-        group.MapPost("/", async (IScannerService scanner, CancellationToken ct) =>
+        group.MapPost("/", async (IScannerService scanner, IHostApplicationLifetime lifetime) =>
         {
             if (scanner.IsRunning)
                 return Results.Conflict(new { message = "Scan already running", progress = scanner.GetProgress() });
 
             // Fire and forget — client polls /status
-            _ = scanner.ScanAsync(incremental: false, ct);
+            // Not the request token: it is cancelled as soon as the 202 is sent, killing the scan.
+            _ = scanner.ScanAsync(incremental: false, lifetime.ApplicationStopping);
 
             return Results.Accepted(value: new { message = "Full scan started", progress = scanner.GetProgress() });
         }).WithName("StartFullScan");
 
-        group.MapPost("/incremental", async (IScannerService scanner, CancellationToken ct) =>
+        group.MapPost("/incremental", async (IScannerService scanner, IHostApplicationLifetime lifetime) =>
         {
             if (scanner.IsRunning)
                 return Results.Conflict(new { message = "Scan already running", progress = scanner.GetProgress() });
 
-            _ = scanner.ScanAsync(incremental: true, ct);
+            // Not the request token: it is cancelled as soon as the 202 is sent, killing the scan.
+            _ = scanner.ScanAsync(incremental: true, lifetime.ApplicationStopping);
 
             return Results.Accepted(value: new { message = "Incremental scan started", progress = scanner.GetProgress() });
         }).WithName("StartIncrementalScan");
