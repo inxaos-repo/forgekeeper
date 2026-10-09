@@ -48,7 +48,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     public string SourceSlug => "mmf";
     public string SourceName => "MyMiniFactory";
     public string Description => "Scrapes your MyMiniFactory purchased/backed library, downloads model files, and generates metadata.json sidecar files.";
-    public string Version => "1.0.0";
+    public string Version => "1.1.0";
     // RequiresBrowserAuth=true drives the admin UI's "Authenticate" button.
     // The OAuth implicit flow requires a browser: user visits MMF's consent screen,
     // approves, and MMF redirects back to our /auth/mmf/callback with the access_token
@@ -63,16 +63,16 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Key = "MMF_USERNAME",
             Label = "MyMiniFactory Email",
             Type = PluginConfigFieldType.String,
-            Required = true,
-            HelpText = "Your MyMiniFactory login email address.",
+            Required = false,
+            HelpText = "Optional. Your MyMiniFactory login email — only needed for the legacy headless-browser manifest fetch. Not needed when you upload a library manifest and connect via OAuth.",
         },
         new PluginConfigField
         {
             Key = "MMF_PASSWORD",
             Label = "MyMiniFactory Password",
             Type = PluginConfigFieldType.Secret,
-            Required = true,
-            HelpText = "Your MyMiniFactory password. Stored encrypted.",
+            Required = false,
+            HelpText = "Optional. Your MyMiniFactory password (legacy headless-browser login only). Stored encrypted.",
         },
         new PluginConfigField
         {
@@ -81,7 +81,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Type = PluginConfigFieldType.String,
             Required = false,
             DefaultValue = "downloader_v2",
-            HelpText = "MMF OAuth client ID. Default 'downloader_v2' works for most users. Pair with CLIENT_SECRET to enable the authorization-code flow for authenticated file downloads.",
+            HelpText = "MMF OAuth client ID. Default 'downloader_v2' works for most users. Uses the OAuth implicit flow (browser consent) for authenticated file downloads.",
         },
         new PluginConfigField
         {
@@ -89,7 +89,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Label = "OAuth Client Secret",
             Type = PluginConfigFieldType.Secret,
             Required = false,
-            HelpText = "OAuth client secret. For MMF's built-in 'downloader_v2' client, use the public secret '6b511607-740d-49ad-8e31-3bb8b75dd354' (same for all users — hardcoded in MiniDownloader's source). Leave blank for manifest-only mode (no authenticated file downloads).",
+            HelpText = "Optional and normally unused — MMF's downloader_v2 client uses the implicit flow, which needs no secret. Only set this if you registered your own confidential OAuth client.",
         },
         new PluginConfigField
         {
@@ -150,29 +150,26 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Label = "OAuth Callback URL",
             Type = PluginConfigFieldType.Url,
             Required = false,
-            DefaultValue = "https://forgekeeper.k8s.inxaos.com/auth/mmf/callback",
-            HelpText = "The URL MMF redirects to after OAuth authorization. Must match your MMF app's registered redirect URI.",
+            HelpText = "The URL MMF redirects to after OAuth authorization. Leave blank to derive it from Forgekeeper__PublicUrl (<PublicUrl>/auth/mmf/callback). Must match the client's registered redirect URI.",
         },
     ];
 
     public async Task<AuthResult> AuthenticateAsync(PluginContext context, CancellationToken ct = default)
     {
-        var username = context.Config.TryGetValue("MMF_USERNAME", out var u) ? u : null;
-        var password = context.Config.TryGetValue("MMF_PASSWORD", out var p) ? p : null;
-
-        if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
-            return AuthResult.Failed("MMF_USERNAME and MMF_PASSWORD must be configured in the plugin settings");
+        // A2: MMF_USERNAME / MMF_PASSWORD are optional. The library manifest can be
+        // uploaded and downloads use the OAuth token, so credentials are only needed
+        // for the legacy headless-browser manifest fetch.
 
         // OAuth implicit flow: CLIENT_ID + CLIENT_SECRET + CALLBACK_URL trigger a browser
         // consent screen at auth.myminifactory.com/web/authorize. The access_token comes
         // back as a URL fragment; our callback HTML extracts + POSTs it to /auth/mmf/callback.
         // Token validity is verified via a live GET /api/v2/user ping (implicit flow doesn't
         // issue expiry timestamps we can trust locally).
-        var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) ? cid : null;
-        var clientSecret = context.Config.TryGetValue("CLIENT_SECRET", out var cs) ? cs : null;
-        var callbackUrl = context.Config.TryGetValue("CALLBACK_URL", out var cb) ? cb : null;
+        var clientId = context.Config.TryGetValue("CLIENT_ID", out var cid) && !string.IsNullOrWhiteSpace(cid) ? cid : "downloader_v2";
+        var callbackUrl = ResolveCallbackUrl(context.Config);
 
-        if (!string.IsNullOrEmpty(clientId) && !string.IsNullOrEmpty(clientSecret) && !string.IsNullOrEmpty(callbackUrl))
+        // Implicit flow needs no client secret (Phase 0: none exists for downloader_v2).
+        if (!string.IsNullOrEmpty(callbackUrl))
         {
             // Check if we have a stored token that's still valid via a live API ping.
             // Implicit flow doesn't issue expiry timestamps, so we verify by trying the token.
@@ -211,7 +208,7 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         }
 
         // No OAuth config — manifest-only mode (Playwright login works, downloads will 403)
-        return AuthResult.Success("Credentials configured — manifest-only mode (add OAuth CLIENT_ID/CLIENT_SECRET for file downloads)");
+        return AuthResult.Success("No OAuth callback configured — manifest-only mode (set Forgekeeper__PublicUrl or CALLBACK_URL to enable file downloads)");
     }
 
     public async Task<AuthResult> HandleAuthCallbackAsync(PluginContext context, IDictionary<string, string> callbackParams, CancellationToken ct = default)
@@ -307,6 +304,13 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
         int filesDownloaded = 0, filesSkipped = 0, filesFailed = 0;
 
+        if (string.IsNullOrEmpty(bearerToken) && string.IsNullOrEmpty(sessionCookies) && !restoreMode)
+        {
+            // Nothing can be downloaded without credentials — pause rather than
+            // marking every remaining item as scraped.
+            return ScrapeResult.TokenExpired("No MMF access token — connect MyMiniFactory to resume");
+        }
+
         try
         {
             // ── Step 1: Fetch model details from v2 API ──
@@ -357,6 +361,18 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 {
                     context.Logger.LogDebug("[MMF] 404 for model {Id} ({Name}) — skipping", model.ExternalId, model.Name);
                     return ScrapeResult.Ok("metadata.json", []); // 404 = skip, still write metadata
+                }
+                else if (await IsTokenExpiredResponseAsync(response, ct))
+                {
+                    // A3: 401, or a JSON 403 from /api/v2, means the OAuth token is dead.
+                    // Every subsequent item would fail the same way — clear the token and
+                    // tell the host to pause + checkpoint instead of "succeeding" with 0 bytes.
+                    context.Logger.LogWarning(
+                        "[MMF] API {Status} for model {Id} — access token expired/revoked; pausing sync for re-auth",
+                        (int)response.StatusCode, model.ExternalId);
+                    await context.TokenStore.DeleteTokenAsync("access_token", ct);
+                    return ScrapeResult.TokenExpired(
+                        $"MMF access token rejected ({(int)response.StatusCode}) — reconnect MyMiniFactory to resume");
                 }
                 else
                 {
@@ -696,6 +712,14 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             var metadata = BuildMetadata(model, details, downloadedFiles, existingMetadata);
             var json = JsonSerializer.Serialize(metadata, JsonWriteOptions);
             await File.WriteAllTextAsync(metadataPath, json, ct);
+
+            // A3: a model whose every download failed is NOT a success. Previously this
+            // returned Ok, so a dead token produced "7,324 scraped, 0 bytes".
+            if (filesFailed > 0 && filesDownloaded == 0 && filesSkipped == 0)
+            {
+                context.Logger.LogWarning("[MMF] All {Failed} downloads failed for {Name}", filesFailed, model.Name);
+                return ScrapeResult.Failure($"All {filesFailed} downloads failed for {model.Name}");
+            }
 
             if (filesDownloaded > 0)
                 context.Logger.LogInformation("[MMF] {Model}: {Downloaded} downloaded, {Skipped} skipped, {Failed} failed", 
@@ -1762,6 +1786,30 @@ public class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         }
 
         return metadata;
+    }
+
+    /// <summary>
+    /// C2: CALLBACK_URL if set, else &lt;Forgekeeper__PublicUrl&gt;/auth/mmf/callback
+    /// (plugin config first, then process environment). Null if neither is available.
+    /// </summary>
+    internal static string? ResolveCallbackUrl(IReadOnlyDictionary<string, string> config, Func<string, string?>? env = null)
+    {
+        if (config.TryGetValue("CALLBACK_URL", out var cb) && !string.IsNullOrWhiteSpace(cb)) return cb.Trim();
+        env ??= Environment.GetEnvironmentVariable;
+        var publicUrl = config.TryGetValue("Forgekeeper__PublicUrl", out var pu) && !string.IsNullOrWhiteSpace(pu)
+            ? pu : env("Forgekeeper__PublicUrl");
+        return string.IsNullOrWhiteSpace(publicUrl) ? null : $"{publicUrl.Trim().TrimEnd('/')}/auth/mmf/callback";
+    }
+
+    /// <summary>401 always; 403 only when the body is JSON (an HTML 403 is a Cloudflare challenge).</summary>
+    internal static async Task<bool> IsTokenExpiredResponseAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized) return true;
+        if (response.StatusCode != System.Net.HttpStatusCode.Forbidden) return false;
+        var mediaType = response.Content.Headers.ContentType?.MediaType ?? "";
+        if (mediaType.Contains("json", StringComparison.OrdinalIgnoreCase)) return true;
+        var body = (await response.Content.ReadAsStringAsync(ct)).TrimStart();
+        return body.StartsWith("{") || body.StartsWith("[");
     }
 
     private static readonly string[] AcquisitionPrecedence =
