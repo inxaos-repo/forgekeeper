@@ -37,7 +37,7 @@ RUN if [ -f plugins/Forgekeeper.Scraper.Mmf/Forgekeeper.Scraper.Mmf.csproj ]; th
     fi
 
 # --- Stage 3: Build Vue.js frontend ---
-FROM node:22-alpine AS frontend-build
+FROM mirror.gcr.io/library/node:22-alpine AS frontend-build
 WORKDIR /web
 
 COPY src/Forgekeeper.Web/package*.json ./
