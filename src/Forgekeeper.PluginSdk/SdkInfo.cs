@@ -6,8 +6,8 @@ namespace Forgekeeper.PluginSdk;
 /// </summary>
 public static class SdkInfo
 {
-    public const string Version = "1.0.0";
+    public const string Version = "1.1.0";
     public const int MajorVersion = 1;
-    public const int MinorVersion = 0;
+    public const int MinorVersion = 1;
     public const int PatchVersion = 0;
 }
