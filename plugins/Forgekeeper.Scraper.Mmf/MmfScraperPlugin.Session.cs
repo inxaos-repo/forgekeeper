@@ -141,41 +141,43 @@ public partial class MmfScraperPlugin
         }
 
         MmfModelDetails details;
-        string? archiveUrl;
+        List<MmfDownloadTarget> targets;
         using (var doc = JsonDocument.Parse(body!))
         {
             var root = doc.RootElement;
             details = ParseModelDetails(root);
-            archiveUrl = Str(root, "archive_download_url") ?? Str(root, "download_url");
+            targets = ResolveDownloadTargets(root, model.Name);
         }
-        if (string.IsNullOrEmpty(archiveUrl))
-            return ScrapeResult.Failure($"No download_url/archive_download_url for {numericId}");
-        if (!Uri.TryCreate(archiveUrl, UriKind.Absolute, out _)) archiveUrl = SiteBase + "/" + archiveUrl.TrimStart('/');
+        if (targets.Count == 0)
+            return ScrapeResult.Failure($"No archive_download_url or files.items[].download_url for {numericId}");
 
         Directory.CreateDirectory(modelDir);
-        var archiveName = $"{SanitizeFilename(model.Name)}.zip";
-        var archivePath = Path.Combine(modelDir, archiveName);
-        var extractDir = Path.Combine(modelDir, Path.GetFileNameWithoutExtension(archiveName));
         var files = new List<DownloadedFile>();
-        var alreadyHave = File.Exists(archivePath)
-            || (Directory.Exists(extractDir) && Directory.EnumerateFileSystemEntries(extractDir).Any());
-
-        if (alreadyHave && !IsForceRedownload(context))
+        var force = IsForceRedownload(context);
+        var downloader = new MmfDownloader(SessionHandler, new MmfDownloadOptions { Delay = Delay });
+        var extractDirs = new Dictionary<string, string>();
+        var queued = new List<(string Path, string Extract, string Name)>();
+        foreach (var t in targets)
         {
-            context.Logger.LogInformation("[MMF][session] {Name}: archive already on disk — skipping download", model.Name);
-        }
-        else
-        {
-            var downloader = new MmfDownloader(SessionHandler, new MmfDownloadOptions { Delay = Delay });
-            var outcome = await downloader.DownloadAsync(archiveUrl, archivePath, creds, 0, ct);
+            var path = Path.Combine(modelDir, t.FileName);
+            var extractDir = Path.Combine(modelDir, Path.GetFileNameWithoutExtension(t.FileName));
+            var alreadyHave = File.Exists(path)
+                || (t.IsArchive && Directory.Exists(extractDir) && Directory.EnumerateFileSystemEntries(extractDir).Any());
+            if (alreadyHave && !force)
+            {
+                context.Logger.LogInformation("[MMF][session] {Name}: {File} already on disk — skipping download", model.Name, t.FileName);
+                continue;
+            }
+            var outcome = await downloader.DownloadAsync(t.Url, path, creds, 0, ct) /* listed size is informational; not proven byte-exact */;
             switch (outcome.Status)
             {
                 case DownloadStatus.Success:
                     files.Add(new DownloadedFile
                     {
-                        Filename = archiveName, LocalPath = archivePath, Size = outcome.Bytes,
-                        Variant = "archive", IsArchive = true,
+                        Filename = t.FileName, LocalPath = path, Size = outcome.Bytes,
+                        Variant = t.IsArchive ? "archive" : null, IsArchive = t.IsArchive,
                     });
+                    if (t.IsArchive) queued.Add((path, extractDir, t.FileName));
                     break;
                 case DownloadStatus.AuthExpired:
                     if (creds.HasSession) await MarkSessionExpiredAsync(context, ct);
@@ -184,7 +186,7 @@ public partial class MmfScraperPlugin
                     return ScrapeResult.TokenExpired("Cloudflare challenge on download — refresh the MMF session");
                 default:
                     // #28: a failed download is a failure, never a silent success.
-                    return ScrapeResult.Failure($"Download failed for {model.Name}: {outcome.Error} after {outcome.Attempts} attempt(s)");
+                    return ScrapeResult.Failure($"Download failed for {model.Name} ({t.FileName}): {outcome.Error} after {outcome.Attempts} attempt(s)");
             }
         }
 
@@ -198,15 +200,76 @@ public partial class MmfScraperPlugin
         var metadata = BuildMetadata(model, details, files, existing);
         await File.WriteAllTextAsync(metadataPath, JsonSerializer.Serialize(metadata, JsonWriteOptions), ct);
 
-        foreach (var dl in files)
-            _unzipQueue.Enqueue((dl.LocalPath, extractDir, dl.Filename ?? archiveName));
+        foreach (var q in queued)
+            _unzipQueue.Enqueue(q);
 
         var gap = GetDownloadDelayMs(context);
         if (files.Count > 0 && gap > 0) await Task.Delay(gap, ct);
         return ScrapeResult.Ok("metadata.json", files);
     }
 
+    /// <summary>
+    /// Where MMF puts the download link(s) in /api/v2/objects/{id}. Verified live 2026-10-09:
+    /// <c>archive_download_url</c> (top level) is set for some objects (e.g. purchased, multi-part)
+    /// but is <c>null</c> for others; the per-file links always live in
+    /// <c>files.items[].download_url</c> (/download/{id}?archive_id=…). Prefer the single
+    /// archive when present, otherwise download every file item.
+    /// </summary>
+    internal static List<MmfDownloadTarget> ResolveDownloadTargets(JsonElement root, string modelName)
+    {
+        var result = new List<MmfDownloadTarget>();
+        var archive = Str(root, "archive_download_url");
+        if (archive is null && root.TryGetProperty("download_url", out var du) && du.ValueKind == JsonValueKind.String)
+            archive = Str(root, "download_url");
+        if (archive is not null)
+        {
+            result.Add(new MmfDownloadTarget(Absolute(archive), $"{SanitizeFilename(modelName)}.zip", true, 0));
+            return result;
+        }
+
+        if (!root.TryGetProperty("files", out var filesEl)) return result;
+        var items = filesEl.ValueKind switch
+        {
+            JsonValueKind.Object when filesEl.TryGetProperty("items", out var it) && it.ValueKind == JsonValueKind.Array => it,
+            JsonValueKind.Array => filesEl,
+            _ => default,
+        };
+        if (items.ValueKind != JsonValueKind.Array) return result;
+
+        var list = items.EnumerateArray()
+            .Where(i => i.ValueKind == JsonValueKind.Object && Str(i, "download_url") is not null)
+            .ToList();
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in list)
+        {
+            var url = Absolute(Str(item, "download_url")!);
+            var rawName = Str(item, "filename");
+            var isArchive = rawName is null || rawName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                || rawName.EndsWith(".7z", StringComparison.OrdinalIgnoreCase) || rawName.EndsWith(".rar", StringComparison.OrdinalIgnoreCase);
+            // One archive file: keep the historical "<model>.zip" name so the on-disk skip check still matches.
+            string name = list.Count == 1 && (rawName is null || rawName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                ? $"{SanitizeFilename(modelName)}.zip"
+                : SanitizeFilename(rawName ?? $"{SanitizeFilename(modelName)}-{result.Count + 1}.zip");
+            var baseName = name; var n = 2;
+            while (!used.Add(name))
+                name = $"{Path.GetFileNameWithoutExtension(baseName)}-{n++}{Path.GetExtension(baseName)}";
+            long size = 0;
+            if (item.TryGetProperty("size", out var sz))
+            {
+                if (sz.ValueKind == JsonValueKind.Number) sz.TryGetInt64(out size);
+                else if (sz.ValueKind == JsonValueKind.String) long.TryParse(sz.GetString(), out size);
+            }
+            result.Add(new MmfDownloadTarget(url, name, isArchive, size));
+        }
+        return result;
+    }
+
+    private static string Absolute(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u) && (u.Scheme == Uri.UriSchemeHttps || u.Scheme == Uri.UriSchemeHttp) ? url : SiteBase + "/" + url.TrimStart('/');
+
     private static string? Str(JsonElement root, string prop) =>
         root.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString())
             ? v.GetString() : null;
 }
+
+internal sealed record MmfDownloadTarget(string Url, string FileName, bool IsArchive, long ExpectedSize);
