@@ -409,6 +409,9 @@ public class FileScannerService : IScannerService
                 FileType = DetectFileType(ext),
                 FileSizeBytes = new FileInfo(filePath).Length,
             };
+            // Explicitly Added: via the navigation alone EF marks a pre-keyed child of a
+            // tracked model as Modified -> UPDATE 0 rows -> DbUpdateConcurrencyException.
+            db.Variants.Add(variant);
             model.Variants.Add(variant);
         }
 

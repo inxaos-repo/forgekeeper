@@ -246,6 +246,26 @@ public class FileScannerServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ScanAsync_FullRescan_AddsNewVariantToExistingModel()
+    {
+        // Regression: adding a Variant (pre-set Guid key) via the navigation of an already
+        // tracked model made EF treat it as Modified -> UPDATE of 0 rows ->
+        // DbUpdateConcurrencyException on the final scan flush.
+        var dbName = $"TestDb_{Guid.NewGuid()}";
+        CreateModelDirectory("thangs", "Creator1", "Model1", ["a.stl"]);
+        _metadataService.Setup(m => m.ReadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((SourceMetadata?)null);
+
+        await CreateServiceWithSharedDb(dbName).ScanAsync(incremental: false);
+        File.WriteAllText(Path.Combine(_tempDir, "sources", "thangs", "Creator1", "Model1", "b.stl"), "more");
+        await CreateServiceWithSharedDb(dbName).ScanAsync(incremental: false);
+
+        using var db = TestDbContextFactory.Create(dbName);
+        var model = await db.Models.Include(m => m.Variants).SingleAsync();
+        Assert.Equal(2, model.Variants.Count);
+    }
+
+    [Fact]
     public async Task ScanAsync_IncrementalSkipsUnchangedDirectories()
     {
         var dbName = $"TestDb_{Guid.NewGuid()}";
