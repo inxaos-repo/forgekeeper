@@ -152,6 +152,13 @@ public partial class MmfScraperPlugin
                 // #38: some objects (e.g. rules/PDF-only or not-yet-released items) expose no
                 // download link at all. Log the shape (key names only) and skip, don't fail.
                 var shape = DescribeFilesShape(root);
+                if (IsPdfOnlyObject(root))
+                {
+                    // e.g. 824787 "Of Oil and Iron – Core Rules": category "PDF Only", files.items=0,
+                    // /download/{id} redirects back to the object page. Nothing to fetch yet.
+                    context.Logger.LogWarning("[MMF][session] {Id} ({Name}) is a PDF-only object but MMF exposes no files yet; shape: {Shape}", numericId, model.Name, shape);
+                    return ScrapeResult.Skip($"PDF-only object {numericId}: MMF exposes no downloadable files yet ({shape})");
+                }
                 context.Logger.LogWarning("[MMF][session] {Id} ({Name}) has no download links; shape: {Shape}", numericId, model.Name, shape);
                 return ScrapeResult.Skip($"No downloadable files exposed by MMF for {numericId} ({shape})");
             }
@@ -181,7 +188,8 @@ public partial class MmfScraperPlugin
                     files.Add(new DownloadedFile
                     {
                         Filename = t.FileName, LocalPath = path, Size = outcome.Bytes,
-                        Variant = t.IsArchive ? "archive" : null, IsArchive = t.IsArchive,
+                        Variant = t.IsArchive ? "archive" : (ClassifyFileKind(t.FileName) == "document" ? "document" : null),
+                        IsArchive = t.IsArchive,
                     });
                     if (t.IsArchive) queued.Add((path, extractDir, t.FileName));
                     break;
@@ -221,6 +229,38 @@ public partial class MmfScraperPlugin
     /// <c>files.items[].download_url</c> (/download/{id}?archive_id=…). Prefer the single
     /// archive when present, otherwise download every file item.
     /// </summary>
+    /// <summary>True when the object is in MMF's "PDF Only" category (slug/url "pdf").</summary>
+    internal static bool IsPdfOnlyObject(JsonElement root)
+    {
+        if (!root.TryGetProperty("categories", out var c)) return false;
+        var items = c.ValueKind == JsonValueKind.Object && c.TryGetProperty("items", out var it) ? it : c;
+        if (items.ValueKind != JsonValueKind.Array) return false;
+        foreach (var cat in items.EnumerateArray())
+        {
+            if (cat.ValueKind != JsonValueKind.Object) continue;
+            var name = Str(cat, "name") ?? "";
+            var url = Str(cat, "url") ?? Str(cat, "slug") ?? "";
+            if (name.Contains("PDF", StringComparison.OrdinalIgnoreCase)
+                || url.TrimEnd('/').EndsWith("/pdf", StringComparison.OrdinalIgnoreCase)
+                || url.Equals("pdf", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>archive | document | image | model | other — recorded per file in metadata.json.</summary>
+    internal static string ClassifyFileKind(string? fileName)
+    {
+        if (IsArchiveFile(fileName)) return "archive";
+        return Path.GetExtension(fileName ?? "").ToLowerInvariant() switch
+        {
+            ".pdf" or ".epub" or ".txt" or ".md" or ".docx" => "document",
+            ".png" or ".jpg" or ".jpeg" or ".webp" or ".gif" => "image",
+            ".stl" or ".obj" or ".3mf" or ".lys" or ".ctb" or ".cbddlp" or ".gcode" or ".sl1" => "model",
+            _ => "other",
+        };
+    }
+
     internal static List<MmfDownloadTarget> ResolveDownloadTargets(JsonElement root, string modelName)
     {
         var result = new List<MmfDownloadTarget>();

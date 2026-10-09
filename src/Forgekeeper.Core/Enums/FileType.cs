@@ -13,5 +13,6 @@ public enum FileType
     Png,
     Jpg,
     Webp,
+    Pdf,
     Other
 }

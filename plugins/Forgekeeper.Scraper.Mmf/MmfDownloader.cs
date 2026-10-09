@@ -139,6 +139,7 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
             if (len == 0) throw new InvalidDataException("Empty download");
             if (header is > 0 && header != len) throw new InvalidDataException($"Truncated download: {len} of {header} bytes");
             if (expectedSize > 0 && expectedSize != len) throw new InvalidDataException($"Size mismatch: got {len}, expected {expectedSize}");
+            VerifyMagic(tmp, finalPath);
             if (finalPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) VerifyZip(tmp);
 
             File.Move(tmp, finalPath, overwrite: true); // same directory => atomic rename
@@ -149,6 +150,32 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
             if (File.Exists(tmp)) File.Delete(tmp);
         }
     }
+
+    /// <summary>
+    /// Non-archive files (PDF rulebooks etc.) are saved as-is, never extracted. Check the leading
+    /// bytes against the extension so an HTML login/challenge page can't be stored as "Rules.pdf".
+    /// </summary>
+    internal static void VerifyMagic(string path, string finalName)
+    {
+        var expected = ExpectedMagic(finalName);
+        if (expected is null) return;
+        var buf = new byte[expected.Length];
+        int read;
+        using (var fs = File.OpenRead(path)) read = fs.ReadAtLeast(buf, buf.Length, throwOnEndOfStream: false);
+        if (read < expected.Length || !buf.AsSpan(0, read).SequenceEqual(expected))
+            throw new InvalidDataException($"Content does not match {Path.GetExtension(finalName)} signature");
+    }
+
+    internal static byte[]? ExpectedMagic(string fileName) => Path.GetExtension(fileName).ToLowerInvariant() switch
+    {
+        ".pdf" => "%PDF"u8.ToArray(),
+        ".zip" => "PK"u8.ToArray(),
+        ".7z" => new byte[] { 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C },
+        ".rar" => "Rar!"u8.ToArray(),
+        ".png" => new byte[] { 0x89, 0x50, 0x4E, 0x47 },
+        ".jpg" or ".jpeg" => new byte[] { 0xFF, 0xD8, 0xFF },
+        _ => null,
+    };
 
     internal static void VerifyZip(string path)
     {
