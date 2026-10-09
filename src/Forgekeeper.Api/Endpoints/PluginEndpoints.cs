@@ -451,13 +451,24 @@ public static class PluginEndpoints
 
             try
             {
+                // Buffer the upload so it can be both parsed (validated) and persisted.
+                using var buffer = new MemoryStream();
+                await manifestStream.CopyToAsync(buffer, ct);
+                var bytes = buffer.ToArray();
+
                 var context = await pluginHost.CreateContextAsync(slug, ct);
-                var models = await plugin.FetchManifestAsync(context, manifestStream, ct);
+                var models = await plugin.FetchManifestAsync(context, new MemoryStream(bytes, writable: false), ct);
+
+                // Persist so a DRY_RUN sync / rehome plan can run offline (issue #33).
+                var stored = UploadedManifestStore.Save(context.SourceDirectory, slug, bytes, models.Count);
 
                 return Results.Ok(new
                 {
-                    message = $"Manifest loaded: {models.Count} models found",
-                    modelCount = models.Count
+                    message = $"Manifest loaded and saved: {models.Count} models found",
+                    modelCount = models.Count,
+                    storedPath = stored.Path,
+                    uploadedAt = stored.UploadedAt,
+                    sha256 = stored.Sha256,
                 });
             }
             catch (Exception ex)
@@ -466,6 +477,38 @@ public static class PluginEndpoints
             }
         }).WithName("UploadPluginManifest")
         .DisableAntiforgery();
+
+        // POST /api/v1/plugins/{slug}/rehome/plan — offline: write a rehome-unknown report
+        // from the latest uploaded manifest. Moves nothing.
+        group.MapPost("/{slug}/rehome/plan", async (string slug, PluginHostService pluginHost, CancellationToken ct) =>
+        {
+            if (pluginHost.GetPlugin(slug) is null) return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
+            try
+            {
+                var (json, csv, movable, total, manifest) = await pluginHost.PlanRehomeAsync(slug, ct);
+                return Results.Ok(new { report = Path.GetFileName(json), jsonPath = json, csvPath = csv, movable, total, manifest = manifest.Path });
+            }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+        }).WithName("PlanPluginRehome");
+
+        // POST /api/v1/plugins/{slug}/rehome/apply?report=rehome-unknown-....json — apply a
+        // reviewed plan. Moves only within sources/{slug}, skips existing targets, never deletes,
+        // writes rehome-apply-*.json, idempotent. Does not need DRY_RUN=false or a sync.
+        group.MapPost("/{slug}/rehome/apply", async (string slug, string? report, PluginHostService pluginHost, CancellationToken ct) =>
+        {
+            if (pluginHost.GetPlugin(slug) is null) return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
+            if (string.IsNullOrWhiteSpace(report))
+                return Results.BadRequest(new { message = "Query parameter 'report' (rehome-unknown-*.json file name) is required" });
+            try
+            {
+                var r = await pluginHost.ApplyRehomeReportAsync(slug, report, ct);
+                return Results.Ok(new { report = r.Report, log = r.LogPath, moved = r.Moved, summary = r.Summary });
+            }
+            catch (FileNotFoundException ex) { return Results.NotFound(new { message = ex.Message }); }
+            catch (ArgumentException ex) { return Results.BadRequest(new { message = ex.Message }); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { message = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { message = ex.Message }); }
+        }).WithName("ApplyPluginRehome");
 
         // Auth callback route — handles both direct query params and fragment extraction
         app.MapGet("/auth/{slug}/callback", async (
