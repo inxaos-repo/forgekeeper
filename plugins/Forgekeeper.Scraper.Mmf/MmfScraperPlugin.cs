@@ -1785,8 +1785,13 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 ["localPath"] = Path.GetFileName(f.LocalPath),
                 ["size"] = f.Size,
                 ["variant"] = f.Variant,
+                ["kind"] = ClassifyFileKind(f.Filename),
             }).ToList(),
         };
+        // PDFs (rulebooks, faction books) are stored next to the archives, never extracted.
+        var documents = files.Where(f => ClassifyFileKind(f.Filename) == "document")
+            .Select(f => Path.GetFileName(f.LocalPath) ?? f.Filename).ToList();
+        if (documents.Count > 0) metadata["documents"] = documents;
 
         // Merge tags: source tags + existing user tags (deduplicated)
         var sourceTags = (details?.Tags?.Select(t => t.Name) ?? Enumerable.Empty<string?>())

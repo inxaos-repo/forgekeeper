@@ -26,6 +26,13 @@ public class FileScannerService : IScannerService
         ".stl", ".obj", ".3mf", ".lys", ".ctb", ".cbddlp", ".gcode", ".sl1"
     };
 
+    // Documents (PDF rulebooks/faction books) are indexed as non-printable variants so
+    // PDF-only items still show their files instead of appearing empty.
+    private static readonly HashSet<string> DocumentExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".pdf"
+    };
+
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".png", ".jpg", ".jpeg", ".webp", ".gif"
@@ -393,7 +400,7 @@ public class FileScannerService : IScannerService
                 continue;
             }
 
-            if (!ModelFileExtensions.Contains(ext))
+            if (!ModelFileExtensions.Contains(ext) && !DocumentExtensions.Contains(ext))
                 continue;
 
             if (existingVariantPaths.Contains(relativePath))
@@ -403,7 +410,7 @@ public class FileScannerService : IScannerService
             {
                 Id = Guid.NewGuid(),
                 ModelId = model.Id,
-                VariantType = DetectVariantType(relativePath, ext),
+                VariantType = DocumentExtensions.Contains(ext) ? VariantType.Other : DetectVariantType(relativePath, ext),
                 FilePath = relativePath,
                 FileName = fileName,
                 FileType = DetectFileType(ext),
@@ -525,6 +532,7 @@ public class FileScannerService : IScannerService
             ".gcode" => VariantType.Gcode,
             ".3mf" => VariantType.PrintProject,
             ".png" or ".jpg" or ".jpeg" or ".webp" or ".gif" => VariantType.PreviewImage,
+            ".pdf" => VariantType.Other,
             _ => VariantType.Unsupported // default for STL/OBJ at root
         };
     }
@@ -544,6 +552,7 @@ public class FileScannerService : IScannerService
             ".png" => FileType.Png,
             ".jpg" or ".jpeg" => FileType.Jpg,
             ".webp" => FileType.Webp,
+            ".pdf" => FileType.Pdf,
             _ => FileType.Other
         };
     }
