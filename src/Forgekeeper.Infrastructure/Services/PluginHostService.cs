@@ -204,7 +204,7 @@ public class PluginHostService : BackgroundService
         return await loaded.Scraper.HandleAuthCallbackAsync(context, callbackParams, ct);
     }
 
-    private async Task RunSyncAsync(string slug, CancellationToken ct, int startIndex = 0)
+    internal async Task RunSyncAsync(string slug, CancellationToken ct, int startIndex = 0)
     {
         if (!_plugins.TryGetValue(slug, out var loaded)) return;
 
@@ -266,6 +266,21 @@ public class PluginHostService : BackgroundService
                 Progress = progress,
             };
 
+            // DRY_RUN + an uploaded manifest on disk => fully offline: no login, no
+            // FlareSolverr/Playwright, no auth gate (nothing is downloaded). Issue #33.
+            var dryRunEarly = context.Config.TryGetValue("DRY_RUN", out var dre) && IsTrue(dre);
+            var storedManifest = dryRunEarly ? UploadedManifestStore.GetLatest(context.SourceDirectory, slug) : null;
+
+            IReadOnlyList<ScrapedModel> manifest;
+            if (storedManifest != null)
+            {
+                _logger.LogWarning("[{Slug}] DRY RUN (offline) using uploaded manifest {Path} ({Rows} rows, uploaded {At:u}); skipping authentication",
+                    slug, storedManifest.Path, storedManifest.RowCount, storedManifest.UploadedAt);
+                await using var fs = File.OpenRead(storedManifest.Path);
+                manifest = await loaded.Scraper.FetchManifestAsync(context, fs, ct);
+            }
+            else
+            {
             // Authenticate — but don't abort if auth fails and we have fallback tokens
             var authResult = await loaded.Scraper.AuthenticateAsync(context, ct);
             if (!authResult.Authenticated)
@@ -284,8 +299,9 @@ public class PluginHostService : BackgroundService
                 _logger.LogInformation("[{Slug}] Using fallback download token for sync", slug);
             }
 
-            // Fetch manifest
-            var manifest = await loaded.Scraper.FetchManifestAsync(context, null, ct);
+            // Fetch manifest (live)
+            manifest = await loaded.Scraper.FetchManifestAsync(context, null, ct);
+            }
             status.TotalModels = manifest.Count;
             _logger.LogInformation("[{Slug}] Manifest has {Count} models", slug, manifest.Count);
 
@@ -349,10 +365,13 @@ public class PluginHostService : BackgroundService
             if (rehomeApply)
             {
                 // Explicit opt-in only (default off). Moves unknown/* folders whose id is in the manifest.
+                // DEPRECATED (issue #33): prefer POST /api/v1/plugins/{slug}/rehome/apply with a reviewed
+                // report. Kept for compatibility, now routed through the same safe applier + apply log.
                 var plan = UnknownRehomePlanner.Plan(context.SourceDirectory, manifest, SanitizePath);
-                UnknownRehomePlanner.WriteReport(reportDir, $"rehome-unknown-applied-{slug}-{stamp}", plan);
-                var moved = UnknownRehomePlanner.Apply(plan);
-                _logger.LogWarning("[{Slug}] REHOME_UNKNOWN_APPLY: moved {Moved} folders out of unknown/", slug, moved);
+                var (planJson, _) = UnknownRehomePlanner.WriteReport(reportDir, $"rehome-unknown-insync-{slug}-{stamp}", plan);
+                var applied = RehomeApplier.Apply(context.SourceDirectory, slug, Path.GetFileName(planJson));
+                _logger.LogWarning("[{Slug}] REHOME_UNKNOWN_APPLY is deprecated — use the rehome/apply endpoint. Moved {Moved} folders out of unknown/. Log: {Log}",
+                    slug, applied.Moved, applied.LogPath);
                 idIndex = await BuildSourceIdIndexAsync(slug, context.SourceDirectory, dbFactory, ct);
             }
 
@@ -901,6 +920,69 @@ public class PluginHostService : BackgroundService
         // Convention: builtin plugins are in the image; others dropped manually
         // Future: registry/github sources will set this explicitly
         return "builtin";
+    }
+
+    /// <summary>Test hook: register an already-constructed scraper.</summary>
+    internal void RegisterPluginForTest(string slug, ILibraryScraper scraper) =>
+        _plugins[slug] = new LoadedPlugin
+        {
+            Scraper = scraper,
+            Assembly = scraper.GetType().Assembly,
+            LoadContext = AssemblyLoadContext.Default,
+            LoadedAt = DateTime.UtcNow,
+        };
+
+    /// <summary>Source directory for a plugin (sources/&lt;slug&gt;).</summary>
+    public string GetSourceDirectory(string slug) => Path.Combine(_sourcesDirectory, slug);
+
+    /// <summary>
+    /// Plan step (offline): build the unknown/ re-home plan from the latest uploaded manifest
+    /// and write a rehome-unknown-*.json/.csv report. Moves nothing.
+    /// </summary>
+    public async Task<(string Json, string Csv, int Movable, int Total, StoredManifestInfo Manifest)> PlanRehomeAsync(string slug, CancellationToken ct)
+    {
+        if (!_plugins.TryGetValue(slug, out var loaded))
+            throw new InvalidOperationException($"Plugin '{slug}' not found");
+        var context = await BuildPluginContextAsync(slug, loaded.Scraper, ct);
+        var stored = UploadedManifestStore.GetLatest(context.SourceDirectory, slug)
+            ?? throw new InvalidOperationException("No uploaded manifest — POST the library JSON to /manifest first");
+        IReadOnlyList<ScrapedModel> manifest;
+        await using (var fs = File.OpenRead(stored.Path))
+            manifest = await loaded.Scraper.FetchManifestAsync(context, fs, ct);
+        var plan = UnknownRehomePlanner.Plan(context.SourceDirectory, manifest, SanitizePath);
+        var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+        var (json, csv) = UnknownRehomePlanner.WriteReport(RehomeApplier.ReportDir(context.SourceDirectory), $"rehome-unknown-{slug}-{stamp}", plan);
+        return (json, csv, plan.Count(p => p.Status == RehomeStatus.Movable), plan.Count, stored);
+    }
+
+    /// <summary>
+    /// Apply a reviewed rehome-unknown-*.json report. Independent of DRY_RUN and of sync;
+    /// refuses to run while a sync for the plugin is in progress (and blocks syncs meanwhile).
+    /// </summary>
+    public async Task<RehomeApplyResult> ApplyRehomeReportAsync(string slug, string reportName, CancellationToken ct)
+    {
+        if (!_plugins.ContainsKey(slug))
+            throw new InvalidOperationException($"Plugin '{slug}' not found");
+        var semaphore = _syncLocks.GetOrAdd(slug, _ => new SemaphoreSlim(1, 1));
+        if (!await semaphore.WaitAsync(0, ct))
+            throw new InvalidOperationException($"Sync for '{slug}' is running — try again after it finishes");
+        var status = _syncStatuses.GetOrAdd(slug, _ => new PluginSyncStatus());
+        try
+        {
+            if (status.IsRunning)
+                throw new InvalidOperationException($"Sync for '{slug}' is running — try again after it finishes");
+            status.IsRunning = true;
+        }
+        finally { semaphore.Release(); }
+
+        try
+        {
+            var result = RehomeApplier.Apply(GetSourceDirectory(slug), slug, reportName);
+            _logger.LogWarning("[{Slug}] Re-home apply of {Report}: {Summary}. Log: {Log}",
+                slug, result.Report, string.Join(", ", result.Summary.Where(kv => kv.Value > 0).Select(kv => $"{kv.Key}={kv.Value}")), result.LogPath);
+            return result;
+        }
+        finally { status.IsRunning = false; }
     }
 
     /// <summary>Create a plugin context for external use (e.g., manifest upload).</summary>
