@@ -112,8 +112,40 @@ public partial class MmfScraperPlugin
     internal async Task<ScrapeResult> ScrapeViaSessionAsync(
         PluginContext context, ScrapedModel model, string numericId, MmfCredentials creds, CancellationToken ct)
     {
+        var result = await ScrapeViaSessionOnceAsync(context, model, numericId, creds, ct);
+        if (result.AuthExpired && result.Error?.StartsWith(CloudflarePrefix, StringComparison.Ordinal) == true
+            && MmfFlareSolverr.GetUrl(context) != null)
+        {
+            context.Logger.LogInformation("[MMF][flaresolverr] Cloudflare challenge on {Id} ({Name}) — asking FlareSolverr for clearance", numericId, model.Name);
+            var refreshed = await MmfFlareSolverr.RefreshAsync(context, creds, ct);
+            if (refreshed != null)
+            {
+                result = await ScrapeViaSessionOnceAsync(context, model, numericId, refreshed, ct);
+                if (result.AuthExpired)
+                    context.Logger.LogWarning("[MMF][flaresolverr] Retry of {Id} still blocked: {Error} — pausing", numericId, result.Error);
+            }
+        }
+        if (result.Success && result.Files.Count > 0)
+        {
+            var gap = MmfPacing.ItemDelay(context.Config);
+            if (gap > TimeSpan.Zero)
+            {
+                context.Logger.LogDebug("[MMF] Pacing: waiting {Seconds:F1}s before next item", gap.TotalSeconds);
+                await Delay(gap, ct);
+            }
+        }
+        return result;
+    }
+
+    internal const string CloudflarePrefix = "Cloudflare challenge";
+
+    private async Task<ScrapeResult> ScrapeViaSessionOnceAsync(
+        PluginContext context, ScrapedModel model, string numericId, MmfCredentials creds, CancellationToken ct)
+    {
         var modelDir = context.ModelDirectory!;
         var objectUrl = $"{MmfApiBase}/objects/{numericId}";
+        var apiGap = MmfPacing.ApiDelay(context.Config);
+        if (apiGap > TimeSpan.Zero) await Delay(apiGap, ct);
         var (kind, body) = await GetJsonAsync(objectUrl, creds, ct);
 
         if (kind == MmfResponseKind.AuthExpired && creds.HasSession)
@@ -170,6 +202,7 @@ public partial class MmfScraperPlugin
         var downloader = new MmfDownloader(SessionHandler, new MmfDownloadOptions { Delay = Delay });
         var extractDirs = new Dictionary<string, string>();
         var queued = new List<(string Path, string Extract, string Name)>();
+        var downloadedAny = false;
         foreach (var t in targets)
         {
             var path = Path.Combine(modelDir, t.FileName);
@@ -181,6 +214,8 @@ public partial class MmfScraperPlugin
                 context.Logger.LogInformation("[MMF][session] {Name}: {File} already on disk — skipping download", model.Name, t.FileName);
                 continue;
             }
+            if (downloadedAny && apiGap > TimeSpan.Zero) await Delay(MmfPacing.ApiDelay(context.Config), ct);
+            downloadedAny = true;
             var outcome = await downloader.DownloadAsync(t.Url, path, creds, 0, ct) /* listed size is informational; not proven byte-exact */;
             switch (outcome.Status)
             {
@@ -217,8 +252,6 @@ public partial class MmfScraperPlugin
         foreach (var q in queued)
             _unzipQueue.Enqueue(q);
 
-        var gap = GetDownloadDelayMs(context);
-        if (files.Count > 0 && gap > 0) await Task.Delay(gap, ct);
         return ScrapeResult.Ok("metadata.json", files);
     }
 

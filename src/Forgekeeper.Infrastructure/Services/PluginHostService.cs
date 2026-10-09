@@ -287,6 +287,9 @@ public class PluginHostService : BackgroundService
             var context = await BuildPluginContextAsync(slug, loaded.Scraper, ct);
             var progress = new Progress<ScrapeProgress>(p =>
             {
+                // Progress<T> callbacks are posted asynchronously; never let a late manifest-phase
+                // report (no totals) clobber the host's per-item progress.
+                if (p.Total == 0 && status.CurrentProgress is { Total: > 0 }) return;
                 status.CurrentProgress = p;
                 _logger.LogDebug("[{Slug}] {Status} {Current}/{Total} {Item}",
                     slug, p.Status, p.Current, p.Total, p.CurrentItem);
@@ -437,6 +440,16 @@ public class PluginHostService : BackgroundService
             // Scrape each model
             int processedSinceLastUpdate = 0;
             int manifestIndex = 0;
+            var manifestTotal = manifest.Count;
+            var skipRecords = new List<SyncSkipRecord>();
+            void RecordSkip(ScrapedModel m, int index, string reason)
+            {
+                skipped++;
+                skipRecords.Add(new SyncSkipRecord(index, m.ExternalId, m.CreatorName, m.Name, reason));
+                _logger.LogInformation("[{Slug}] Skip {Id} | {Creator} | {Title}: {Reason}",
+                    slug, m.ExternalId, m.CreatorName ?? "(unknown)", m.Name, reason);
+            }
+            status.CurrentProgress = new ScrapeProgress { Status = "manifest_loaded", Current = startIndex, Total = manifestTotal };
             foreach (var model in manifest)
             {
                 if (ct.IsCancellationRequested) break;
@@ -447,10 +460,18 @@ public class PluginHostService : BackgroundService
                 if (currentIndex < startIndex)
                     continue;
 
+                // Live progress (set synchronously; the plugin's IProgress reports are async and
+                // may stop entirely when items are skipped host-side).
+                status.CurrentProgress = new ScrapeProgress
+                {
+                    Status = "checking", Current = currentIndex + 1, Total = manifestTotal,
+                    CurrentItem = $"{model.CreatorName} / {model.Name}",
+                };
+
                 // Skip creators in the skip list
                 if (!string.IsNullOrEmpty(model.CreatorName) && skipCreators.Contains(model.CreatorName))
                 {
-                    skipped++;
+                    RecordSkip(model, currentIndex, "creator in SKIP_CREATORS");
                     status.ScrapedModels = scraped;
                     processedSinceLastUpdate++;
                     continue;
@@ -459,7 +480,7 @@ public class PluginHostService : BackgroundService
                 // Duplicate manifest rows (8,140 rows → 5,290 unique ids): process each id once.
                 if (!string.IsNullOrEmpty(model.ExternalId) && !seenIds.Add(model.ExternalId))
                 {
-                    skipped++;
+                    RecordSkip(model, currentIndex, "duplicate manifest row");
                     processedSinceLastUpdate++;
                     continue;
                 }
@@ -467,7 +488,7 @@ public class PluginHostService : BackgroundService
                 // Phase 2: only download items classified New; never re-download by id unless forced.
                 if (newOnly && !IsSelectedForDownload(model, idIndex, context.SourceDirectory))
                 {
-                    skipped++;
+                    RecordSkip(model, currentIndex, "not new (already in library)");
                     processedSinceLastUpdate++;
                     continue;
                 }
@@ -495,6 +516,11 @@ public class PluginHostService : BackgroundService
                     ?? Path.Combine(context.SourceDirectory, creatorDir, modelName);
                 var createdDirs = CreateDirectoryTracked(modelDir);
                 context.ModelDirectory = modelDir;
+                status.CurrentProgress = new ScrapeProgress
+                {
+                    Status = "downloading", Current = currentIndex + 1, Total = manifestTotal,
+                    CurrentItem = $"{model.CreatorName} / {model.Name}",
+                };
 
                 var result = await loaded.Scraper.ScrapeModelAsync(context, model, ct);
                 if (!result.Success)
@@ -520,8 +546,7 @@ public class PluginHostService : BackgroundService
                 }
                 else if (result.Skipped)
                 {
-                    skipped++;
-                    _logger.LogInformation("[{Slug}] Skipped {Model}: {Reason}", slug, model.Name, result.Error);
+                    RecordSkip(model, currentIndex, result.Error ?? "skipped by plugin");
                 }
                 else
                 {
@@ -558,6 +583,16 @@ public class PluginHostService : BackgroundService
                         _logger.LogWarning(ex, "[{Slug}] Failed to update SyncRun progress", slug);
                     }
                 }
+            }
+
+            if (skipRecords.Count > 0)
+            {
+                try
+                {
+                    var skipPath = SyncSkipRecord.WriteReport(reportDir, $"skipped-{slug}-{DateTime.UtcNow:yyyyMMdd-HHmmss}", skipRecords);
+                    _logger.LogInformation("[{Slug}] {Count} skipped items written to {Path}", slug, skipRecords.Count, skipPath);
+                }
+                catch (Exception ex) { _logger.LogWarning(ex, "[{Slug}] Could not write skip list", slug); }
             }
 
             _logger.LogInformation("[{Slug}] Sync complete: {Scraped} scraped, {Failed} failed, {Skipped} skipped",

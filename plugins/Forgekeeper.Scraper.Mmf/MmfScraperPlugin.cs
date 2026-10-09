@@ -97,8 +97,8 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Label = "FlareSolverr URL",
             Type = PluginConfigFieldType.Url,
             Required = false,
-            DefaultValue = "http://flaresolverr.flaresolverr.svc.cluster.local:8191",
-            HelpText = "FlareSolverr URL for Cloudflare bypass. Leave blank to skip.",
+            DefaultValue = "",
+            HelpText = "Opt-in FlareSolverr URL (e.g. http://flaresolverr.flaresolverr.svc.cluster.local:8191). When set and a session download hits a Cloudflare challenge, FlareSolverr refreshes only cf_clearance/__cf_bm (PHPSESSID kept), its User-Agent is adopted, and the item is retried once. Never logs in. Blank = off.",
         },
         new PluginConfigField
         {
@@ -169,6 +169,24 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             Required = false,
             DefaultValue = "5000",
             HelpText = "Delay between file downloads in milliseconds. Increase to avoid rate-limiting during large restores. Default 5000ms.",
+        },
+        new PluginConfigField
+        {
+            Key = "DOWNLOAD_DELAY_SECONDS",
+            Label = "Delay Between Items (s)",
+            Type = PluginConfigFieldType.Number,
+            Required = false,
+            DefaultValue = "20",
+            HelpText = "Pause after each downloaded item, in seconds, with ±25% random jitter. Default 20. 0 disables.",
+        },
+        new PluginConfigField
+        {
+            Key = "API_CALL_DELAY_MS",
+            Label = "Delay Between API Calls (ms)",
+            Type = PluginConfigFieldType.Number,
+            Required = false,
+            DefaultValue = "1500",
+            HelpText = "Small pause before each MMF object-API call and between file downloads of one item (±25% jitter). Default 1500.",
         },
         new PluginConfigField
         {
@@ -1179,55 +1197,11 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                             }
                         }
 
-                        Directory.CreateDirectory(extractDir);
-
-                        if (ext == ".zip")
-                        {
-                            ZipFile.ExtractToDirectory(archivePath, extractDir, overwriteFiles: true);
-                            extracted++;
-                            logger.LogInformation("[MMF] Extracted: {File}", filename);
-                        }
-                        else if (ext is ".rar" or ".7z")
-                        {
-                            // Shell out to 7z if available
-                            var sevenZip = FindExecutable("7z") ?? FindExecutable("7za") ?? FindExecutable("p7zip");
-                            if (sevenZip != null)
-                            {
-                                var psi = new ProcessStartInfo(sevenZip, $"x \"{archivePath}\" -o\"{extractDir}\" -y")
-                                {
-                                    RedirectStandardOutput = true,
-                                    RedirectStandardError = true,
-                                    UseShellExecute = false,
-                                    CreateNoWindow = true,
-                                };
-                                using var proc = Process.Start(psi);
-                                if (proc != null)
-                                {
-                                    await proc.WaitForExitAsync(ct);
-                                    if (proc.ExitCode == 0)
-                                    {
-                                        extracted++;
-                                        logger.LogInformation("[MMF] Extracted ({Ext}): {File}", ext, filename);
-                                    }
-                                    else
-                                    {
-                                        var stderr = await proc.StandardError.ReadToEndAsync(ct);
-                                        logger.LogWarning("[UNZIP] 7z failed for {File}: {Error}", filename, stderr.Trim());
-                                        continue; // Don't delete archive if extraction failed
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                logger.LogWarning("[UNZIP] {Ext} not supported (install p7zip-full): {File}", ext, filename);
-                                continue; // Don't delete — can't extract
-                            }
-                        }
-                        else
-                        {
-                            logger.LogWarning("[UNZIP] Unknown archive format: {File}", filename);
-                            continue;
-                        }
+                        // Outer archive (.zip natively, .rar/.7z via 7z) + nested archives one level deep.
+                        // The archive is deleted only after a successful extraction; failures keep it.
+                        var res = await MmfArchiveExtractor.ExtractAsync(archivePath, extractDir, logger, deleteOnSuccess: false, ct: ct);
+                        if (!res.Success) continue;
+                        extracted += res.Extracted;
 
                         // Clean up old version directories
                         CleanupOldVersions(extractDir, logger);
