@@ -420,4 +420,150 @@ public class MmfExtractPacingTests : IDisposable
         Assert.Equal("index,id,creator,title,reason", csv[0]);
         Assert.Equal("3,200,Haito,\"Main, Base \"\"25mm\"\"\",duplicate manifest row", csv[1]);
     }
+
+    // ---------- #48: Cloudflare challenge on download pauses whatever the status ----------
+
+    private static string Fixture(string name) => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Mmf", name));
+
+    private static HttpResponseMessage Typed(HttpStatusCode code, string body, string ctype) =>
+        new(code) { Content = new StringContent(body, Encoding.UTF8, ctype) };
+
+    private Task<DownloadOutcome> Dl(Func<HttpRequestMessage, HttpResponseMessage> respond, string file = "a.zip") =>
+        new MmfDownloader(new RouteHandler(respond), new MmfDownloadOptions { Delay = (_, _) => Task.CompletedTask })
+            .DownloadAsync("https://www.myminifactory.com/download/1", Path.Combine(_dir, file), new MmfCredentials("a=b", null, "UA"));
+
+    [Fact]
+    public async Task Issue48_Http200_HtmlChallengeFixture_IsChallenge()
+    {
+        var o = await Dl(_ => Html(HttpStatusCode.OK, Fixture("cf-challenge-just-a-moment.html")));
+        Assert.Equal(DownloadStatus.CloudflareChallenge, o.Status);
+        Assert.Contains("text/html", o.Error);
+        Assert.False(File.Exists(Path.Combine(_dir, "a.zip")));
+    }
+
+    [Fact]
+    public async Task Issue48_Http200_HtmlWithoutMarkers_OnDownloadUrl_IsChallenge()
+    {
+        var o = await Dl(_ => Html(HttpStatusCode.OK, Fixture("download-html-no-markers.html")));
+        Assert.Equal(DownloadStatus.CloudflareChallenge, o.Status);
+    }
+
+    [Fact]
+    public async Task Issue48_CfMitigatedHeader_IsChallenge_EvenWithBinaryContentType()
+    {
+        var o = await Dl(_ =>
+        {
+            var r = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Zip(("p.stl", Stl()))) };
+            r.Content.Headers.ContentType = new("application/octet-stream");
+            r.Headers.TryAddWithoutValidation("cf-mitigated", "challenge");
+            return r;
+        });
+        Assert.Equal(DownloadStatus.CloudflareChallenge, o.Status);
+        Assert.Contains("cf-mitigated", o.Error);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.OK, "application/json")]
+    [InlineData(HttpStatusCode.OK, "text/plain")]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "text/plain")]
+    [InlineData(HttpStatusCode.TooManyRequests, "text/plain")]
+    [InlineData(HttpStatusCode.BadRequest, "application/json")]
+    public async Task Issue48_ChallengeBody_AnyStatusOrType_IsChallenge(HttpStatusCode code, string ctype)
+    {
+        var o = await Dl(_ => Typed(code, Fixture("cf-challenge-just-a-moment.html"), ctype));
+        Assert.Equal(DownloadStatus.CloudflareChallenge, o.Status);
+        Assert.Equal(1, o.Attempts);
+    }
+
+    [Fact]
+    public async Task Issue48_ChallengePageServedAsOctetStream_IsChallenge_NoFileLeft()
+    {
+        var o = await Dl(_ =>
+        {
+            var r = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Encoding.UTF8.GetBytes(Fixture("cf-challenge-just-a-moment.html"))) };
+            r.Content.Headers.ContentType = new("application/octet-stream");
+            return r;
+        });
+        Assert.Equal(DownloadStatus.CloudflareChallenge, o.Status);
+        Assert.Empty(Directory.GetFiles(_dir, "*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task Issue48_UnexpectedTypeButNotChallenge_StillFailsMagicCheck()
+    {
+        var o = await Dl(_ => Typed(HttpStatusCode.OK, "plain text, not a zip", "text/plain"));
+        Assert.Equal(DownloadStatus.Failed, o.Status);
+    }
+
+    [Fact]
+    public async Task Issue48_GenuineZip_StillDownloads()
+    {
+        var o = await Dl(_ => Bytes(Zip(("p.stl", Stl()))));
+        Assert.True(o.Success, o.Error);
+    }
+
+    [Theory]
+    [InlineData("<html><title>Just a moment...</title></html>", true)]
+    [InlineData("<script src=\"/cdn-cgi/challenge-platform/h/g\"></script>", true)]
+    [InlineData("{\"error\":\"not found\"}", false)]
+    [InlineData(null, false)]
+    public void Issue48_LooksLikeChallengeBody(string? body, bool expected) =>
+        Assert.Equal(expected, MmfSession.LooksLikeChallengeBody(body));
+
+    [Theory]
+    [InlineData("application/zip", true)]
+    [InlineData("application/octet-stream", true)]
+    [InlineData(null, true)]
+    [InlineData("text/html", false)]
+    [InlineData("application/json", false)]
+    public void Issue48_ExpectedDownloadContentType(string? ct, bool expected) =>
+        Assert.Equal(expected, MmfSession.IsExpectedDownloadContentType(ct));
+
+    [Fact]
+    public async Task Issue48_Session_Download200Html_PausesNotFails()
+    {
+        var tokens = await SessionTokens();
+        MmfScraperPlugin.ApiHandlerOverride = new RouteHandler(req => req.RequestUri!.ToString().Contains("/api/v2/objects/200")
+            ? Json(HttpStatusCode.OK, ObjectJson)
+            : Html(HttpStatusCode.OK, Fixture("cf-challenge-just-a-moment.html")));
+        var r = await new MmfScraperPlugin().ScrapeModelAsync(Ctx(tokens, new() { ["DELAY_MS"] = "0" }), Model());
+        Assert.False(r.Success);
+        Assert.True(r.AuthExpired, r.Error);   // host pauses (NeedsReauth) at this index; not counted as failed
+        Assert.StartsWith(MmfScraperPlugin.CloudflarePrefix, r.Error);
+    }
+
+    [Fact]
+    public async Task Issue48_FlareSolverrRetry_Still200Html_PausesNotFails()
+    {
+        // Exactly the run-25 shape: clearance obtained, retried download still returns HTTP 200 HTML.
+        var tokens = await SessionTokens();
+        var fs = new RouteHandler(_ => Json(HttpStatusCode.OK, FsOk));
+        MmfFlareSolverr.HandlerOverride = fs;
+        var api = new RouteHandler(req => req.RequestUri!.ToString().Contains("/api/v2/objects/200")
+            ? Json(HttpStatusCode.OK, ObjectJson)
+            : Html(HttpStatusCode.OK, Fixture("download-html-no-markers.html")));
+        MmfScraperPlugin.ApiHandlerOverride = api;
+        var cfg = new Dictionary<string, string> { ["DELAY_MS"] = "0", ["FLARESOLVERR_URL"] = "http://fs.invalid:8191" };
+        var r = await new MmfScraperPlugin().ScrapeModelAsync(Ctx(tokens, cfg), Model());
+        Assert.True(r.AuthExpired, r.Error);
+        Assert.Single(fs.Requests);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Issue48_EmptyFlareSolverrUrl_NeverCallsFlareSolverr(string url)
+    {
+        var tokens = await SessionTokens();
+        var fs = new RouteHandler(_ => Json(HttpStatusCode.OK, FsOk));
+        MmfFlareSolverr.HandlerOverride = fs;
+        MmfScraperPlugin.ApiHandlerOverride = new RouteHandler(req => req.RequestUri!.ToString().Contains("/api/v2/objects/200")
+            ? Json(HttpStatusCode.OK, ObjectJson)
+            : Html(HttpStatusCode.OK, Fixture("cf-challenge-just-a-moment.html")));
+        var ctx = Ctx(tokens, new() { ["DELAY_MS"] = "0", ["FLARESOLVERR_URL"] = url });
+        Assert.Null(MmfFlareSolverr.GetUrl(ctx));
+        var r = await new MmfScraperPlugin().ScrapeModelAsync(ctx, Model());
+        Assert.True(r.AuthExpired);
+        Assert.Empty(fs.Requests);
+    }
 }

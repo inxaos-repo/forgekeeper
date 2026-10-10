@@ -99,6 +99,39 @@ public static class MmfSession
         return MmfResponseKind.Other;
     }
 
+    /// <summary>#48: Cloudflare marks challenge responses with <c>cf-mitigated: challenge</c>, whatever the status.</summary>
+    public static bool HasChallengeHeader(HttpResponseMessage resp) =>
+        resp.Headers.TryGetValues("cf-mitigated", out var v) && v.Any(x => x.Contains("challenge", StringComparison.OrdinalIgnoreCase));
+
+    private static readonly string[] ChallengeMarkers =
+    {
+        "challenge-platform", "Just a moment", "cf-chl", "_cf_chl_opt", "cf_chl_", "cf-browser-verification",
+        "Attention Required! | Cloudflare", "Checking your browser", "challenges.cloudflare.com", "cf-turnstile",
+    };
+
+    /// <summary>#48: body markers of a Cloudflare interstitial / managed challenge page.</summary>
+    public static bool LooksLikeChallengeBody(string? body) =>
+        !string.IsNullOrEmpty(body) && ChallengeMarkers.Any(m => body.Contains(m, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// #48: content types a file download may legitimately carry. Anything else (text/*, JSON, XML)
+    /// on a download URL is suspicious and gets its body inspected before being trusted.
+    /// </summary>
+    public static bool IsExpectedDownloadContentType(string? mediaType)
+    {
+        if (string.IsNullOrWhiteSpace(mediaType)) return true;
+        var m = mediaType.Trim().ToLowerInvariant();
+        return m is "application/octet-stream" or "binary/octet-stream" or "application/x-binary" or "application/binary"
+                 or "application/zip" or "application/x-zip-compressed" or "application/x-zip" or "multipart/x-zip"
+                 or "application/x-7z-compressed" or "application/x-rar-compressed" or "application/vnd.rar" or "application/x-rar"
+                 or "application/pdf" or "application/x-pdf" or "application/sla" or "application/vnd.ms-pki.stl"
+                 or "application/x-tar" or "application/gzip" or "application/x-gzip" or "application/force-download"
+                 or "application/download" or "application/x-download"
+            || m.StartsWith("image/") || m.StartsWith("model/");
+    }
+
+    internal static bool LooksHtmlPublic(string? contentType, string? body) => LooksHtml(contentType, body);
+
     private static bool LooksHtml(string? contentType, string? body) =>
         (contentType?.Contains("html", StringComparison.OrdinalIgnoreCase) ?? false)
         || (body?.TrimStart().StartsWith('<') ?? false);
