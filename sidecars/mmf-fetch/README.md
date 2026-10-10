@@ -13,4 +13,9 @@ Enable in the MMF plugin by setting `FETCH_PROXY_URL=http://127.0.0.1:8199`.
 - Never logs cookies, auth headers, or query strings. `GET /healthz` → `ok`.
 
 Env: `FETCH_BIND` (127.0.0.1), `FETCH_PORT` (8199), `FETCH_IMPERSONATE` (chrome),
-`FETCH_TIMEOUT_SECONDS` (3600), `FETCH_CONNECT_TIMEOUT_SECONDS` (30).
+`FETCH_TIMEOUT_SECONDS` (3600), `FETCH_CONNECT_TIMEOUT_SECONDS` (30), `FETCH_QUEUE_CHUNKS` (256).
+
+Memory: each transfer runs curl on its own thread with a bounded chunk queue; when the client
+is slower than upstream, curl's write callback blocks (TCP backpressure), so RSS stays flat
+regardless of file size. (curl_cffi `AsyncSession(stream=True)` uses an unbounded queue and
+buffered whole downloads in RAM -> OOMKilled, #57.) Tests: `pytest sidecars/mmf-fetch/tests`.
