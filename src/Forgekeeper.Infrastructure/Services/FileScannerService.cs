@@ -359,6 +359,11 @@ public class FileScannerService : IScannerService
         model.Name = SanitizeMetadataValue(metadata?.Name ?? parsed.ModelName);
         model.SourceId = metadata?.ExternalId ?? parsed.SourceId;
         model.SourceUrl = metadata?.ExternalUrl;
+        // #67: the whole library lives under sources/mmf/, so the adapter claims everything. Only rows with a
+        // real MMF identity (numeric/object-NNN id or myminifactory URL) are Mmf; the rest are local scans.
+        if (parsed.Source == SourceType.Mmf)
+            model.Source = MmfOrphanMergeService.IsMmfIdentity(model.SourceId, model.SourceUrl)
+                ? SourceType.Mmf : SourceType.Manual;
         model.Description = metadata?.Description;
         model.Extra = metadata?.Extra != null ? JsonSerializer.Serialize(metadata.Extra) : null;
         model.ExternalCreatedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Created);
