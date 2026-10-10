@@ -45,13 +45,28 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
             {
                 using var resp = await SendFollowingRedirectsAsync(new Uri(url), creds, ct);
                 var ctype = resp.Content.Headers.ContentType?.MediaType;
-                if (resp.IsSuccessStatusCode && !(ctype?.Contains("html", StringComparison.OrdinalIgnoreCase) ?? false))
+                // #48: a challenge is a challenge whatever the HTTP status (CF happily returns 200 HTML).
+                if (MmfSession.HasChallengeHeader(resp))
+                    return Challenge($"cf-mitigated header, HTTP {(int)resp.StatusCode}", ctype, null, attempt);
+                var isHtml = ctype?.Contains("html", StringComparison.OrdinalIgnoreCase) ?? false;
+                if (resp.IsSuccessStatusCode && !isHtml && MmfSession.IsExpectedDownloadContentType(ctype))
                 {
                     var bytes = await StreamToFinalAsync(resp, finalPath, expectedSize, ct);
                     return new DownloadOutcome(DownloadStatus.Success, bytes, Attempts: attempt);
                 }
 
                 var body = await SafePeekAsync(resp, ct);
+                if (MmfSession.LooksLikeChallengeBody(body))
+                    return Challenge($"challenge body, HTTP {(int)resp.StatusCode}", ctype, body, attempt);
+                if (resp.IsSuccessStatusCode)
+                {
+                    // A download URL never legitimately serves HTML: treat it as a challenge (pause), not a failure.
+                    if (MmfSession.LooksHtmlPublic(ctype, body))
+                        return Challenge($"HTML on download, HTTP {(int)resp.StatusCode}", ctype, body, attempt);
+                    // Unexpected but non-HTML/non-challenge content type: let the size/magic checks decide.
+                    var bytes = await StreamToFinalAsync(resp, finalPath, expectedSize, ct);
+                    return new DownloadOutcome(DownloadStatus.Success, bytes, Attempts: attempt);
+                }
                 var kind = MmfSession.Classify(resp.StatusCode, ctype, body);
                 switch (kind)
                 {
@@ -69,10 +84,11 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
                         lastError = $"HTTP {(int)resp.StatusCode}";
                         break;
                     default:
-                        return new DownloadOutcome(DownloadStatus.Failed, Error: $"HTTP {(int)resp.StatusCode}", Attempts: attempt);
+                        return new DownloadOutcome(DownloadStatus.Failed, Error: $"HTTP {(int)resp.StatusCode} ({ctype ?? "no content-type"}, starts: {Snippet(body)})", Attempts: attempt);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (MmfChallengeContentException ex) { return Challenge(ex.Message, ex.ContentType, ex.Head, attempt); }
             catch (InvalidDataException ex) { lastError = ex.Message; }          // size/zip verification
             catch (HttpRequestException ex) { lastError = ex.Message; }
             catch (IOException ex) { lastError = ex.Message; }
@@ -82,6 +98,18 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
                 await _opt.Delay(wait ?? Backoff(attempt), ct);
         }
         return new DownloadOutcome(DownloadStatus.Failed, Error: lastError ?? "failed", Attempts: _opt.MaxAttempts);
+    }
+
+    private static DownloadOutcome Challenge(string why, string? ctype, string? body, int attempt) =>
+        new(DownloadStatus.CloudflareChallenge,
+            Error: $"Cloudflare challenge ({why}; content-type={ctype ?? "none"}; starts: {Snippet(body)})", Attempts: attempt);
+
+    /// <summary>First bytes of a rejected body for the log (#48), single line, short — never the full page.</summary>
+    internal static string Snippet(string? body)
+    {
+        if (string.IsNullOrEmpty(body)) return "(empty)";
+        var s = new string(body.Take(80).Select(c => char.IsControl(c) ? ' ' : c).ToArray()).Trim();
+        return s.Length == 0 ? "(binary)" : s;
     }
 
     internal TimeSpan Backoff(int attempt) => TimeSpan.FromTicks(_opt.BaseBackoff.Ticks * (long)Math.Pow(4, attempt - 1));
@@ -139,7 +167,10 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
             if (len == 0) throw new InvalidDataException("Empty download");
             if (header is > 0 && header != len) throw new InvalidDataException($"Truncated download: {len} of {header} bytes");
             if (expectedSize > 0 && expectedSize != len) throw new InvalidDataException($"Size mismatch: got {len}, expected {expectedSize}");
-            VerifyMagic(tmp, finalPath);
+            try { VerifyMagic(tmp, finalPath); }
+            catch (InvalidDataException) { ThrowIfChallengeFile(tmp, resp); throw; }
+            if (MmfSession.LooksHtmlPublic(null, ReadHead(tmp)) && ExpectedMagic(finalPath) is null)
+                ThrowIfChallengeFile(tmp, resp, htmlIsChallenge: true);
             if (finalPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) VerifyZip(tmp);
 
             File.Move(tmp, finalPath, overwrite: true); // same directory => atomic rename
@@ -149,6 +180,23 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
         {
             if (File.Exists(tmp)) File.Delete(tmp);
         }
+    }
+
+    private static string ReadHead(string path)
+    {
+        var buf = new byte[2048];
+        int n;
+        using (var fs = File.OpenRead(path)) n = fs.ReadAtLeast(buf, buf.Length, throwOnEndOfStream: false);
+        return System.Text.Encoding.UTF8.GetString(buf, 0, n);
+    }
+
+    /// <summary>#48: a streamed "file" that is really a challenge page pauses the run instead of failing the item.</summary>
+    private static void ThrowIfChallengeFile(string tmp, HttpResponseMessage resp, bool htmlIsChallenge = false)
+    {
+        var head = ReadHead(tmp);
+        if (MmfSession.LooksLikeChallengeBody(head) || (htmlIsChallenge && MmfSession.LooksHtmlPublic(null, head)))
+            throw new MmfChallengeContentException($"challenge page in file body, HTTP {(int)resp.StatusCode}",
+                resp.Content.Headers.ContentType?.MediaType, head);
     }
 
     /// <summary>
@@ -193,4 +241,10 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
             throw new InvalidDataException($"Corrupt zip: {ex.Message}");
         }
     }
+}
+
+internal sealed class MmfChallengeContentException(string message, string? contentType, string? head) : Exception(message)
+{
+    public string? ContentType { get; } = contentType;
+    public string? Head { get; } = head;
 }

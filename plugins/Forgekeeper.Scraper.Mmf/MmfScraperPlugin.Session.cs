@@ -125,6 +125,12 @@ public partial class MmfScraperPlugin
                     context.Logger.LogWarning("[MMF][flaresolverr] Retry of {Id} still blocked: {Error} — pausing", numericId, result.Error);
             }
         }
+        // #48 belt-and-braces: a failure that is really a challenge must pause, never count as failed.
+        if (!result.Success && !result.AuthExpired && !result.Skipped && IsChallengeError(result.Error))
+        {
+            context.Logger.LogWarning("[MMF] {Id}: challenge reported as failure ({Error}) — pausing instead", numericId, result.Error);
+            result = ScrapeResult.TokenExpired($"{CloudflarePrefix} — refresh the MMF session ({result.Error})");
+        }
         if (result.Success && result.Files.Count > 0)
         {
             var gap = MmfPacing.ItemDelay(context.Config);
@@ -138,6 +144,9 @@ public partial class MmfScraperPlugin
     }
 
     internal const string CloudflarePrefix = "Cloudflare challenge";
+
+    internal static bool IsChallengeError(string? error) =>
+        error != null && (error.Contains("Cloudflare challenge", StringComparison.OrdinalIgnoreCase) || MmfSession.LooksLikeChallengeBody(error));
 
     private async Task<ScrapeResult> ScrapeViaSessionOnceAsync(
         PluginContext context, ScrapedModel model, string numericId, MmfCredentials creds, CancellationToken ct)
@@ -232,7 +241,9 @@ public partial class MmfScraperPlugin
                     if (creds.HasSession) await MarkSessionExpiredAsync(context, ct);
                     return ScrapeResult.TokenExpired("Download rejected (auth) — reconnect needed");
                 case DownloadStatus.CloudflareChallenge:
-                    return ScrapeResult.TokenExpired("Cloudflare challenge on download — refresh the MMF session");
+                    // #48: pause (reconnectNeeded) — never a failed item; the host keeps the index so resume retries it.
+                    context.Logger.LogWarning("[MMF][session] {Name}: {File} — {Error}", model.Name, t.FileName, outcome.Error);
+                    return ScrapeResult.TokenExpired($"Cloudflare challenge on download — refresh the MMF session ({outcome.Error})");
                 default:
                     // #28: a failed download is a failure, never a silent success.
                     return ScrapeResult.Failure($"Download failed for {model.Name} ({t.FileName}): {outcome.Error} after {outcome.Attempts} attempt(s)");
