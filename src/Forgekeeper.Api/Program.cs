@@ -46,6 +46,7 @@ builder.Services.AddDbContext<ForgeDbContext>(options =>
 // Repositories
 builder.Services.AddScoped<MetadataWritebackService>();
 builder.Services.AddScoped<FileIssueService>();
+builder.Services.AddScoped<MmfOrphanMergeService>();
 builder.Services.AddScoped<IModelRepository, ModelRepository>();
 builder.Services.AddScoped<ICreatorRepository, CreatorRepository>();
 
@@ -311,6 +312,7 @@ app.MapGet("/metrics", async (IServiceProvider services, PluginHostService plugi
 
 // Map API endpoints
 app.MapModelEndpoints();
+app.MapMaintenanceEndpoints();
 app.MapCreatorEndpoints();
 app.MapTagEndpoints();
 app.MapScanEndpoints();
