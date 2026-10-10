@@ -8,6 +8,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi.js'
 import StlViewer from '../components/StlViewer.vue'
+import { pickDefaultPreview } from '../utils/viewer.js'
 import SourceBadge from '../components/SourceBadge.vue'
 import StarRating from '../components/StarRating.vue'
 import TagEditor from '../components/TagEditor.vue'
@@ -154,6 +155,16 @@ function isPreviewable(variant) {
   return ['stl', 'obj'].includes(ext)
 }
 
+async function togglePrinted() {
+  if (!model.value) return
+  const path = `/models/${model.value.id}/printed`
+  try {
+    const res = model.value.printed ? await api.del(path) : await api.post(path)
+    model.value.printed = res.printed
+    model.value.printHistory = res.printHistory
+  } catch { /* error shown by api.error */ }
+}
+
 function resultEmoji(result) {
   return { success: '✅', failed: '❌', partial: '⚠️' }[result] || '❓'
 }
@@ -173,8 +184,8 @@ async function fetchModel() {
       notes: result.notes || '',
     }
 
-    // Auto-select first previewable variant
-    const first = result.variants?.find(isPreviewable)
+    // Auto-select the largest STL (#65) — the first file is often a tiny loose part
+    const first = pickDefaultPreview(result.variants) || result.variants?.find(isPreviewable)
     if (first) selectedVariantId.value = first.id
   } catch {
     model.value = null
@@ -338,7 +349,13 @@ watch(() => route.params.id, fetchModel)
             </div>
             <div class="text-right text-sm text-forge-text-muted shrink-0">
               <div>{{ model.fileCount }} files · {{ formatSize(model.totalSizeBytes) }}</div>
-              <div v-if="model.printed" class="text-forge-accent mt-1">✅ Printed</div>
+              <button
+                type="button"
+                class="mt-1 px-2 py-0.5 rounded border text-xs"
+                :class="model.printed ? 'border-forge-accent text-forge-accent' : 'border-forge-border hover:text-forge-text'"
+                :title="model.printed ? 'Click to mark as not printed' : 'Mark as printed'"
+                @click="togglePrinted"
+              >{{ model.printed ? '✅ Printed' : '☐ Mark printed' }}</button>
             </div>
           </div>
 

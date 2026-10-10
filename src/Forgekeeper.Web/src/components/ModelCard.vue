@@ -3,6 +3,7 @@
   Shows thumbnail, name, creator, source badge, file count, printed indicator
 -->
 <script setup>
+import { displayName } from '../utils/viewer.js'
 import { computed } from 'vue'
 import SourceBadge from './SourceBadge.vue'
 
@@ -51,8 +52,11 @@ function formatSize(bytes) {
     <!-- Info -->
     <div class="p-3 space-y-2">
       <!-- Model name -->
-      <h3 class="text-sm font-semibold text-forge-text truncate group-hover:text-forge-accent transition-colors">
-        {{ model.name }}
+      <h3
+        class="text-sm font-semibold text-forge-text line-clamp-2 break-words group-hover:text-forge-accent transition-colors"
+        :title="model.name"
+      >
+        {{ displayName(model.name, model.creatorName) }}
       </h3>
 
       <!-- Creator + Source -->

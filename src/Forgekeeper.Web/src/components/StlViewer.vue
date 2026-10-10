@@ -1,6 +1,7 @@
 <!--
   StlViewer.vue — Three.js STL renderer with OrbitControls
-  Props: url, color, backgroundColor, autoRotate
+  Props: url, color, backgroundColor, autoRotate, zUp
+  zUp (default true): STL files are Z-up; three.js is Y-up, so rotate -90° on X (#65).
   Renders an STL file with lighting, camera controls, and responsive sizing
 -->
 <script setup>
@@ -14,7 +15,11 @@ const props = defineProps({
   color: { type: String, default: '#c8b8a8' },
   backgroundColor: { type: String, default: '#1c1c1c' },
   autoRotate: { type: Boolean, default: true },
+  zUp: { type: Boolean, default: true },
 })
+
+const zUpOn = ref(props.zUp)
+let currentMesh = null
 
 const containerRef = ref(null)
 const isLoading = ref(false)
@@ -95,16 +100,13 @@ function loadModel(url) {
   hasError.value = false
   errorMsg.value = ''
 
-  // Remove existing meshes
-  const toRemove = []
-  scene.traverse((child) => {
-    if (child.isMesh) toRemove.push(child)
-  })
-  toRemove.forEach((m) => {
-    m.geometry.dispose()
-    m.material.dispose()
-    scene.remove(m)
-  })
+  // Remove existing mesh
+  if (currentMesh) {
+    currentMesh.geometry.dispose()
+    currentMesh.material.dispose()
+    scene.remove(currentMesh)
+    currentMesh = null
+  }
 
   const loader = new STLLoader()
   loader.load(
@@ -121,27 +123,25 @@ function loadModel(url) {
       })
       const mesh = new THREE.Mesh(geometry, material)
 
-      // Center the model
-      const bbox = geometry.boundingBox
-      const center = new THREE.Vector3()
-      bbox.getCenter(center)
-      mesh.position.sub(center)
+      // Center geometry on origin
+      geometry.center()
+      geometry.computeBoundingBox()
 
       // Scale to fit view
       const size = new THREE.Vector3()
-      bbox.getSize(size)
+      geometry.boundingBox.getSize(size)
       const maxDim = Math.max(size.x, size.y, size.z)
       if (maxDim > 0) {
-        const scale = 80 / maxDim
-        mesh.scale.setScalar(scale)
+        mesh.scale.setScalar(80 / maxDim)
       }
 
+      currentMesh = mesh
+      applyOrientation()
       scene.add(mesh)
 
       // Adjust camera to frame the model
-      camera.position.set(0, 50, 100)
-      controls.target.set(0, 0, 0)
-      controls.update()
+      camera.position.set(0, 70, 120)
+      applyOrientation()
 
       isLoading.value = false
     },
@@ -152,6 +152,25 @@ function loadModel(url) {
       errorMsg.value = err?.message || 'Failed to load STL'
     }
   )
+}
+
+// Orient the mesh (Z-up vs Y-up) and rest it on the grid.
+function applyOrientation() {
+  if (!currentMesh) return
+  currentMesh.rotation.set(zUpOn.value ? -Math.PI / 2 : 0, 0, 0)
+  currentMesh.position.set(0, 0, 0)
+  currentMesh.updateMatrixWorld(true)
+  const box = new THREE.Box3().setFromObject(currentMesh)
+  currentMesh.position.y = -box.min.y
+  if (controls) {
+    controls.target.set(0, (box.max.y - box.min.y) / 2, 0)
+    controls.update()
+  }
+}
+
+function toggleUp() {
+  zUpOn.value = !zUpOn.value
+  applyOrientation()
 }
 
 watch(() => props.url, (url) => loadModel(url))
@@ -175,6 +194,13 @@ onBeforeUnmount(() => {
 <template>
   <div class="stl-viewer relative w-full rounded-lg overflow-hidden bg-forge-bg" style="min-height: 400px">
     <div ref="containerRef" class="w-full h-full" style="min-height: 400px"></div>
+
+    <button
+      type="button"
+      class="absolute top-2 right-2 z-10 px-2 py-1 text-xs rounded bg-forge-bg/80 border border-forge-border text-forge-text-muted hover:text-forge-text"
+      :title="zUpOn ? 'Showing Z-up (STL default). Click for Y-up.' : 'Showing Y-up. Click for Z-up.'"
+      @click="toggleUp"
+    >{{ zUpOn ? 'Z-up' : 'Y-up' }}</button>
 
     <!-- Loading overlay -->
     <div
