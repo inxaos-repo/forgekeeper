@@ -581,7 +581,9 @@ public class FileScannerService : IScannerService
 
     private static string[] SafeGetDirectories(string path)
     {
-        try { return Directory.GetDirectories(path); }
+        // Skip hidden/housekeeping dirs (.forgekeeper-reports, .trash-*, .git): they are
+        // not creators or models, and indexing them created bogus model rows.
+        try { return Directory.GetDirectories(path).Where(d => !Path.GetFileName(d).StartsWith('.')).ToArray(); }
         catch { return []; }
     }
 
