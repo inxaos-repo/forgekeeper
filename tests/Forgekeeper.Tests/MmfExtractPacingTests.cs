@@ -442,10 +442,11 @@ public class MmfExtractPacingTests : IDisposable
     }
 
     [Fact]
-    public async Task Issue48_Http200_HtmlWithoutMarkers_OnDownloadUrl_IsChallenge()
+    public async Task Issue53_Http200_HtmlWithoutMarkers_OnDownloadUrl_IsItemFailure_NotChallenge()
     {
         var o = await Dl(_ => Html(HttpStatusCode.OK, Fixture("download-html-no-markers.html")));
-        Assert.Equal(DownloadStatus.CloudflareChallenge, o.Status);
+        Assert.Equal(DownloadStatus.NotAFile, o.Status);
+        Assert.Contains("MMF page instead of file", o.Error);
     }
 
     [Fact]
@@ -541,12 +542,29 @@ public class MmfExtractPacingTests : IDisposable
         MmfFlareSolverr.HandlerOverride = fs;
         var api = new RouteHandler(req => req.RequestUri!.ToString().Contains("/api/v2/objects/200")
             ? Json(HttpStatusCode.OK, ObjectJson)
-            : Html(HttpStatusCode.OK, Fixture("download-html-no-markers.html")));
+            : Html(HttpStatusCode.OK, Fixture("cf-challenge-just-a-moment.html")));
         MmfScraperPlugin.ApiHandlerOverride = api;
         var cfg = new Dictionary<string, string> { ["DELAY_MS"] = "0", ["FLARESOLVERR_URL"] = "http://fs.invalid:8191" };
         var r = await new MmfScraperPlugin().ScrapeModelAsync(Ctx(tokens, cfg), Model());
         Assert.True(r.AuthExpired, r.Error);
         Assert.Single(fs.Requests);
+    }
+
+    [Fact]
+    public async Task Issue53_Session_Download200PlainMmfHtml_FailsItem_DoesNotPause_NoFlareSolverr()
+    {
+        var tokens = await SessionTokens();
+        var fs = new RouteHandler(_ => Json(HttpStatusCode.OK, FsOk));
+        MmfFlareSolverr.HandlerOverride = fs;
+        MmfScraperPlugin.ApiHandlerOverride = new RouteHandler(req => req.RequestUri!.ToString().Contains("/api/v2/objects/200")
+            ? Json(HttpStatusCode.OK, ObjectJson)
+            : Html(HttpStatusCode.OK, Fixture("download-html-no-markers.html")));
+        var cfg = new Dictionary<string, string> { ["DELAY_MS"] = "0", ["FLARESOLVERR_URL"] = "http://fs.invalid:8191" };
+        var r = await new MmfScraperPlugin().ScrapeModelAsync(Ctx(tokens, cfg), Model());
+        Assert.False(r.Success);
+        Assert.False(r.AuthExpired, r.Error);
+        Assert.Contains("MMF page instead of file", r.Error);
+        Assert.Empty(fs.Requests);
     }
 
     [Theory]

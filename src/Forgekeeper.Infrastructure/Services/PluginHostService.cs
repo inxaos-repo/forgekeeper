@@ -434,6 +434,10 @@ public class PluginHostService : BackgroundService
             var maxItems = int.TryParse(GetConfigOrDefault(loaded.Scraper, context.Config, "MAX_ITEMS"), out var mi) && mi > 0 ? mi : 0;
             var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int attempted = 0;
+            // #53: items that failed before are skipped by NEW_ONLY (with their reason) unless RETRY_FAILED.
+            var retryFailed = IsTrue(GetConfigOrDefault(loaded.Scraper, context.Config, "RETRY_FAILED"));
+            var failedLedger = SyncFailedLedger.Load(reportDir, slug);
+            var ledgerDirty = false;
             if (newOnly || maxItems > 0)
                 _logger.LogInformation("[{Slug}] Selection: newOnly={NewOnly}, force={Force}, maxItems={Max}", slug, newOnly, forceRedownload, maxItems);
 
@@ -493,6 +497,13 @@ public class PluginHostService : BackgroundService
                     continue;
                 }
 
+                if (newOnly && !retryFailed && failedLedger.TryGet(model.ExternalId, out var prevFail))
+                {
+                    RecordSkip(model, currentIndex, $"previously failed ({prevFail!.Count}x, last {prevFail.LastFailedUtc:yyyy-MM-ddTHH:mm}Z): {prevFail.Reason} — set RETRY_FAILED=true to retry");
+                    processedSinceLastUpdate++;
+                    continue;
+                }
+
                 if (maxItems > 0 && attempted >= maxItems)
                 {
                     syncStatus = "paused";
@@ -539,6 +550,7 @@ public class PluginHostService : BackgroundService
                 }
                 if (result.Success)
                 {
+                    ledgerDirty |= failedLedger.RecordSuccess(model.ExternalId);
                     scraped++;
                     var (fc, fb) = CountDownloaded(result.Files);
                     filesDownloaded += fc;
@@ -551,6 +563,8 @@ public class PluginHostService : BackgroundService
                 else
                 {
                     failed++;
+                    failedLedger.RecordFailure(model.ExternalId, model.CreatorName, model.Name, result.Error ?? "failed", DateTime.UtcNow);
+                    ledgerDirty = true;
                     _logger.LogWarning("[{Slug}] Failed to scrape {Model}: {Error}",
                         slug, model.Name, result.Error);
                 }
@@ -583,6 +597,16 @@ public class PluginHostService : BackgroundService
                         _logger.LogWarning(ex, "[{Slug}] Failed to update SyncRun progress", slug);
                     }
                 }
+            }
+
+            if (ledgerDirty)
+            {
+                try
+                {
+                    failedLedger.Save();
+                    _logger.LogInformation("[{Slug}] Failed-items list ({Count}) written to {Path}", slug, failedLedger.Count, failedLedger.Path);
+                }
+                catch (Exception ex) { _logger.LogWarning(ex, "[{Slug}] Could not write failed-items list", slug); }
             }
 
             if (skipRecords.Count > 0)
@@ -1249,6 +1273,12 @@ public class PluginHostService : BackgroundService
             Key = "REHOME_UNKNOWN_APPLY", Label = "Apply Re-home of Unknown Folders", Type = PluginConfigFieldType.String,
             Required = false, DefaultValue = "false",
             HelpText = "Host setting. 'true' = apply the re-home plan from the last dry run.",
+        },
+        new PluginConfigField
+        {
+            Key = "RETRY_FAILED", Label = "Retry Previously Failed Items", Type = PluginConfigFieldType.String,
+            Required = false, DefaultValue = "false",
+            HelpText = "Host setting. NEW_ONLY skips items listed in .forgekeeper-reports/failed-{slug}.json. 'true' = retry them.",
         },
     ];
 

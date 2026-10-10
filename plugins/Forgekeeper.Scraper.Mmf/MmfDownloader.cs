@@ -3,7 +3,7 @@ using System.Net;
 
 namespace Forgekeeper.Scraper.Mmf;
 
-public enum DownloadStatus { Success, NotFound, AuthExpired, CloudflareChallenge, Failed }
+public enum DownloadStatus { Success, NotFound, AuthExpired, CloudflareChallenge, Failed, NotAFile }
 
 public sealed record DownloadOutcome(DownloadStatus Status, long Bytes = 0, string? Error = null, int Attempts = 0)
 {
@@ -43,7 +43,8 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
             TimeSpan? wait = null;
             try
             {
-                using var resp = await SendFollowingRedirectsAsync(new Uri(url), creds, ct);
+                var (resp0, finalUri) = await SendFollowingRedirectsAsync(new Uri(url), creds, ct);
+                using var resp = resp0;
                 var ctype = resp.Content.Headers.ContentType?.MediaType;
                 // #48: a challenge is a challenge whatever the HTTP status (CF happily returns 200 HTML).
                 if (MmfSession.HasChallengeHeader(resp))
@@ -60,9 +61,10 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
                     return Challenge($"challenge body, HTTP {(int)resp.StatusCode}", ctype, body, attempt);
                 if (resp.IsSuccessStatusCode)
                 {
-                    // A download URL never legitimately serves HTML: treat it as a challenge (pause), not a failure.
+                    // #53: HTML without challenge markers/header is an MMF page (e.g. /download/{id} → 302 → /object/…):
+                    // the item fails (reason recorded) and the run continues. Only real challenges pause.
                     if (MmfSession.LooksHtmlPublic(ctype, body))
-                        return Challenge($"HTML on download, HTTP {(int)resp.StatusCode}", ctype, body, attempt);
+                        return NotAFile(finalUri, (int)resp.StatusCode, ctype, body, attempt);
                     // Unexpected but non-HTML/non-challenge content type: let the size/magic checks decide.
                     var bytes = await StreamToFinalAsync(resp, finalPath, expectedSize, ct);
                     return new DownloadOutcome(DownloadStatus.Success, bytes, Attempts: attempt);
@@ -89,6 +91,7 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (MmfChallengeContentException ex) { return Challenge(ex.Message, ex.ContentType, ex.Head, attempt); }
+            catch (MmfPageContentException ex) { return new DownloadOutcome(DownloadStatus.NotAFile, Error: $"{ex.Message} (starts: {Snippet(ex.Head)})", Attempts: attempt); }
             catch (InvalidDataException ex) { lastError = ex.Message; }          // size/zip verification
             catch (HttpRequestException ex) { lastError = ex.Message; }
             catch (IOException ex) { lastError = ex.Message; }
@@ -99,6 +102,16 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
         }
         return new DownloadOutcome(DownloadStatus.Failed, Error: lastError ?? "failed", Attempts: _opt.MaxAttempts);
     }
+
+    /// <summary>#53: MMF answered with one of its own pages (object page, login page…) instead of a file.</summary>
+    internal static DownloadOutcome NotAFile(Uri finalUri, int status, string? ctype, string? body, int attempt)
+    {
+        var where = IsObjectPage(finalUri) ? $"redirected to object page {finalUri.AbsolutePath}" : $"MMF page {finalUri.Host}{finalUri.AbsolutePath}";
+        return new(DownloadStatus.NotAFile,
+            Error: $"MMF page instead of file ({where}; HTTP {status}; content-type={ctype ?? "none"}; starts: {Snippet(body)})", Attempts: attempt);
+    }
+
+    internal static bool IsObjectPage(Uri u) => u.AbsolutePath.StartsWith("/object/", StringComparison.OrdinalIgnoreCase);
 
     private static DownloadOutcome Challenge(string why, string? ctype, string? body, int attempt) =>
         new(DownloadStatus.CloudflareChallenge,
@@ -123,7 +136,7 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
         return t > _opt.MaxRetryAfter ? _opt.MaxRetryAfter : t;
     }
 
-    private async Task<HttpResponseMessage> SendFollowingRedirectsAsync(Uri uri, MmfCredentials creds, CancellationToken ct)
+    private async Task<(HttpResponseMessage, Uri)> SendFollowingRedirectsAsync(Uri uri, MmfCredentials creds, CancellationToken ct)
     {
         for (int hop = 0; ; hop++)
         {
@@ -138,7 +151,7 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
                 uri = loc.IsAbsoluteUri ? loc : new Uri(uri, loc);
                 continue;
             }
-            return resp;
+            return (resp, uri);
         }
     }
 
@@ -194,9 +207,12 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
     private static void ThrowIfChallengeFile(string tmp, HttpResponseMessage resp, bool htmlIsChallenge = false)
     {
         var head = ReadHead(tmp);
-        if (MmfSession.LooksLikeChallengeBody(head) || (htmlIsChallenge && MmfSession.LooksHtmlPublic(null, head)))
+        if (MmfSession.LooksLikeChallengeBody(head))
             throw new MmfChallengeContentException($"challenge page in file body, HTTP {(int)resp.StatusCode}",
                 resp.Content.Headers.ContentType?.MediaType, head);
+        // #53: plain HTML that is not a challenge is an MMF page — fail the item, don't pause.
+        if (htmlIsChallenge && MmfSession.LooksHtmlPublic(null, head))
+            throw new MmfPageContentException($"MMF page instead of file (HTML in file body, HTTP {(int)resp.StatusCode})", head);
     }
 
     /// <summary>
@@ -246,5 +262,10 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
 internal sealed class MmfChallengeContentException(string message, string? contentType, string? head) : Exception(message)
 {
     public string? ContentType { get; } = contentType;
+    public string? Head { get; } = head;
+}
+
+internal sealed class MmfPageContentException(string message, string? head) : Exception(message)
+{
     public string? Head { get; } = head;
 }

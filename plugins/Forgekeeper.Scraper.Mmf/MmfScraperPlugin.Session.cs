@@ -260,6 +260,10 @@ public partial class MmfScraperPlugin
                     // #48: pause (reconnectNeeded) — never a failed item; the host keeps the index so resume retries it.
                     context.Logger.LogWarning("[MMF][session] {Name}: {File} — {Error}", model.Name, t.FileName, outcome.Error);
                     return ScrapeResult.TokenExpired($"Cloudflare challenge on download — refresh the MMF session ({outcome.Error})");
+                case DownloadStatus.NotAFile:
+                    // #53: MMF served a page (e.g. object page after /download redirect) — fail this item, keep going.
+                    context.Logger.LogWarning("[MMF][session] {Name}: {File} — {Error}", model.Name, t.FileName, outcome.Error);
+                    return ScrapeResult.Failure($"Download failed for {model.Name} ({t.FileName}): {outcome.Error}");
                 default:
                     // #28: a failed download is a failure, never a silent success.
                     return ScrapeResult.Failure($"Download failed for {model.Name} ({t.FileName}): {outcome.Error} after {outcome.Attempts} attempt(s)");
@@ -286,8 +290,8 @@ public partial class MmfScraperPlugin
     /// Where MMF puts the download link(s) in /api/v2/objects/{id}. Verified live 2026-10-09:
     /// <c>archive_download_url</c> (top level) is set for some objects (e.g. purchased, multi-part)
     /// but is <c>null</c> for others; the per-file links always live in
-    /// <c>files.items[].download_url</c> (/download/{id}?archive_id=…). Prefer the single
-    /// archive when present, otherwise download every file item.
+    /// <c>files.items[].download_url</c> (/download/{id}?archive_id=…). #53: prefer the per-file
+    /// links; the archive link can redirect to the HTML object page, so it is only a fallback.
     /// </summary>
     /// <summary>True when the object is in MMF's "PDF Only" category (slug/url "pdf").</summary>
     internal static bool IsPdfOnlyObject(JsonElement root)
@@ -324,23 +328,28 @@ public partial class MmfScraperPlugin
     internal static List<MmfDownloadTarget> ResolveDownloadTargets(JsonElement root, string modelName)
     {
         var result = new List<MmfDownloadTarget>();
+        // #53: per-file links (/download/{id}?archive_id=…) first. The bare archive link /download/{id}
+        // 302s to the HTML object page for some objects (e.g. 802018), so it is only a fallback.
+        AddFileItemTargets(root, modelName, result);
+        if (result.Count > 0) return result;
         var archive = Str(root, "archive_download_url");
         if (archive is null && root.TryGetProperty("download_url", out var du) && du.ValueKind == JsonValueKind.String)
             archive = Str(root, "download_url");
         if (archive is not null)
-        {
             result.Add(new MmfDownloadTarget(Absolute(archive), $"{SanitizeFilename(modelName)}.zip", true, 0));
-            return result;
-        }
+        return result;
+    }
 
-        if (!root.TryGetProperty("files", out var filesEl)) return result;
+    private static void AddFileItemTargets(JsonElement root, string modelName, List<MmfDownloadTarget> result)
+    {
+        if (!root.TryGetProperty("files", out var filesEl)) return;
         var items = filesEl.ValueKind switch
         {
             JsonValueKind.Object when filesEl.TryGetProperty("items", out var it) && it.ValueKind == JsonValueKind.Array => it,
             JsonValueKind.Array => filesEl,
             _ => default,
         };
-        if (items.ValueKind != JsonValueKind.Array) return result;
+        if (items.ValueKind != JsonValueKind.Array) return;
 
         var list = items.EnumerateArray()
             .Where(i => i.ValueKind == JsonValueKind.Object && Str(i, "download_url") is not null)
@@ -367,7 +376,6 @@ public partial class MmfScraperPlugin
             }
             result.Add(new MmfDownloadTarget(url, name, isArchive, size));
         }
-        return result;
     }
 
     /// <summary>Key names / counts only (never values) describing where files would live.</summary>
