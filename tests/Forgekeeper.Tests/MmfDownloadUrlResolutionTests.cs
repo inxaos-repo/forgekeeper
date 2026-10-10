@@ -29,12 +29,21 @@ public class MmfDownloadUrlResolutionTests
     }
 
     [Fact]
-    public void ArchiveUrl_IsPreferredOverParts()
+    public void Issue53_PerFileUrls_ArePreferredOverArchiveUrl()
     {
         using var doc = Load("object-archive-and-parts.redacted.json");
         var t = MmfScraperPlugin.ResolveDownloadTargets(doc.RootElement, "Bought");
-        var only = Assert.Single(t);
-        Assert.Equal("https://www.myminifactory.com/download/802018", only.Url);
+        Assert.Equal(3, t.Count);
+        Assert.All(t, x => Assert.StartsWith("https://www.myminifactory.com/download/802018?archive_id=", x.Url));
+        Assert.DoesNotContain(t, x => x.Url == "https://www.myminifactory.com/download/802018");
+    }
+
+    [Fact]
+    public void Issue53_ArchiveUrl_IsFallback_WhenNoPerFileUrls()
+    {
+        using var doc = JsonDocument.Parse("{\"archive_download_url\":\"https://www.myminifactory.com/download/9\",\"files\":{\"items\":[{\"filename\":\"a.zip\",\"download_url\":null}]}}");
+        var only = Assert.Single(MmfScraperPlugin.ResolveDownloadTargets(doc.RootElement, "Bought"));
+        Assert.Equal("https://www.myminifactory.com/download/9", only.Url);
         Assert.Equal("Bought.zip", only.FileName);
     }
 
