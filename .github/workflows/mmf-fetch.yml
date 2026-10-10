@@ -22,6 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Unit tests (backpressure / memory bound, issue #57)
+        working-directory: sidecars/mmf-fetch
+        run: |
+          python3 -m pip install -q -r requirements.txt -r requirements-test.txt
+          python3 -m pytest -q tests
+
       - name: Smoke test (healthz + allowlist, no MMF traffic)
         working-directory: sidecars/mmf-fetch
         run: |

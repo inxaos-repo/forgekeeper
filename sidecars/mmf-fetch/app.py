@@ -20,12 +20,16 @@ Never logs cookies, auth headers, or query strings.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import queue
 import re
+import threading
 from urllib.parse import urlsplit
 
-from curl_cffi.requests import AsyncSession
+from curl_cffi import Curl, CurlInfo, CurlOpt
+from curl_cffi.curl import CURL_WRITEFUNC_ERROR
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
@@ -36,6 +40,12 @@ TIMEOUT = float(os.environ.get("FETCH_TIMEOUT_SECONDS", "3600"))
 CONNECT_TIMEOUT = float(os.environ.get("FETCH_CONNECT_TIMEOUT_SECONDS", "30"))
 ALLOWED_SUFFIX = "myminifactory.com"
 CHUNK = 256 * 1024
+# Max body chunks buffered between curl and the client (issue #57). curl's write callback
+# blocks when this is full, which stops reading the socket -> TCP backpressure upstream.
+# Memory per in-flight download is bounded to roughly QUEUE_CHUNKS * curl buffer (~16 KiB..CHUNK).
+QUEUE_CHUNKS = int(os.environ.get("FETCH_QUEUE_CHUNKS", "256"))
+ACCEPT_ENCODING = b"gzip, deflate, br, zstd"
+_END = object()
 
 log = logging.getLogger("mmf-fetch")
 
@@ -66,14 +76,110 @@ def proxy_error(status: int, msg: str) -> Response:
     return PlainTextResponse(msg, status_code=status, headers={"X-Fetch-Proxy-Error": "1"})
 
 
-_session: AsyncSession | None = None
+class Upstream:
+    """One upstream transfer on a dedicated thread with a bounded body queue.
 
+    curl_cffi's AsyncSession(stream=True) pushes every received chunk into an *unbounded*
+    asyncio.Queue, so when the consumer (plugin writing to NFS) is slower than MMF's CDN the
+    whole file accumulates in RAM -> OOMKilled (issue #57). Here the write callback blocks on
+    a bounded queue instead, so curl stops reading and memory stays flat.
+    """
 
-def session() -> AsyncSession:
-    global _session
-    if _session is None:
-        _session = AsyncSession(impersonate=IMPERSONATE, max_clients=16)
-    return _session
+    def __init__(self, method: str, url: str, headers: dict[str, str], body: bytes | None):
+        self.method, self.url, self.headers, self.body = method, url, headers, body
+        self.q: queue.Queue = queue.Queue(maxsize=QUEUE_CHUNKS)
+        self.ready = threading.Event()
+        self.abort = threading.Event()
+        self.status = 0
+        self.resp_headers: list[tuple[str, str]] = []
+        self.error: str | None = None
+        self._hdr_block: list[tuple[str, str]] = []
+        self._status_line = 0
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    # -- curl callbacks (curl thread) --
+    def _on_header(self, line: bytes):
+        text = line.decode("latin-1").rstrip("\r\n")
+        if text.startswith("HTTP/"):
+            self._hdr_block = []
+            try:
+                self._status_line = int(text.split()[1])
+            except (IndexError, ValueError):
+                self._status_line = 0
+        elif text == "":
+            if self._status_line >= 200 or self._status_line == 0 and self._hdr_block:
+                self.status = self._status_line
+                self.resp_headers = self._hdr_block
+                self.ready.set()
+        elif ":" in text:
+            k, v = text.split(":", 1)
+            self._hdr_block.append((k.strip(), v.strip()))
+        return len(line)
+
+    def _on_body(self, chunk: bytes):
+        self.ready.set()
+        while not self.abort.is_set():
+            try:
+                self.q.put(chunk, timeout=0.5)
+                return len(chunk)
+            except queue.Full:
+                continue
+        return CURL_WRITEFUNC_ERROR
+
+    def _run(self):
+        c = Curl()
+        try:
+            c.impersonate(IMPERSONATE)
+            c.setopt(CurlOpt.URL, self.url.encode())
+            c.setopt(CurlOpt.ACCEPT_ENCODING, ACCEPT_ENCODING)
+            if self.method == "HEAD":
+                c.setopt(CurlOpt.NOBODY, 1)
+            elif self.method != "GET":
+                c.setopt(CurlOpt.CUSTOMREQUEST, self.method.encode())
+            if self.body:
+                c.setopt(CurlOpt.POSTFIELDS, self.body)
+                c.setopt(CurlOpt.POSTFIELDSIZE, len(self.body))
+            c.setopt(CurlOpt.HTTPHEADER, [f"{k}: {v}".encode("latin-1") for k, v in self.headers.items()])
+            c.setopt(CurlOpt.FOLLOWLOCATION, 0)
+            c.setopt(CurlOpt.CONNECTTIMEOUT_MS, int(CONNECT_TIMEOUT * 1000))
+            c.setopt(CurlOpt.TIMEOUT_MS, int(TIMEOUT * 1000))
+            c.setopt(CurlOpt.HEADERFUNCTION, self._on_header)
+            c.setopt(CurlOpt.WRITEFUNCTION, self._on_body)
+            c.perform()
+            if not self.ready.is_set():
+                self.status = int(c.getinfo(CurlInfo.RESPONSE_CODE) or 0)
+                self.resp_headers = self._hdr_block
+        except Exception as e:  # noqa: BLE001 - type only, never headers/URL query
+            if not self.abort.is_set():
+                self.error = type(e).__name__
+        finally:
+            c.close()
+            self.ready.set()
+            while True:  # deliver end marker even if consumer is slow; give up if aborted
+                try:
+                    self.q.put(_END, timeout=0.5)
+                    break
+                except queue.Full:
+                    if self.abort.is_set():
+                        break
+
+    # -- async side --
+    async def start(self):
+        self.thread.start()
+        await asyncio.to_thread(self.ready.wait)
+
+    async def chunks(self):
+        try:
+            while True:
+                item = await asyncio.to_thread(self.q.get)
+                if item is _END:
+                    if self.error:
+                        log.warning("%s %s -> upstream error mid-body %s",
+                                    self.method, safe_target(self.url), self.error)
+                    return
+                yield item
+        finally:
+            self.abort.set()
 
 
 async def healthz(_: Request) -> Response:
@@ -99,45 +205,31 @@ async def fetch(request: Request) -> Response:
     method = request.method.upper()
     body = await request.body() if method not in ("GET", "HEAD") else None
 
-    try:
-        resp = await session().request(
-            method, url, headers=headers, data=body or None,
-            allow_redirects=False, stream=True,
-            timeout=(CONNECT_TIMEOUT, TIMEOUT),
-        )
-    except Exception as e:  # noqa: BLE001 - message only, no headers
-        log.warning("%s %s -> upstream error %s", method, safe_target(url), type(e).__name__)
-        return proxy_error(502, f"upstream error: {type(e).__name__}")
+    up = Upstream(method, url, headers, body)
+    await up.start()
+    if up.error and up.status == 0:
+        log.warning("%s %s -> upstream error %s", method, safe_target(url), up.error)
+        up.abort.set()
+        return proxy_error(502, f"upstream error: {up.error}")
 
-    out_headers = []
-    for k, v in resp.headers.multi_items() if hasattr(resp.headers, "multi_items") else resp.headers.items():
-        if k.lower() in RESP_DROP:
-            continue
-        out_headers.append((k, v))
+    names = {k.lower() for k, _ in up.resp_headers}
+    out_headers = [(k, v) for k, v in up.resp_headers if k.lower() not in RESP_DROP]
     # Keep the upstream size when the body was not re-encoded (lets the plugin verify sizes).
-    if "content-encoding" not in {k.lower() for k in resp.headers.keys()}:
-        cl = resp.headers.get("content-length")
+    if "content-encoding" not in names:
+        cl = next((v for k, v in up.resp_headers if k.lower() == "content-length"), None)
         if cl and re.fullmatch(r"\d+", cl):
             out_headers.append(("Content-Length", cl))
 
-    log.info("%s %s -> %s %s", method, safe_target(url), resp.status_code,
-             resp.headers.get("content-type", "-"))
+    ctype = next((v for k, v in up.resp_headers if k.lower() == "content-type"), "-")
+    log.info("%s %s -> %s %s", method, safe_target(url), up.status, ctype)
 
     if method == "HEAD":
-        await resp.aclose()
-        r = Response(status_code=resp.status_code)
+        up.abort.set()
+        r = Response(status_code=up.status)
         r.raw_headers = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in out_headers]
         return r
 
-    async def body_iter():
-        try:
-            async for chunk in resp.aiter_content(chunk_size=CHUNK):
-                if chunk:
-                    yield chunk
-        finally:
-            await resp.aclose()
-
-    r = StreamingResponse(body_iter(), status_code=resp.status_code)
+    r = StreamingResponse(up.chunks(), status_code=up.status)
     r.raw_headers = [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in out_headers]
     return r
 
