@@ -41,7 +41,11 @@ src/Forgekeeper.Api/wwwroot/
 core.*
 sample-library/*
 !sample-library/sources/
-plugins/*
+# Plugin *source* lives in plugins/ and must be tracked (#51).
+# Only ignore runtime-installed plugin binaries dropped there by the compose mount.
+plugins/**/*.dll
+plugins/**/*.pdb
+plugins-runtime/
 
 # Playwright E2E
 tests/Forgekeeper.E2E/node_modules/
