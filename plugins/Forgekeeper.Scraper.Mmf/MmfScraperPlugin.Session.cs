@@ -18,6 +18,19 @@ public partial class MmfScraperPlugin
 
     private static Func<TimeSpan, CancellationToken, Task> Delay => DelayOverride ?? Task.Delay;
     private static HttpMessageHandler SessionHandler => ApiHandlerOverride ?? SharedSessionHandler.Value;
+
+    /// <summary>
+    /// Session-path handler for these credentials: through the curl_cffi fetch sidecar when
+    /// FETCH_PROXY_URL is configured, otherwise the plain SessionHandler (unchanged behaviour).
+    /// </summary>
+    internal static HttpMessageHandler SessionHandlerFor(MmfCredentials creds)
+    {
+        var cfg = creds.FetchProxyUrl is { Length: > 0 } u ? new Dictionary<string, string> { [MmfFetchProxy.ConfigKey] = u } : null;
+        if (cfg == null) return SessionHandler;
+        return ApiHandlerOverride != null
+            ? MmfFetchProxy.Wrap(cfg, ApiHandlerOverride)
+            : MmfFetchProxy.Shared(cfg)!;
+    }
     private static readonly Lazy<HttpMessageHandler> SharedSessionHandler = new(() =>
         new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false, AutomaticDecompression = System.Net.DecompressionMethods.All });
 
@@ -47,7 +60,10 @@ public partial class MmfScraperPlugin
         var ua = await context.TokenStore.GetTokenAsync(MmfSession.UserAgentKey, ct);
         var bearer = await context.TokenStore.GetTokenAsync("access_token", ct);
         if (string.Equals(state, "expired", StringComparison.OrdinalIgnoreCase)) cookies = null;
-        return new MmfCredentials(cookies, bearer, string.IsNullOrWhiteSpace(ua) ? MmfSession.DefaultUserAgent : ua);
+        return new MmfCredentials(cookies, bearer, string.IsNullOrWhiteSpace(ua) ? MmfSession.DefaultUserAgent : ua)
+        {
+            FetchProxyUrl = MmfFetchProxy.GetUrl(context.Config),
+        };
     }
 
     private static async Task MarkSessionExpiredAsync(PluginContext context, CancellationToken ct)
@@ -60,7 +76,7 @@ public partial class MmfScraperPlugin
     internal static async Task<(MmfResponseKind Kind, string? Body)> GetJsonAsync(
         string url, MmfCredentials creds, CancellationToken ct, int maxAttempts = 4)
     {
-        using var client = new HttpClient(SessionHandler, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) };
+        using var client = new HttpClient(SessionHandlerFor(creds), disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) };
         MmfResponseKind kind = MmfResponseKind.Other;
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -208,7 +224,7 @@ public partial class MmfScraperPlugin
         Directory.CreateDirectory(modelDir);
         var files = new List<DownloadedFile>();
         var force = IsForceRedownload(context);
-        var downloader = new MmfDownloader(SessionHandler, new MmfDownloadOptions { Delay = Delay });
+        var downloader = new MmfDownloader(SessionHandlerFor(creds), new MmfDownloadOptions { Delay = Delay });
         var extractDirs = new Dictionary<string, string>();
         var queued = new List<(string Path, string Extract, string Name)>();
         var downloadedAny = false;

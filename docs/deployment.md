@@ -527,3 +527,10 @@ Configure via the Plugins UI: `FLARESOLVERR_URL` field.
 4. Session cookies (REMEMBERME, PHPSESSID, cf_clearance) are extracted
 5. A plain HttpClient uses those cookies to fetch the data-library API
 6. No Playwright or browser automation needed in the Forgekeeper container
+
+### MMF fetch sidecar (Cloudflare fingerprint)
+
+.NET HttpClient can't present a browser TLS fingerprint, so Cloudflare may answer `403 cf-mitigated`
+even with valid MMF cookies. Run `ghcr.io/inxaos-repo/forgekeeper-mmf-fetch` (see `sidecars/mmf-fetch/`)
+as a sidecar in the Forgekeeper pod (it binds 127.0.0.1:8199) and set the MMF plugin's
+`FETCH_PROXY_URL` to `http://127.0.0.1:8199`. Blank = direct requests (unchanged).

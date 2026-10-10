@@ -102,6 +102,15 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         },
         new PluginConfigField
         {
+            Key = MmfFetchProxy.ConfigKey,
+            Label = "Fetch proxy URL (curl_cffi sidecar)",
+            Type = PluginConfigFieldType.Url,
+            Required = false,
+            DefaultValue = "",
+            HelpText = "Opt-in loopback URL of the mmf-fetch sidecar (e.g. http://127.0.0.1:8199). When set, all MMF HTTP traffic (API, per-file downloads, session/token checks) is replayed by curl_cffi with a Chrome TLS fingerprint so Cloudflare accepts it. Credentials are never sent off *.myminifactory.com. Blank = off (direct requests).",
+        },
+        new PluginConfigField
+        {
             Key = "DELAY_MS",
             Label = "Request Delay (ms)",
             Type = PluginConfigFieldType.Number,
@@ -250,7 +259,8 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 verifyReq.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
                 try
                 {
-                    using var resp = await context.HttpClient.SendAsync(verifyReq, ct);
+                    using var proxyClient = MmfFetchProxy.CreateClient(context.Config, TimeSpan.FromSeconds(60));
+                    using var resp = await (proxyClient ?? context.HttpClient).SendAsync(verifyReq, ct);
                     if (resp.IsSuccessStatusCode)
                         return AuthResult.Success("OAuth token verified against /api/v2/user — ready to sync");
                     context.Logger.LogDebug("[MMF][auth] Stored token failed live check ({Status}) — requesting re-auth", resp.StatusCode);
@@ -408,7 +418,7 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
             if (!string.IsNullOrEmpty(bearerToken))
             {
-                using var apiClient = CreateApiClient(bearerToken);
+                using var apiClient = CreateApiClient(bearerToken, context.Config);
 
                 var response = await apiClient.GetAsync($"/api/v2/objects/{numericId}", ct);
                 if (response.IsSuccessStatusCode)
@@ -2072,9 +2082,14 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     /// <summary>Test seam: when set, API clients use this handler instead of the network.</summary>
     internal static HttpMessageHandler? ApiHandlerOverride { get; set; }
 
-    private static HttpClient CreateApiClient(string bearerToken)
+    private static HttpClient CreateApiClient(string bearerToken, IReadOnlyDictionary<string, string>? config = null)
     {
-        var client = new HttpClient(ApiHandlerOverride ?? new HttpClientHandler(), disposeHandler: ApiHandlerOverride == null)
+        var inner = ApiHandlerOverride ?? new HttpClientHandler();
+        // FETCH_PROXY_URL: route through the curl_cffi sidecar; the inner handler still follows
+        // redirects for non-MMF hops, the proxy handler re-proxies MMF redirects itself.
+        var handler = MmfFetchProxy.GetUrl(config) == null ? inner
+            : MmfFetchProxy.Wrap(config, ApiHandlerOverride ?? new HttpClientHandler { AllowAutoRedirect = false }, followRedirects: true);
+        var client = new HttpClient(handler, disposeHandler: ApiHandlerOverride == null)
         {
             BaseAddress = new Uri("https://www.myminifactory.com"),
             Timeout = TimeSpan.FromSeconds(120),

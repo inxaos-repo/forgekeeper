@@ -142,6 +142,9 @@ public enum MmfResponseKind { Ok, NotFound, RateLimited, CloudflareChallenge, Au
 /// <summary>Credentials for one request chain: session cookies first, OAuth bearer as fallback.</summary>
 public sealed record MmfCredentials(string? CookieHeader, string? BearerToken, string UserAgent)
 {
+    /// <summary>FETCH_PROXY_URL (curl_cffi sidecar) or null for direct requests.</summary>
+    public string? FetchProxyUrl { get; init; }
+
     public bool HasSession => !string.IsNullOrEmpty(CookieHeader);
     public bool HasBearer => !string.IsNullOrEmpty(BearerToken);
 
