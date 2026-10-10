@@ -558,6 +558,9 @@ public class PluginHostService : BackgroundService
                 }
                 else if (result.Skipped)
                 {
+                    // Plugin-side skips (e.g. PDF-only object with no files) download nothing,
+                    // so they must not use up a MAX_ITEMS slot.
+                    attempted--;
                     RecordSkip(model, currentIndex, result.Error ?? "skipped by plugin");
                 }
                 else
@@ -672,6 +675,37 @@ public class PluginHostService : BackgroundService
             {
                 _logger.LogError(ex, "[{Slug}] Failed to finalize SyncRun record", slug);
             }
+
+            // New folders were written; without this they only appear after the next
+            // periodic scan (every few hours). Run an incremental scan now.
+            if (scraped > 0)
+                TriggerPostSyncScan(slug, scraped);
+        }
+    }
+
+    private void TriggerPostSyncScan(string slug, int scraped)
+    {
+        try
+        {
+            var scanner = _services.GetService<Forgekeeper.Core.Interfaces.IScannerService>();
+            if (scanner == null) return;
+            if (scanner.IsRunning)
+            {
+                // The running scan may already have passed the new folders; the periodic one picks them up.
+                _logger.LogInformation("[{Slug}] Sync wrote {Count} model(s); a scan is already running, not starting another", slug, scraped);
+                return;
+            }
+            var stopping = _services.GetService<IHostApplicationLifetime>()?.ApplicationStopping ?? CancellationToken.None;
+            _logger.LogInformation("[{Slug}] Sync wrote {Count} model(s); starting incremental scan", slug, scraped);
+            _ = Task.Run(async () =>
+            {
+                try { await scanner.ScanAsync(incremental: true, stopping); }
+                catch (Exception ex) { _logger.LogWarning(ex, "[{Slug}] Post-sync scan failed", slug); }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[{Slug}] Could not start post-sync scan", slug);
         }
     }
 
