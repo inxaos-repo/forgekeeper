@@ -406,6 +406,18 @@ public class FileScannerService : IScannerService
             if (existingVariantPaths.Contains(relativePath))
                 continue;
 
+            // A filename with bytes that are not valid UTF-8 (e.g. 0xB0 from an old
+            // Latin-1 zip) is enumerated with U+FFFD and can't be reopened by that name.
+            // Skip that one file instead of failing the whole model.
+            long fileSize;
+            try { fileSize = new FileInfo(filePath).Length; }
+            catch (Exception ex) when (ex is FileNotFoundException or IOException or UnauthorizedAccessException)
+            {
+                _logger.LogWarning("Skipping unreadable file in {ModelDir}: {File} ({Error}) — rename it to valid UTF-8 to index it",
+                    modelDir, relativePath, ex.GetType().Name);
+                continue;
+            }
+
             var variant = new Variant
             {
                 Id = Guid.NewGuid(),
@@ -414,7 +426,7 @@ public class FileScannerService : IScannerService
                 FilePath = relativePath,
                 FileName = fileName,
                 FileType = DetectFileType(ext),
-                FileSizeBytes = new FileInfo(filePath).Length,
+                FileSizeBytes = fileSize,
             };
             // Explicitly Added: via the navigation alone EF marks a pre-keyed child of a
             // tracked model as Modified -> UPDATE 0 rows -> DbUpdateConcurrencyException.

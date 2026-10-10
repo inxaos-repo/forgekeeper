@@ -114,10 +114,51 @@ public class ThumbnailService : IThumbnailService
             || filename.StartsWith(".__", StringComparison.Ordinal);
     }
 
+    // Paths the renderer already failed on in this process; not retried every pass.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> FailedPaths = new();
+
+    /// <summary>
+    /// Returns a reason when the file is clearly not a mesh despite its extension:
+    /// a ZIP archive saved as .stl, or an HTML error page saved by an old failed download.
+    /// stl-thumb reads these as binary STL and fails with "failed to fill whole buffer".
+    /// </summary>
+    public static string? SniffNonMesh(ReadOnlySpan<byte> head)
+    {
+        if (head.Length >= 4 && head[0] == (byte)'P' && head[1] == (byte)'K' && head[2] == 3 && head[3] == 4)
+            return "zip archive";
+        var text = System.Text.Encoding.ASCII.GetString(head).TrimStart().ToLowerInvariant();
+        if (text.StartsWith("<!doctype html") || text.StartsWith("<html") || text.StartsWith("<?xml") && text.Contains("<html"))
+            return "html page";
+        return null;
+    }
+
+    private static string? SniffNonMesh(string path)
+    {
+        try
+        {
+            using var fs = File.OpenRead(path);
+            var buf = new byte[64];
+            var n = fs.Read(buf, 0, buf.Length);
+            return SniffNonMesh(buf.AsSpan(0, n));
+        }
+        catch { return null; }
+    }
+
     public async Task GenerateThumbnailAsync(string stlPath, string outputPath, CancellationToken ct = default)
     {
         if (!IsRendererAvailable())
             return;
+
+        if (FailedPaths.ContainsKey(stlPath))
+            return;
+
+        var notMesh = SniffNonMesh(stlPath);
+        if (notMesh != null)
+        {
+            FailedPaths.TryAdd(stlPath, 0);
+            _logger.LogWarning("[thumbnail] Skipping {Path}: file is a {Kind}, not a mesh (bad download or misnamed archive)", stlPath, notMesh);
+            return;
+        }
 
         if (IsMacOSJunkFile(stlPath))
         {
@@ -163,7 +204,8 @@ public class ThumbnailService : IThumbnailService
             if (process.ExitCode != 0)
             {
                 var stderr = await process.StandardError.ReadToEndAsync(ct);
-                _logger.LogWarning("Thumbnail generation failed for {Path}: {Error}", stlPath, stderr);
+                FailedPaths.TryAdd(stlPath, 0);
+                _logger.LogWarning("Thumbnail generation failed for {Path}: {Error}", stlPath, stderr.Trim());
             }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
