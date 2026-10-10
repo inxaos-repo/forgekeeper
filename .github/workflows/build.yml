@@ -22,6 +22,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Guard - no ignored source files (#51)
+        run: |
+          bad=$(git ls-files -o -i --exclude-standard -- src plugins | grep -E '\.(cs|csproj)$' || true)
+          if [ -n "$bad" ]; then echo "::error::Source files matched by .gitignore:"; echo "$bad"; exit 1; fi
+          # Also fail if any tracked source would be ignored by current rules
+          hit=$(git ls-files -ci --exclude-standard -- src plugins | grep -E '\.(cs|csproj)$' || true)
+          if [ -n "$hit" ]; then echo "::error::Tracked source matched by .gitignore:"; echo "$hit"; exit 1; fi
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
