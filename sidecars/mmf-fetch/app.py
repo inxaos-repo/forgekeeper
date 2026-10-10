@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 
 from curl_cffi import Curl, CurlInfo, CurlOpt
 from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+from curl_cffi.requests.utils import set_curl_options
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
@@ -44,7 +45,6 @@ CHUNK = 256 * 1024
 # blocks when this is full, which stops reading the socket -> TCP backpressure upstream.
 # Memory per in-flight download is bounded to roughly QUEUE_CHUNKS * curl buffer (~16 KiB..CHUNK).
 QUEUE_CHUNKS = int(os.environ.get("FETCH_QUEUE_CHUNKS", "256"))
-ACCEPT_ENCODING = b"gzip, deflate, br, zstd"
 _END = object()
 
 log = logging.getLogger("mmf-fetch")
@@ -129,20 +129,23 @@ class Upstream:
     def _run(self):
         c = Curl()
         try:
-            c.impersonate(IMPERSONATE)
-            c.setopt(CurlOpt.URL, self.url.encode())
-            c.setopt(CurlOpt.ACCEPT_ENCODING, ACCEPT_ENCODING)
-            if self.method == "HEAD":
-                c.setopt(CurlOpt.NOBODY, 1)
-            elif self.method != "GET":
-                c.setopt(CurlOpt.CUSTOMREQUEST, self.method.encode())
-            if self.body:
-                c.setopt(CurlOpt.POSTFIELDS, self.body)
-                c.setopt(CurlOpt.POSTFIELDSIZE, len(self.body))
-            c.setopt(CurlOpt.HTTPHEADER, [f"{k}: {v}".encode("latin-1") for k, v in self.headers.items()])
-            c.setopt(CurlOpt.FOLLOWLOCATION, 0)
-            c.setopt(CurlOpt.CONNECTTIMEOUT_MS, int(CONNECT_TIMEOUT * 1000))
-            c.setopt(CurlOpt.TIMEOUT_MS, int(TIMEOUT * 1000))
+            # Use curl_cffi's own option builder so the TLS/HTTP2/header fingerprint is exactly
+            # what AsyncSession(impersonate=...) sends; hand-rolled setopt ordering (impersonate
+            # first, then ACCEPT_ENCODING/HTTPHEADER) got Cloudflare-challenged. Only the body and
+            # header sinks are ours.
+            set_curl_options(
+                c, self.method, self.url,
+                params_list=[None, None],
+                data=self.body or None,
+                headers_list=[None, self.headers],
+                cookies_list=[None, None],
+                proxies_list=[None, None],
+                verify_list=[True, None],
+                timeout=(CONNECT_TIMEOUT, TIMEOUT),
+                allow_redirects=False,
+                impersonate=IMPERSONATE,
+                content_callback=self._on_body,
+            )
             c.setopt(CurlOpt.HEADERFUNCTION, self._on_header)
             c.setopt(CurlOpt.WRITEFUNCTION, self._on_body)
             c.perform()
