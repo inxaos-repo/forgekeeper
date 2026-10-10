@@ -104,3 +104,25 @@ def test_upstream_unreachable_is_502(sidecar):
     with httpx.Client(timeout=60) as c:
         r = c.get(f"{sidecar}/fetch", headers={"X-Fetch-Url": f"http://127.0.0.1:{_free_port()}/x"})
         assert r.status_code == 502 and r.headers["x-fetch-proxy-error"] == "1"
+
+
+@pytest.mark.skipif(os.environ.get("FETCH_LIVE_TEST") != "1", reason="set FETCH_LIVE_TEST=1 (hits myminifactory.com)")
+def test_live_fingerprint_not_challenged():
+    """Regression for the #60 follow-up: hand-rolled curl options got a Cloudflare 403 challenge.
+
+    Anonymous API calls must reach the origin (401 JSON), never `cf-mitigated: challenge`.
+    """
+    import asyncio
+
+    async def go():
+        up = fetch_app.Upstream("GET", "https://www.myminifactory.com/api/v2/objects/824787",
+                                {"Accept": "application/json"}, None)
+        await up.start()
+        async for _ in up.chunks():
+            pass
+        return up
+
+    up = asyncio.run(go())
+    h = {k.lower(): v for k, v in up.resp_headers}
+    assert h.get("cf-mitigated") != "challenge", up.status
+    assert "json" in h.get("content-type", ""), (up.status, h.get("content-type"))
