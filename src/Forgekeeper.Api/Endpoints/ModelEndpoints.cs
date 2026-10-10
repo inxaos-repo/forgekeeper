@@ -246,6 +246,44 @@ public static class ModelEndpoints
             return Results.NoContent();
         }).WithName("DeletePrint");
 
+        // --- Quick printed toggle (#69) ---
+
+        group.MapPost("/{id:guid}/printed", async (
+            Guid id,
+            IModelRepository repo,
+            CancellationToken ct) =>
+        {
+            var model = await repo.GetByIdAsync(id, ct);
+            if (model == null) return Results.NotFound();
+            var history = model.PrintHistory?.ToList() ?? [];
+            if (!history.Any(p => p.Result == "success"))
+            {
+                history.Add(new PrintHistoryEntry
+                {
+                    Id = Guid.NewGuid(),
+                    Date = DateTime.UtcNow.ToString("yyyy-MM-dd"),
+                    Result = "success",
+                    Notes = "Marked printed",
+                });
+                model.PrintHistory = history;
+                await repo.UpdateAsync(model, ct);
+            }
+            return Results.Ok(new { printed = true, printHistory = model.PrintHistory });
+        }).WithName("MarkPrinted");
+
+        group.MapDelete("/{id:guid}/printed", async (
+            Guid id,
+            IModelRepository repo,
+            CancellationToken ct) =>
+        {
+            var model = await repo.GetByIdAsync(id, ct);
+            if (model == null) return Results.NotFound();
+            var history = model.PrintHistory?.Where(p => p.Result != "success").ToList() ?? [];
+            model.PrintHistory = history;
+            await repo.UpdateAsync(model, ct);
+            return Results.Ok(new { printed = false, printHistory = model.PrintHistory });
+        }).WithName("UnmarkPrinted");
+
         // --- Components ---
 
         group.MapPut("/{id:guid}/components", async (
@@ -310,6 +348,24 @@ public static class ModelEndpoints
 
             return Results.NotFound();
         }).WithName("GetModelThumbnail");
+
+        // --- Preview images (#64) ---
+
+        group.MapGet("/{id:guid}/images/{idx:int}", async (
+            Guid id,
+            int idx,
+            ForgeDbContext db,
+            CancellationToken ct) =>
+        {
+            var model = await db.Models.AsNoTracking().FirstOrDefaultAsync(m => m.Id == id, ct);
+            if (model == null || idx < 0 || idx >= model.PreviewImages.Count) return Results.NotFound();
+            var resolved = Forgekeeper.Core.Services.PreviewImageResolver.Resolve(model.BasePath, model.PreviewImages[idx]);
+            if (resolved == null) return Results.NotFound();
+            if (resolved.RemoteUrl != null) return Results.Redirect(resolved.RemoteUrl);
+            if (!File.Exists(resolved.LocalPath)) return Results.NotFound();
+            return Results.File(resolved.LocalPath!, Forgekeeper.Core.Services.PreviewImageResolver.MimeFor(resolved.LocalPath!),
+                enableRangeProcessing: true);
+        }).WithName("GetModelPreviewImage");
 
         // --- Related Models ---
 
