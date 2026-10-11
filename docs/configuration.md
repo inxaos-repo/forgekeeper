@@ -60,6 +60,11 @@ Forgekeeper is configured via environment variables, `appsettings.json`, or a co
 | `Plugins__AutoUpdate__Enabled` | Enable background update checks | `false` |
 | `Plugins__AutoUpdate__IntervalHours` | How often to check for updates (hours) | `24` |
 | `Plugins__AutoUpdate__Mode` | `notify` (badge only) or `apply` (auto-install compatible) | `notify` |
+| `Plugins__PreferBundled` | `true` = image-bundled plugins (`/app/plugins`) win over `/data/plugins`. Set `true` in prod. | `false` |
+| `Scanner__RepairNonUtf8Names` | Rename file names that aren't valid UTF-8 to valid UTF-8 on disk; otherwise warn and keep them (#82) | `false` |
+
+Per-plugin settings (`DRY_RUN`, `MAX_ITEMS`, `MAX_UNZIP_BACKLOG`, `SYNC_INTERVAL_HOURS`, …) are stored in the
+`plugin_configs` table, not env vars. MMF keys are listed in [mmf-plugin.md](mmf-plugin.md).
 
 ### ASP.NET Core
 

@@ -121,14 +121,26 @@ Two services that gate plugin loading:
 
 Manages scraper plugins that integrate with external platforms:
 
-- Loads plugin DLLs from the `plugins/` directory via isolated `AssemblyLoadContext` (one per plugin — prevents DLL version conflicts)
-- **NFS-based hot reload:** drop a new DLL in the plugins directory and restart Forgekeeper to pick it up without rebuilding the container
+- Loads plugin DLLs via isolated `AssemblyLoadContext` (one per plugin — prevents DLL version conflicts). Each plugin is loaded **once**, with its `manifest.json` (#79)
+- Two locations: image-bundled `/app/plugins` and installed `/data/plugins`. `Plugins:PreferBundled=true` makes the image win (used in prod)
+- **NFS-based hot reload:** drop a new DLL in `/data/plugins` and restart Forgekeeper (only effective with `PreferBundled=false`)
 - Provides `PluginContext` with HttpClient, logger, config, and token store
 - **Per-plugin sync lock:** `SemaphoreSlim(1,1)` prevents concurrent syncs for the same plugin (returns 409 Conflict if already running)
 - **Download retry with exponential backoff:** 3 attempts, respects `Retry-After` headers from rate-limited APIs
 - Streams real-time progress via SSE (`GET /api/v1/plugins/{slug}/progress`)
 - Handles OAuth callbacks for browser-based auth flows
 - Stores plugin configuration and tokens encrypted in the database
+
+### MMF plugin and fetch sidecar
+
+The built-in MMF plugin downloads through the `mmf-fetch` sidecar (Python/curl_cffi, same pod) with bounded memory:
+streamed downloads, a queued extractor, and `MAX_UNZIP_BACKLOG` backpressure (#74). See [mmf-plugin.md](mmf-plugin.md).
+
+### Maintenance jobs (`Api/Endpoints/MaintenanceEndpoints.cs`)
+
+Library repairs (MMF orphan merge, source backfill) default to dry run. The orphan merge runs as a background job
+(`MmfOrphanMergeJob`): `POST` returns 202 + a status URL, and it refuses with 409 while a scan, a sync or another
+maintenance job holds the `LibraryMaintenanceGate` (#73). See [ops-runbook.md](ops-runbook.md).
 
 ### Frontend (`src/Forgekeeper.Web/`)
 
