@@ -404,6 +404,7 @@ public class FileScannerService : IScannerService
         // Scan files and variants
         var existingVariantPaths = model.Variants.Select(v => v.FilePath).ToHashSet();
         var allFiles = ScanModelFiles(modelDir);
+        allFiles = RepairNonUtf8Names(modelDir, allFiles);
         var previewImages = new List<string>();
 
         foreach (var (filePath, relativePath, fileName) in allFiles)
@@ -512,6 +513,37 @@ public class FileScannerService : IScannerService
         }
 
         return true; // Changes staged in the shared DbContext
+    }
+
+    /// <summary>
+    /// #41: names that aren't valid UTF-8 come back with U+FFFD and can't be reopened.
+    /// With Scanner:RepairNonUtf8Names=true they're renamed on disk to valid UTF-8 (bad
+    /// bytes decoded as Windows-1252) and re-enumerated; otherwise they are logged and the
+    /// per-file guard below skips them without failing the model.
+    /// </summary>
+    internal List<(string FullPath, string RelativePath, string FileName)> RepairNonUtf8Names(
+        string modelDir, List<(string FullPath, string RelativePath, string FileName)> files)
+    {
+        if (!files.Any(f => RawFileNames.LooksLossy(f.RelativePath)))
+            return files;
+
+        if (!_config.GetValue("Scanner:RepairNonUtf8Names", false))
+        {
+            _logger.LogWarning("Model {ModelDir} has file names that aren't valid UTF-8; set Scanner:RepairNonUtf8Names=true to rename them", modelDir);
+            return files;
+        }
+
+        try
+        {
+            foreach (var (oldName, newPath) in RawFileNames.RepairDirectory(modelDir, recursive: true))
+                _logger.LogInformation("Renamed non-UTF-8 file name {Old} -> {New}", oldName, newPath);
+            return ScanModelFiles(modelDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning("Could not repair non-UTF-8 names in {ModelDir}: {Error}", modelDir, ex.Message);
+            return files;
+        }
     }
 
     private static List<(string FullPath, string RelativePath, string FileName)> ScanModelFiles(string modelDir)
