@@ -63,9 +63,13 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
+            # #31: immutable per-commit tags for Flux image automation
+            type=sha,prefix=sha-,format=short
+            type=raw,value=main-{{date 'YYYYMMDDHHmmss' tz='UTC'}}-{{sha}},enable={{is_default_branch}}
 
       - name: Build and push Docker image
         if: github.event_name != 'pull_request'
+        id: push
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -79,7 +83,7 @@ jobs:
       - name: Verify migration count in published image
         if: github.event_name != 'pull_request'
         env:
-          FORGEKEEPER_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
+          FORGEKEEPER_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
         run: |
           # Count migration .cs files in the repo (excluding Designer.cs and ModelSnapshot)
           REPO_COUNT=$(find src/Forgekeeper.Infrastructure/Data/Migrations -name '*.cs' \
@@ -109,10 +113,17 @@ jobs:
 
           echo "OK: All $REPO_COUNT migrations are present in the published DLL."
 
+      - name: Summarize pushed tags
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "### Pushed image" >> "$GITHUB_STEP_SUMMARY"
+          echo "digest: \`${{ steps.push.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo '${{ steps.meta.outputs.tags }}' | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+
       - name: E2E Tests (Playwright)
         if: github.event_name != 'pull_request'
         env:
-          FORGEKEEPER_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
+          FORGEKEEPER_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
         run: |
           # Start Forgekeeper + Postgres via docker compose
           docker compose up -d postgres
