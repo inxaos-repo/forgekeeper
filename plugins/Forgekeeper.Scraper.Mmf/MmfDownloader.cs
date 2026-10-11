@@ -159,9 +159,11 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
     {
         try
         {
-            var s = await resp.Content.ReadAsStringAsync(ct);
-            return s.Length > 2048 ? s[..2048] : s;
+            // #74: bounded read; never pull a whole (possibly huge) body into memory. The body may still be
+            // saved afterwards, so the peeked prefix is stitched back in front of the unread remainder.
+            return await MmfBoundedIo.PeekAndRewindAsync(resp, ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { return null; }
     }
 
@@ -172,8 +174,10 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
         var tmp = Path.Combine(dir, $".{Path.GetFileName(finalPath)}.{Guid.NewGuid():N}.part");
         try
         {
-            await using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true))
-                await resp.Content.CopyToAsync(fs, ct);
+            // #74: bounded buffer + periodic fsync/cache drop (backpressure against NFS write-back).
+            await using (var src = await resp.Content.ReadAsStreamAsync(ct))
+            await using (var fs = MmfBoundedIo.CreateSequential(tmp, FileMode.CreateNew))
+                await MmfBoundedIo.CopyAsync(src, fs, ct);
 
             var len = new FileInfo(tmp).Length;
             var header = resp.Content.Headers.ContentLength;
