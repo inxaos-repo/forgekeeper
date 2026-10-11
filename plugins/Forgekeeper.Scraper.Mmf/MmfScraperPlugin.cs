@@ -386,7 +386,7 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
             context.Logger.LogInformation(
                 "[MMF] Skipping {Type} entry {Id} ({Name}) — only individual objects are supported",
                 resolvedType, model.ExternalId, model.Name ?? "<no name>");
-            return ScrapeResult.Ok("metadata.json", []);
+            return ScrapeResult.Skip($"Unsupported MMF entry type '{resolvedType}' (only objects are downloaded)"); // #28: not a success
         }
 
         // Phase 2: session-first path. Falls through to the legacy OAuth path only when
@@ -459,7 +459,7 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
                     context.Logger.LogDebug("[MMF] 404 for model {Id} ({Name}) — skipping", model.ExternalId, model.Name);
-                    return ScrapeResult.Ok("metadata.json", []); // 404 = skip, still write metadata
+                    return ScrapeResult.Skip($"Object {model.ExternalId} not found (404)"); // #28: nothing downloaded, not a success
                 }
                 else if (await IsTokenExpiredResponseAsync(response, ct))
                 {
