@@ -241,6 +241,7 @@ public partial class MmfScraperPlugin
             }
             if (downloadedAny && apiGap > TimeSpan.Zero) await Delay(MmfPacing.ApiDelay(context.Config), ct);
             downloadedAny = true;
+            await WaitForUnzipBacklogAsync(MaxUnzipBacklog(context.Config), context.Logger, ct);
             var outcome = await downloader.DownloadAsync(t.Url, path, creds, 0, ct) /* listed size is informational; not proven byte-exact */;
             switch (outcome.Status)
             {

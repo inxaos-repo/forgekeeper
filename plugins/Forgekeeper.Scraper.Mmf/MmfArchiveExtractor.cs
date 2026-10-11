@@ -159,7 +159,6 @@ public static class MmfArchiveExtractor
 
         Directory.CreateDirectory(extractDir);
         long written = 0;
-        var buffer = new byte[81920];
         foreach (var e in zip.Entries)
         {
             ct.ThrowIfCancellationRequested();
@@ -171,16 +170,12 @@ public static class MmfArchiveExtractor
             }
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             using var src = e.Open();
-            using var dst = File.Create(target);
-            int n;
-            while ((n = src.Read(buffer, 0, buffer.Length)) > 0)
+            // #74: bounded buffer + periodic fsync/cache drop so a multi-GB entry can't pile up dirty pages.
+            using (var dst = MmfBoundedIo.CreateSequential(target))
             {
-                written += n;
-                if (written > limits.MaxTotalBytes)
-                    return (false, "actual uncompressed size exceeds limit (zip bomb?)");
-                dst.Write(buffer, 0, n);
+                try { written += MmfBoundedIo.Copy(src, dst, ct, limits.MaxTotalBytes - written); }
+                catch (InvalidDataException) { return (false, "actual uncompressed size exceeds limit (zip bomb?)"); }
             }
-            dst.Close();
             try { File.SetLastWriteTime(target, e.LastWriteTime.DateTime); } catch { }
         }
         return (true, null);

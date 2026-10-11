@@ -41,6 +41,38 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     private readonly ConcurrentQueue<(string archivePath, string extractDir, string filename)> _unzipQueue = new();
     private volatile bool _unzipRunning;
     private Task? _unzipTask;
+    // #74: archives queued or being extracted. Downloads wait while this is at the cap, so multi-GB
+    // zips can't pile up on the NFS share (and in its write-back cache) faster than we extract them.
+    private int _unzipPending;
+    internal const int DefaultMaxUnzipBacklog = 2;
+
+    internal int UnzipPending => Volatile.Read(ref _unzipPending);
+
+    internal void EnqueueUnzip((string archivePath, string extractDir, string filename) job)
+    {
+        Interlocked.Increment(ref _unzipPending);
+        _unzipQueue.Enqueue(job);
+    }
+
+    /// <summary>#74 backpressure: block the next download while the extraction backlog is full.</summary>
+    internal async Task WaitForUnzipBacklogAsync(int max, ILogger logger, CancellationToken ct, TimeSpan? poll = null)
+    {
+        if (max <= 0) return;
+        var logged = false;
+        while (Volatile.Read(ref _unzipPending) >= max && _unzipTask is { IsCompleted: false })
+        {
+            if (!logged)
+            {
+                logger.LogInformation("[MMF] Waiting for extraction backlog ({Pending} archive(s)) before next download", UnzipPending);
+                logged = true;
+            }
+            await Task.Delay(poll ?? TimeSpan.FromMilliseconds(250), ct);
+        }
+    }
+
+    internal static int MaxUnzipBacklog(IReadOnlyDictionary<string, string>? config) =>
+        config != null && config.TryGetValue("MAX_UNZIP_BACKLOG", out var v) && int.TryParse(v, out var n) && n >= 0
+            ? n : DefaultMaxUnzipBacklog;
 
     private const string MmfApiBase = "https://www.myminifactory.com/api/v2";
     private const string MmfAuthBase = "https://auth.myminifactory.com";
@@ -645,7 +677,7 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                                 // CF TLS fingerprint mismatch — cookies via HttpClient have the same
                                 // fingerprint problem, so skip the cookie fallback and go straight to
                                 // Playwright (Chromium — the fingerprint CF actually issued to).
-                                var forbiddenBody = await fileResponse.Content.ReadAsStringAsync(ct);
+                                var forbiddenBody = await MmfBoundedIo.PeekAsync(fileResponse.Content, ct, 8192) ?? "";
                                 var isCfChallenge = IsCfHtmlChallenge(fileResponse, forbiddenBody);
                                 if (isCfChallenge)
                                     context.Logger.LogWarning(
@@ -663,8 +695,7 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                             if (!downloadedByBrowser)
                             {
                                 fileResponse.EnsureSuccessStatusCode();
-                                await using var fs = File.Create(filePath);
-                                await fileResponse.Content.CopyToAsync(fs, ct);
+                                await MmfBoundedIo.CopyToFileAsync(fileResponse.Content, filePath, ct);
                             }
 
                             var actualSize = new FileInfo(filePath).Length;
@@ -736,11 +767,10 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
                     archClient.DefaultRequestHeaders.UserAgent.ParseAdd(
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-                    var archResp = await archClient.GetAsync(archiveDownloadUrl, ct);
+                    using var archResp = await archClient.GetAsync(archiveDownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
                     if (archResp.IsSuccessStatusCode)
                     {
-                        await using var fs = File.Create(archivePath);
-                        await archResp.Content.CopyToAsync(fs, ct);
+                        await MmfBoundedIo.CopyToFileAsync(archResp.Content, archivePath, ct);
                         downloadedFiles.Add(new DownloadedFile
                         {
                             Filename = archiveName, LocalPath = archivePath,
@@ -764,7 +794,7 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 var extractDir = Path.Combine(
                     Path.GetDirectoryName(dl.LocalPath)!,
                     Path.GetFileNameWithoutExtension(dl.LocalPath));
-                _unzipQueue.Enqueue((dl.LocalPath, extractDir, dl.Filename ?? Path.GetFileName(dl.LocalPath)));
+                EnqueueUnzip((dl.LocalPath, extractDir, dl.Filename ?? Path.GetFileName(dl.LocalPath)));
             }
 
             // Also queue leftover ZIPs from previous interrupted syncs
@@ -775,7 +805,7 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                                     Directory.EnumerateFiles(modelDir, "*.7z")))
                 {
                     var extractTo = Path.Combine(modelDir, Path.GetFileNameWithoutExtension(zip));
-                    _unzipQueue.Enqueue((zip, extractTo, Path.GetFileName(zip)));
+                    EnqueueUnzip((zip, extractTo, Path.GetFileName(zip)));
                 }
             }
             catch { }
@@ -1103,9 +1133,7 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     if (cdnResponse.IsSuccessStatusCode)
                     {
                         Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-                        await using var output = File.Create(filePath);
-                        await using var stream = await cdnResponse.Content.ReadAsStreamAsync(ct);
-                        await stream.CopyToAsync(output, ct);
+                        await MmfBoundedIo.CopyToFileAsync(cdnResponse.Content, filePath, ct);
                         var bytes = new FileInfo(filePath).Length;
                         logger.LogInformation("[MMF] CDN fetch returned {Status} ({Bytes} bytes) for {File}",
                             cdnResponse.StatusCode, bytes, Path.GetFileName(filePath));
@@ -1114,7 +1142,7 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
 
                     logger.LogWarning("[MMF] CDN fetch returned {Status} ({Bytes} bytes) for {File} — download failed",
                         cdnResponse.StatusCode,
-                        (await cdnResponse.Content.ReadAsByteArrayAsync(ct)).Length,
+                        cdnResponse.Content.Headers.ContentLength ?? -1,
                         Path.GetFileName(filePath));
                 }
                 else
@@ -1178,6 +1206,8 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     var (archivePath, extractDir, filename) = job;
                     try
                     {
+                    try
+                    {
                         if (!File.Exists(archivePath)) continue;
                         var ext = Path.GetExtension(archivePath).ToLowerInvariant();
 
@@ -1224,6 +1254,8 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                     {
                         logger.LogWarning("[UNZIP] Error extracting {File}: {Error}", filename, ex.Message);
                     }
+                    }
+                    finally { Interlocked.Decrement(ref _unzipPending); }
                 }
                 else
                 {
@@ -2195,12 +2227,11 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 cookieClient.DefaultRequestHeaders.Add("Cookie", sessionCookies);
                 cookieClient.DefaultRequestHeaders.UserAgent.ParseAdd(
                     sessionUA ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-                using var cookieResp = await cookieClient.GetAsync(url, ct);
+                using var cookieResp = await cookieClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
                 if (cookieResp.IsSuccessStatusCode)
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-                    await using var fs = File.Create(filePath);
-                    await cookieResp.Content.CopyToAsync(fs, ct);
+                    await MmfBoundedIo.CopyToFileAsync(cookieResp.Content, filePath, ct);
                     logger.LogInformation("[MMF][fallback=cookies] Download succeeded for {File}", safeName);
                     return true;
                 }
