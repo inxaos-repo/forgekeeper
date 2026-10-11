@@ -428,6 +428,15 @@ public class PluginHostService : BackgroundService
                 idIndex = await BuildSourceIdIndexAsync(slug, context.SourceDirectory, dbFactory, ct);
             }
 
+            // #75: an earlier process kill can leave .part temp files behind. We hold the sync lock,
+            // so nothing of ours is downloading; move stale ones to .trash-* (never delete).
+            try
+            {
+                var swept = PartialDownloadCleanup.SweepOrphanParts(context.SourceDirectory, TimeSpan.FromMinutes(30), _logger);
+                if (swept > 0) _logger.LogWarning("[{Slug}] Moved {Count} orphaned .part file(s) to trash", slug, swept);
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "[{Slug}] Orphaned .part sweep failed", slug); }
+
             // Phase 2 selection: New-only (default for plugins that declare NEW_ONLY), MAX_ITEMS cap, force.
             var forceRedownload = IsTrue(GetConfigOrDefault(loaded.Scraper, context.Config, "FORCE_REDOWNLOAD"));
             var newOnly = !forceRedownload && !IsTrue(GetConfigOrDefault(loaded.Scraper, context.Config, "RESTORE_MODE")) && IsTrue(GetConfigOrDefault(loaded.Scraper, context.Config, "NEW_ONLY"));
@@ -548,6 +557,13 @@ public class PluginHostService : BackgroundService
                     _logger.LogWarning("[{Slug}] Sync paused at index {Index}: {Error}", slug, currentIndex, syncError);
                     break;
                 }
+                if (result.Success && IsHollowSuccess(result, modelDir))
+                {
+                    // #28: plugin said "ok" but nothing usable is on disk (dead token, every fallback
+                    // failed silently). That is a failure, not a scraped model.
+                    result = ScrapeResult.Failure($"Plugin reported success but no files were written for {model.Name}");
+                    RemoveEmptyCreatedDirs(createdDirs, _logger);
+                }
                 if (result.Success)
                 {
                     ledgerDirty |= failedLedger.RecordSuccess(model.ExternalId);
@@ -624,6 +640,14 @@ public class PluginHostService : BackgroundService
 
             _logger.LogInformation("[{Slug}] Sync complete: {Scraped} scraped, {Failed} failed, {Skipped} skipped",
                 slug, scraped, failed, skipped);
+            // #28: run-level sanity check — many "scraped" items but zero bytes means something
+            // upstream (auth, CDN) silently broke. Flag it on the run instead of a clean "completed".
+            var suspicion = HollowRunWarning(scraped, filesDownloaded, bytesDownloaded);
+            if (suspicion != null)
+            {
+                syncError = syncError == null ? suspicion : syncError + " | " + suspicion;
+                _logger.LogWarning("[{Slug}] {Warning}", slug, suspicion);
+            }
         }
         catch (PluginAuthExpiredException ex)
         {
@@ -1451,6 +1475,16 @@ public class PluginHostService : BackgroundService
     }
 
     /// <summary>#38: files/bytes actually downloaded for one item (falls back to on-disk size).</summary>
+    /// <summary>#28: a success that downloaded nothing and left no content in the model folder.</summary>
+    internal static bool IsHollowSuccess(ScrapeResult result, string modelDir) =>
+        result.Success && CountDownloaded(result.Files).Files == 0 && PartialDownloadCleanup.IsStubOrPartialDir(modelDir);
+
+    /// <summary>#28: warning text when a run "scraped" items but wrote no files/bytes.</summary>
+    internal static string? HollowRunWarning(int scraped, int files, long bytes) =>
+        scraped >= 5 && files == 0 && bytes == 0
+            ? $"Suspicious run: {scraped} items reported scraped but 0 files / 0 bytes were downloaded (check auth/session)"
+            : null;
+
     internal static (int Files, long Bytes) CountDownloaded(IReadOnlyList<DownloadedFile>? files)
     {
         if (files is null) return (0, 0);

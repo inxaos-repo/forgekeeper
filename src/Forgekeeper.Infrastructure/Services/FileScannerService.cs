@@ -301,6 +301,16 @@ public class FileScannerService : IScannerService
         var parsed = adapter.ParseModelDirectory(modelDir);
         if (parsed == null) return false;
 
+        // #75/#77: a folder holding only a .part temp file and/or a stub metadata.json (interrupted
+        // download) is not a model. Don't create a zero-file row for it; no ScanState is recorded,
+        // so it is picked up once real files land. Existing rows are left alone.
+        if (PartialDownloadCleanup.IsStubOrPartialDir(modelDir)
+            && !await db.Models.AsNoTracking().AnyAsync(m => m.BasePath == modelDir, ct))
+        {
+            _logger.LogInformation("Skipping stub/partial-download folder (no content files): {Path}", modelDir);
+            return false;
+        }
+
         lock (_lock) _progress.DirectoriesScanned++;
 
         // Check for metadata.json via MetadataService
@@ -468,7 +478,8 @@ public class FileScannerService : IScannerService
         {
             try
             {
-                await _metadataService.BackfillAsync(modelDir, model, ct);
+                if (!PartialDownloadCleanup.IsStubOrPartialDir(modelDir)) // #75: never backfill into an empty/partial folder
+                    await _metadataService.BackfillAsync(modelDir, model, ct);
             }
             catch (Exception ex)
             {

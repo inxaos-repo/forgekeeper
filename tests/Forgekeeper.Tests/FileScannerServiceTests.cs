@@ -138,6 +138,28 @@ public class FileScannerServiceTests : IDisposable
     // --- ScanAsync integration tests ---
 
     [Fact]
+    public async Task ScanAsync_SkipsPartialDownloadFolder_Issue75()
+    {
+        var dbName = $"TestDb_{Guid.NewGuid()}";
+        // Interrupted download: only a hidden .part temp file plus a stub metadata.json.
+        CreateModelDirectory("mmf", "SomeCreator", "Broken Model", [".Broken.zip.abc123.part", "metadata.json"]);
+        CreateModelDirectory("mmf", "SomeCreator", "Empty Model", ["metadata.json"]);
+        CreateModelDirectory("mmf", "SomeCreator", "Good Model", ["model.stl"]);
+        _metadataService.Setup(m => m.ReadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((SourceMetadata?)null);
+
+        var service = CreateServiceWithSharedDb(dbName);
+        await service.ScanAsync(incremental: false);
+
+        using var db = TestDbContextFactory.Create(dbName);
+        var names = await db.Models.Select(m => m.Name).ToListAsync();
+        Assert.Single(names);
+        Assert.Contains("Good", names[0]);
+        _metadataService.Verify(m => m.BackfillAsync(
+            It.Is<string>(d => d.Contains("Broken") || d.Contains("Empty")), It.IsAny<Model3D>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task ScanAsync_FindsModelDirectories()
     {
         var dbName = $"TestDb_{Guid.NewGuid()}";
