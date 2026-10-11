@@ -1762,6 +1762,9 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
                 ["published"] = details?.PublishedAt,
                 ["addedToLibrary"] = model.LibraryAddedAt,
                 ["lastSynced"] = DateTime.UtcNow,
+                // #76: when the files first landed locally. FileScannerService maps this to
+                // models.downloaded_at; keep the original value on re-syncs.
+                ["downloaded"] = (existing != null ? GetDateFromMetadata(existing, "downloaded") : null) ?? DateTime.UtcNow,
             },
             ["files"] = files.Select(f => new Dictionary<string, object?>
             {
@@ -1885,12 +1888,16 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
     /// <summary>Extract a DateTime from nested metadata (e.g., dates.lastSynced).</summary>
     private static DateTime? GetDateFromMetadata(Dictionary<string, object?> metadata, string dateKey)
     {
-        if (metadata.TryGetValue("dates", out var datesVal) && datesVal is JsonElement datesEl 
+        if (!metadata.TryGetValue("dates", out var datesVal) || datesVal == null) return null;
+        if (datesVal is JsonElement datesEl
             && datesEl.ValueKind == JsonValueKind.Object
             && datesEl.TryGetProperty(dateKey, out var dateProp)
             && dateProp.ValueKind == JsonValueKind.String
-            && DateTime.TryParse(dateProp.GetString(), out var dt))
+            && DateTime.TryParse(dateProp.GetString(), System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var dt))
             return dt;
+        if (datesVal is IDictionary<string, object?> dict && dict.TryGetValue(dateKey, out var v))
+            return v switch { DateTime d => d, string str when DateTime.TryParse(str, out var d2) => d2, _ => null };
         return null;
     }
 

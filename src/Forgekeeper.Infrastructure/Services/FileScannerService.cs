@@ -368,7 +368,8 @@ public class FileScannerService : IScannerService
         model.Extra = metadata?.Extra != null ? JsonSerializer.Serialize(metadata.Extra) : null;
         model.ExternalCreatedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Created);
         model.ExternalUpdatedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Updated);
-        model.DownloadedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Downloaded);
+        // #76: never wipe a known download time just because metadata.json lacks dates.downloaded.
+        model.DownloadedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Downloaded) ?? model.DownloadedAt;
         model.LastScannedAt = DateTime.UtcNow;
         model.UpdatedAt = DateTime.UtcNow;
 
