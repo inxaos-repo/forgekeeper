@@ -26,11 +26,19 @@ public class MmfOrphanMergeService(ForgeDbContext db, IMetadataService metadata,
     private static readonly Regex NonWord = new(@"[^\p{L}\p{N}]+", RegexOptions.Compiled);
 
     public record PairInfo(Guid OrphanId, Guid KeepId, string Creator, string Name, string OrphanPath, string KeepPath,
-        string? SourceId, int OrphanTags, int KeepTags);
+        string? SourceId, int OrphanTags, int KeepTags, bool Live = false, string? FolderAction = null);
 
     public record MergeReport(
         bool Applied, int Orphans, int Pairs, int Ambiguous, int Unmatched, int Merged,
-        List<PairInfo> PairList, List<string> AmbiguousList, List<string> UnmatchedList);
+        List<PairInfo> PairList, List<string> AmbiguousList, List<string> UnmatchedList)
+    {
+        /// <summary>#73: live (non-quarantined) metadata-only orphans considered in this run.</summary>
+        public int LiveOrphans { get; init; }
+        /// <summary>#73: live orphans skipped because touching them is not safe (folder has content, odd path…).</summary>
+        public List<string> SkippedList { get; init; } = [];
+        /// <summary>Full snapshot of every orphan row that is (or would be) deleted — restore source.</summary>
+        public List<Dictionary<string, object?>> OrphanBackup { get; init; } = [];
+    }
 
     public record SourceBackfillReport(bool Applied, int MmfBefore, int ToManual, List<string> Sample);
 
@@ -47,7 +55,25 @@ public class MmfOrphanMergeService(ForgeDbContext db, IMetadataService metadata,
         !string.IsNullOrEmpty(path)
         && path.Split('/', StringSplitOptions.RemoveEmptyEntries).Any(seg => seg.StartsWith('.'));
 
-    public async Task<MergeReport> MergeOrphansAsync(bool apply, CancellationToken ct = default)
+    /// <summary>
+    /// #73: a zero-file MMF row whose folder is live (not under a dot-dir) but holds no real content — only
+    /// metadata.json / hidden files / .part temp files — or no longer exists. Since #80 the scanner never
+    /// creates a row for such a folder, so removing the row does not get it recreated.
+    /// </summary>
+    public static bool IsLiveMetadataOnly(Model3D m) =>
+        m.FileCount == 0 && !IsUnderDotDir(m.BasePath) && IsMmfIdentity(m.SourceId, m.SourceUrl)
+        && (!Directory.Exists(m.BasePath) || PartialDownloadCleanup.IsStubOrPartialDir(m.BasePath));
+
+    /// <summary>
+    /// Merge orphans into their file-bearing twins. Idempotent: merged orphans are gone, so a re-run only sees
+    /// what is left; the metadata.json write is a deterministic union. With <paramref name="includeLive"/> the
+    /// live metadata-only twins (#73) are merged too; their folder stays where it is (the scanner ignores
+    /// stub folders since #80) — it is never deleted.
+    /// </summary>
+    public async Task<MergeReport> MergeOrphansAsync(bool apply, CancellationToken ct = default) =>
+        await MergeOrphansAsync(apply, includeLive: false, ct);
+
+    public async Task<MergeReport> MergeOrphansAsync(bool apply, bool includeLive, CancellationToken ct = default)
     {
         var rows = await db.Models
             .Include(m => m.Tags)
@@ -56,6 +82,16 @@ public class MmfOrphanMergeService(ForgeDbContext db, IMetadataService metadata,
 
         var orphans = rows.Where(m => m.FileCount == 0 && IsUnderDotDir(m.BasePath)
                                       && IsMmfIdentity(m.SourceId, m.SourceUrl)).ToList();
+        var skipped = new List<string>();
+        var live = new HashSet<Guid>();
+        if (includeLive)
+        {
+            foreach (var m in rows.Where(m => m.FileCount == 0 && !IsUnderDotDir(m.BasePath) && IsMmfIdentity(m.SourceId, m.SourceUrl)))
+            {
+                if (IsLiveMetadataOnly(m)) { orphans.Add(m); live.Add(m.Id); }
+                else skipped.Add($"{m.Creator?.Name} / {m.Name}: folder has content files ({m.BasePath})");
+            }
+        }
         var keepers = rows.Where(m => m.FileCount > 0 && !IsUnderDotDir(m.BasePath)).ToList();
 
         var keeperIndex = keepers
@@ -79,6 +115,11 @@ public class MmfOrphanMergeService(ForgeDbContext db, IMetadataService metadata,
                 continue;
             }
             var k = ks[0];
+            if (live.Contains(o.Id) && IsSameOrNested(o.BasePath, k.BasePath))
+            {
+                skipped.Add($"{o.Creator?.Name} / {o.Name}: orphan and keeper folders overlap ({o.BasePath} / {k.BasePath})");
+                continue;
+            }
             // Never overwrite a keeper that already has a different real MMF identity.
             if (IsMmfIdentity(k.SourceId, null) && !string.Equals(k.SourceId, o.SourceId, StringComparison.OrdinalIgnoreCase))
             {
@@ -88,14 +129,16 @@ public class MmfOrphanMergeService(ForgeDbContext db, IMetadataService metadata,
             pairs.Add((o, k));
         }
 
+        var backup = pairs.Select(p => Snapshot(p.Orphan)).ToList();
         var merged = 0;
         if (apply)
         {
             foreach (var (o, k) in pairs)
             {
+                ct.ThrowIfCancellationRequested();
                 await MergeOneAsync(o, k, ct);
                 merged++;
-                if (merged % 200 == 0) await db.SaveChangesAsync(ct);
+                if (merged % 50 == 0) await db.SaveChangesAsync(ct);
             }
             await db.SaveChangesAsync(ct);
             logger.LogInformation("MMF orphan merge applied: {Merged} pairs merged", merged);
@@ -103,8 +146,28 @@ public class MmfOrphanMergeService(ForgeDbContext db, IMetadataService metadata,
 
         return new MergeReport(apply, orphans.Count, pairs.Count, ambiguous.Count, unmatched.Count, merged,
             pairs.Select(p => new PairInfo(p.Orphan.Id, p.Keep.Id, p.Keep.Creator?.Name ?? "", p.Keep.Name,
-                p.Orphan.BasePath, p.Keep.BasePath, p.Orphan.SourceId, p.Orphan.Tags.Count, p.Keep.Tags.Count)).ToList(),
-            ambiguous, unmatched);
+                p.Orphan.BasePath, p.Keep.BasePath, p.Orphan.SourceId, p.Orphan.Tags.Count, p.Keep.Tags.Count,
+                live.Contains(p.Orphan.Id), live.Contains(p.Orphan.Id) ? "left in place (stub folder, ignored by scanner)" : null)).ToList(),
+            ambiguous, unmatched)
+        {
+            LiveOrphans = live.Count,
+            SkippedList = skipped,
+            OrphanBackup = backup,
+        };
+    }
+
+    private static bool IsSameOrNested(string a, string b)
+    {
+        static string N(string p) => p.TrimEnd('/') + "/";
+        return N(a).StartsWith(N(b), StringComparison.Ordinal) || N(b).StartsWith(N(a), StringComparison.Ordinal);
+    }
+
+    private Dictionary<string, object?> Snapshot(Model3D m)
+    {
+        var d = new Dictionary<string, object?>();
+        foreach (var p in db.Entry(m).Properties) d[p.Metadata.Name] = p.CurrentValue;
+        d["Tags"] = m.Tags.Select(t => t.Name).ToList();
+        return d;
     }
 
     private async Task MergeOneAsync(Model3D o, Model3D k, CancellationToken ct)

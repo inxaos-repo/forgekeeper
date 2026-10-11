@@ -47,6 +47,11 @@ builder.Services.AddDbContext<ForgeDbContext>(options =>
 builder.Services.AddScoped<MetadataWritebackService>();
 builder.Services.AddScoped<FileIssueService>();
 builder.Services.AddScoped<MmfOrphanMergeService>();
+builder.Services.AddSingleton(sp => new MmfOrphanMergeJob(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<IScannerService>(),
+    () => sp.GetRequiredService<PluginHostService>().AnyPluginSyncing,
+    sp.GetRequiredService<ILogger<MmfOrphanMergeJob>>()));
 builder.Services.AddScoped<IModelRepository, ModelRepository>();
 builder.Services.AddScoped<ICreatorRepository, CreatorRepository>();
 

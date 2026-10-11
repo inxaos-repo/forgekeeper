@@ -90,6 +90,9 @@ public class PluginHostService : BackgroundService
     public bool IsPluginSyncing(string slug) =>
         _syncStatuses.TryGetValue(slug, out var s) && s.IsRunning;
 
+    /// <summary>Whether any plugin is currently syncing (#73: library maintenance refuses to run meanwhile).</summary>
+    public bool AnyPluginSyncing => _syncStatuses.Values.Any(s => s.IsRunning);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(

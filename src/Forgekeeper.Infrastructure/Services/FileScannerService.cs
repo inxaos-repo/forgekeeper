@@ -74,6 +74,14 @@ public class FileScannerService : IScannerService
             if (_progress.IsRunning)
                 return _progress;
 
+            // #73: a library maintenance job (e.g. MMF orphan merge) rewrites metadata.json and model rows;
+            // scanning at the same time re-imports those tags and collides on pk_model_tags. Defer.
+            if (LibraryMaintenanceGate.IsHeld)
+            {
+                _logger.LogInformation("Scan deferred: library maintenance job running ({Job})", LibraryMaintenanceGate.Holder);
+                return new ScanProgress { IsRunning = false, Status = "deferred", Error = $"library maintenance running: {LibraryMaintenanceGate.Holder}" };
+            }
+
             _progress = new ScanProgress
             {
                 IsRunning = true,

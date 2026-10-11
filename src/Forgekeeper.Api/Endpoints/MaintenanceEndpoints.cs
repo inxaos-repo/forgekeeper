@@ -12,24 +12,26 @@ public static class MaintenanceEndpoints
     {
         var group = app.MapGroup("/api/v1/maintenance").WithTags("Maintenance");
 
-        group.MapPost("/mmf-orphans/merge", async (
-            MmfOrphanMergeService svc,
+        // #73: runs as a background job (the 60s ingress timeout used to cancel it through RequestAborted).
+        // Poll GET /mmf-orphans/merge/status. Refuses (409) while a scan, a plugin sync or another job runs.
+        group.MapPost("/mmf-orphans/merge", (
+            MmfOrphanMergeJob job,
+            IHostApplicationLifetime lifetime,
             [FromQuery] bool? apply,
-            [FromQuery] string? reportDir,
-            CancellationToken ct) =>
+            [FromQuery] bool? includeLive,
+            [FromQuery] string? reportDir) =>
         {
-            var report = await svc.MergeOrphansAsync(apply == true, ct);
-            string? path = null;
-            try { path = await MmfOrphanMergeService.WriteReportAsync(reportDir ?? DefaultReportDir, apply == true ? "mmf-orphan-merge-applied" : "mmf-orphan-merge-dryrun", report, ct); }
-            catch (Exception) { /* report dir may be unavailable in dev/tests */ }
-            return Results.Ok(new
-            {
-                report.Applied, report.Orphans, report.Pairs, report.Ambiguous, report.Unmatched, report.Merged,
-                reportPath = path,
-                ambiguousSample = report.AmbiguousList.Take(50),
-                pairSample = report.PairList.Take(20),
-            });
+            var (started, reason, _) = job.TryStart(apply == true, includeLive == true, reportDir ?? DefaultReportDir,
+                lifetime.ApplicationStopping);
+            if (!started)
+                return Results.Conflict(new { message = $"Orphan merge refused: {reason}", status = job.Status });
+            return Results.Accepted("/api/v1/maintenance/mmf-orphans/merge/status",
+                new { message = "Orphan merge started", statusUrl = "/api/v1/maintenance/mmf-orphans/merge/status", status = job.Status });
         }).WithName("MergeMmfOrphans");
+
+        group.MapGet("/mmf-orphans/merge/status", (MmfOrphanMergeJob job) =>
+            Results.Ok(new { job.Status, blockedBy = job.BlockReason() }))
+            .WithName("MergeMmfOrphansStatus");
 
         group.MapPost("/source/backfill", async (
             MmfOrphanMergeService svc,
