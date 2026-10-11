@@ -802,7 +802,7 @@ public class PluginHostService : BackgroundService
 
     // ─── Plugin discovery (dual-directory, conflict-aware) ────────────────────────────────────
 
-    private async Task DiscoverPluginsAsync(CancellationToken ct)
+    internal async Task DiscoverPluginsAsync(CancellationToken ct)
     {
         // Emit startup precedence banner (R3)
         _logger.LogInformation(
@@ -905,17 +905,30 @@ public class PluginHostService : BackgroundService
             throw new InvalidOperationException(
                 "Plugin hash drift detected. Remove stale /data/ plugin(s) or set Plugins:WarnOnVersionDrift=false to proceed.");
 
-        // Load in precedence order:
-        //   PreferBundled=false (default): builtin first, installed overwrites conflicts (data wins)
-        //   PreferBundled=true:            installed first, builtin overwrites conflicts (app wins)
-        var firstPassEntries  = _preferBundled ? installedEntries : builtinEntries;
-        var secondPassEntries = _preferBundled ? builtinEntries   : installedEntries;
+        // Load in precedence order, winning location FIRST, and never let a later directory
+        // overwrite a slug that is already loaded (#29). Slug conflicts above are detected via
+        // manifest/dir name, which misses manifest-less plugins whose directory names differ
+        // (e.g. /app/plugins/Forgekeeper.Scraper.Mmf vs /data/plugins/mmf), so the real
+        // SourceSlug is checked again at load time.
+        //   PreferBundled=false (default): installed wins over builtin (data-over-app)
+        //   PreferBundled=true:            builtin wins over installed (app-over-data)
+        var winnerEntries = _preferBundled ? builtinEntries   : installedEntries;
+        var loserEntries  = _preferBundled ? installedEntries : builtinEntries;
 
-        foreach (var entry in firstPassEntries)
-            await LoadPluginFromDirAsync(entry.Dir, ct);
+        foreach (var entry in winnerEntries.Concat(loserEntries))
+            await LoadPluginFromDirAsync(entry.Dir, ct, skipIfLoaded: true);
+    }
 
-        foreach (var entry in secondPassEntries)
-            await LoadPluginFromDirAsync(entry.Dir, ct);
+    /// <summary>
+    /// Orders plugin directories so the winning location (per Plugins:PreferBundled) comes first.
+    /// </summary>
+    internal IEnumerable<string> OrderByPrecedence(IEnumerable<string> extraDirs)
+    {
+        static IEnumerable<string> Sub(string d) =>
+            Directory.Exists(d) ? Directory.GetDirectories(d).OrderBy(x => x, StringComparer.Ordinal) : Enumerable.Empty<string>();
+        var winner = _preferBundled ? Sub(_builtinPluginsDirectory) : Sub(_pluginsDirectory);
+        var loser  = _preferBundled ? Sub(_pluginsDirectory) : Sub(_builtinPluginsDirectory);
+        return winner.Concat(loser).Concat(extraDirs).Distinct(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -923,12 +936,23 @@ public class PluginHostService : BackgroundService
     /// DLL loading, and adds to the _plugins dictionary. Safe to call on already-loaded plugins
     /// (overwrites existing entry).
     /// </summary>
-    private Task LoadPluginFromDirAsync(string pluginDir, CancellationToken ct)
+    private Task LoadPluginFromDirAsync(string pluginDir, CancellationToken ct, bool skipIfLoaded = false)
     {
         try
         {
             // Load and validate manifest (optional — backward compat)
             var manifest = _manifestValidator.LoadManifest(pluginDir);
+
+            // Cheap pre-check: manifest slug already loaded from a higher-precedence dir.
+            if (skipIfLoaded && manifest is not null && !string.IsNullOrWhiteSpace(manifest.Slug)
+                && _plugins.TryGetValue(manifest.Slug, out var already))
+            {
+                _logger.LogWarning(
+                    "Skipping plugin '{Slug}' in {Dir}: already loaded from {Winner} (higher precedence)",
+                    manifest.Slug, pluginDir, already.SourceDirectory);
+                return Task.CompletedTask;
+            }
+
             ManifestValidationResult? validationResult = null;
             SdkCompatResult? compatResult = null;
 
@@ -968,13 +992,6 @@ public class PluginHostService : BackgroundService
                         Path.GetFileName(pluginDir), compatResult.Reason);
                 }
             }
-            else
-            {
-                _logger.LogWarning(
-                    "[{Dir}] No manifest.json found — loading without validation (legacy plugin)",
-                    Path.GetFileName(pluginDir));
-            }
-
             var dlls = Directory.GetFiles(pluginDir, "*.dll")
                 .Where(f => !Path.GetFileName(f).StartsWith("Forgekeeper.PluginSdk"))
                 .ToArray();
@@ -990,6 +1007,19 @@ public class PluginHostService : BackgroundService
                 foreach (var type in scraperTypes)
                 {
                     var scraper = (ILibraryScraper)Activator.CreateInstance(type)!;
+
+                    if (skipIfLoaded && _plugins.TryGetValue(scraper.SourceSlug, out var existing))
+                    {
+                        _logger.LogWarning(
+                            "Skipping duplicate plugin '{Slug}' from {Dll}: already loaded from {Winner} (higher precedence)",
+                            scraper.SourceSlug, dll, existing.SourceDirectory);
+                        continue;
+                    }
+
+                    if (manifest is null)
+                        _logger.LogWarning(
+                            "[{Dir}] No manifest.json found — loading without validation (legacy plugin)",
+                            Path.GetFileName(pluginDir));
 
                     // If manifest has a slug, verify it matches the plugin's SourceSlug
                     if (manifest is not null && !string.IsNullOrWhiteSpace(manifest.Slug) &&
@@ -1061,24 +1091,15 @@ public class PluginHostService : BackgroundService
         await Task.Delay(200, ct);
 
         // Re-load from collected directories + scan for new ones
-        var dirsToLoad = new HashSet<string>(pluginDirs, StringComparer.OrdinalIgnoreCase);
-        if (Directory.Exists(_builtinPluginsDirectory))
-        {
-            foreach (var dir in Directory.GetDirectories(_builtinPluginsDirectory))
-                dirsToLoad.Add(dir);
-        }
-        if (Directory.Exists(_pluginsDirectory))
-        {
-            foreach (var dir in Directory.GetDirectories(_pluginsDirectory))
-                dirsToLoad.Add(dir);
-        }
+        // Winner location first; duplicates by slug are skipped (#29).
+        var dirsToLoad = OrderByPrecedence(pluginDirs!).ToList();
 
         int loadErrors = 0;
         foreach (var dir in dirsToLoad)
         {
             try
             {
-                await LoadPluginFromDirAsync(dir, ct);
+                await LoadPluginFromDirAsync(dir, ct, skipIfLoaded: true);
             }
             catch (Exception ex)
             {

@@ -19,5 +19,10 @@
     <ProjectReference Include="..\..\src\Forgekeeper.PluginSdk\Forgekeeper.PluginSdk.csproj" />
   </ItemGroup>
 
+  <!-- #32: ship manifest.json next to the plugin DLL (build + publish output) -->
+  <ItemGroup>
+    <None Include="manifest.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!-- CacheBust: 1776455300 -->
 </Project>
