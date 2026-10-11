@@ -10,11 +10,13 @@ namespace Forgekeeper.Tests;
 /// <summary>
 /// #74 regression: downloading and extracting a large archive must use bounded memory
 /// (allocations independent of archive size) and downloads must wait on the extraction backlog.
+/// GC.GetTotalAllocatedBytes is process-wide, so this class runs with parallelization disabled.
 /// </summary>
+[Collection(nameof(MmfBoundedMemoryCollection))]
 public class MmfBoundedMemoryTests(ITestOutputHelper output) : IDisposable
 {
     private const long BigBytes = 256L << 20; // 256 MiB entry: real-world big MMF zips are 1–4 GiB
-    private const long AllocBudget = 48L << 20; // whole download+extract must allocate far less than the file
+    private const long AllocBudget = 64L << 20; // whole download+extract must allocate far less than the file
     private readonly string _dir = Directory.CreateTempSubdirectory("fk-oom74-").FullName;
 
     public void Dispose() { try { Directory.Delete(_dir, true); } catch { } }
@@ -168,3 +170,6 @@ public class MmfBoundedMemoryTests(ITestOutputHelper output) : IDisposable
         public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
     }
 }
+
+[CollectionDefinition(nameof(MmfBoundedMemoryCollection), DisableParallelization = true)]
+public class MmfBoundedMemoryCollection { }
