@@ -1,5 +1,9 @@
 # Deployment Guide
 
+> The homelab production deployment (inxaos-flux, digest-pinned image + mmf-fetch sidecar, 4Gi limit,
+> per-commit `sha-*` / `main-<ts>-<sha>` tags) is documented in [ops-runbook.md](ops-runbook.md). This page is a
+> generic guide; the `k8s/` manifests here are examples.
+
 ## Docker Compose (Production)
 
 The simplest way to run Forgekeeper in production.

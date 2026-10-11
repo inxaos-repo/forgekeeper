@@ -14,7 +14,7 @@ Once deployed, access your instance at `http://localhost:5000` (or your configur
 - **Thumbnail generation** (WebP) for visual browsing — stl-thumb renders 16,600+ thumbnails
 - **Tagging, rating, categorization** — game system, scale, print history, notes, collections
 - **Plugin system** — isolated AssemblyLoadContext, NFS hot reload, per-plugin sync lock
-- **MMF scraper plugin** — FlareSolverr Cloudflare bypass, cookie auth, 7,230+ model sync
+- **MMF scraper plugin** — mmf-fetch sidecar (curl_cffi) for Cloudflare, bounded-memory downloads, dry-run reports
 - **Bulk management** — bulk tag, categorize, metadata update, creator reassignment
 - **Rename/move with disk operations** — template-based preview + atomic move
 - **Print history** (JSONB), related models, components, print settings
@@ -35,6 +35,9 @@ Once deployed, access your instance at `http://localhost:5000` (or your configur
 | [Configuration](configuration.md) | Environment variables, appsettings, security |
 | [Plugin Development](plugin-development.md) | Building scraper plugins with the SDK |
 | [Deployment](deployment.md) | Docker Compose, Kubernetes + Flux, NFS, CNPG, FlareSolverr |
+| [Ops runbook](ops-runbook.md) | Production deploy (digest pins), sync safety, maintenance API, data ops |
+| [MMF plugin](mmf-plugin.md) | MyMiniFactory plugin, mmf-fetch sidecar, settings, reports |
+| [MMF Phase 0 findings](mmf-phase0-findings.md) | Historical investigation (2026-10-08) |
 | [Contributing](contributing.md) | Dev setup, 241 tests, E2E tests, migrations, code style |
 
 ## Quick Start

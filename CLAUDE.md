@@ -1,218 +1,144 @@
 # CLAUDE.md — AI Assistant Guide for Forgekeeper
 
-## What Is This Project?
-Forgekeeper is a self-hosted 3D print file manager — "Plex for STL files." It indexes, organizes, searches, and previews massive collections (200K+ files, 3.6TB) from multiple sources (MyMiniFactory, Thangs, Patreon, Cults3D, manual).
+Forgekeeper is a self-hosted 3D print file manager ("Plex for STL files"). It indexes, searches, previews and
+organizes a large library (~200K files, 3.6 TB on ZFS over NFS) from MyMiniFactory, Thangs, Patreon, Cults3D and
+manual sources. The MyMiniFactory (MMF) plugin also downloads the user's purchased library.
 
-## Tech Stack
-- **Backend:** C# / ASP.NET Core 9 (Minimal APIs), Entity Framework Core 9, PostgreSQL 16
-- **Frontend:** Vue.js 3 (Composition API) + Vite + Tailwind CSS v4
-- **3D Preview:** Three.js with STLLoader
-- **Thumbnails:** stl-thumb (Rust CLI) → WebP
-- **Plugins:** Isolated AssemblyLoadContext, ILibraryScraper interface
-- **Deployment:** Docker (multi-stage), Kubernetes via Flux GitOps, CNPG PostgreSQL
+More detail: `docs/architecture.md`, `docs/mmf-plugin.md`, `docs/ops-runbook.md`, `docs/api-reference.md`,
+`docs/configuration.md`. Wiki: `reference/forgekeeper` and `plans/forgekeeper-mmf-modernization`.
 
-## Project Structure
+## Tech stack
+- **Backend:** C# / ASP.NET Core 9 Minimal APIs, EF Core 9, PostgreSQL 16 (CNPG in prod)
+- **Frontend:** Vue 3 (Composition API) + Vite + Tailwind v4, Three.js STL/OBJ viewer
+- **Thumbnails:** stl-thumb (Rust CLI) → WebP. OBJ files are converted to a temp STL first; the renderer is killed on timeout (#84)
+- **Plugins:** isolated `AssemblyLoadContext`, `ILibraryScraper` from `Forgekeeper.PluginSdk`
+- **Sidecar:** `sidecars/mmf-fetch` (Python, curl_cffi) — Cloudflare-resistant fetcher used by the MMF plugin
+- **Deploy:** GHCR image → Flux GitOps (`inxaos-flux`, `apps/forgekeeper`)
+
+## Build and test
+The dev host (ginaz) has **no .NET SDK**. Use the SDK container:
+
+```bash
+# from the repo root
+docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:9.0 dotnet build Forgekeeper.sln
+docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:9.0 dotnet test tests/Forgekeeper.Tests
+docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:9.0 \
+  dotnet test tests/Forgekeeper.Tests --filter "FullyQualifiedName~MmfBoundedMemoryTests"
+
+# or the long-lived dev container (hot reload, EF migrations)
+docker compose -f docker-compose.dev.yml up -d
+docker exec forgekeeper-dev bash -c "cd /src && dotnet build && dotnet test"
+
+# EF migration
+docker exec forgekeeper-dev bash -c "cd /src && dotnet ef migrations add <Name> \
+  -p src/Forgekeeper.Infrastructure -s src/Forgekeeper.Api"
+
+# frontend
+cd src/Forgekeeper.Web && npm ci && npm run dev
+
+# sidecar tests
+cd sidecars/mmf-fetch && pip install -r requirements-test.txt && pytest
+```
+
+Builds take longer than 8s; run them in the background (`bgrun`) rather than blocking a session. CI
+(`.github/workflows/build.yml`) builds, runs xUnit, pushes the image, then runs Playwright E2E against Docker
+Compose. `mmf-fetch.yml` builds the sidecar image.
+
+## Layout
 ```
 src/
-├── Forgekeeper.Api/              # ASP.NET Minimal API host + endpoints
-│   ├── Endpoints/                # One file per resource group
-│   ├── BackgroundServices/       # ScannerWorker, ThumbnailWorker, ImportWorker, PluginUpdateWorker
-│   ├── Cli/                      # CLI mode (forgekeeper plugin install/update/remove)
-│   └── Program.cs                # DI registration, middleware, standalone endpoints
-├── Forgekeeper.Core/             # Domain models, interfaces, DTOs (ZERO dependencies)
-│   ├── Models/                   # Entity classes (Model3D, Creator, Variant, Tag, etc.)
-│   ├── Interfaces/               # Repository + service interfaces
-│   ├── DTOs/                     # Request/response objects
-│   └── Enums/                    # SourceType, VariantType, etc.
-├── Forgekeeper.Infrastructure/   # EF Core, services, repositories
-│   ├── Data/                     # ForgeDbContext, Migrations
-│   ├── Services/                 # All business logic services
-│   └── Repositories/             # Data access
-├── Forgekeeper.PluginSdk/        # Public SDK for plugin authors (ships as NuGet)
-└── Forgekeeper.Web/              # Vue.js 3 SPA
-    └── src/
-        ├── views/                # Page components (ModelsList, ModelDetail, etc.)
-        ├── components/           # Reusable UI components
-        └── composables/          # useApi.js (all API calls)
-
+├── Forgekeeper.Api/             # Minimal API host
+│   ├── Endpoints/               # one file per group (Models, Plugins, Scan, Maintenance, …)
+│   ├── BackgroundServices/      # ScannerWorker, ThumbnailWorker, ImportWorker, PluginUpdateWorker
+│   ├── Cli/                     # `forgekeeper plugin install|update|remove`
+│   └── Program.cs               # DI, middleware, standalone endpoints (/metrics, /version, /mcp)
+├── Forgekeeper.Core/            # entities, interfaces, DTOs, enums (no dependencies)
+├── Forgekeeper.Infrastructure/  # ForgeDbContext + Migrations, services, repositories
+├── Forgekeeper.PluginSdk/       # public SDK for plugin authors (SdkInfo.Version = "1.0.0")
+└── Forgekeeper.Web/             # Vue SPA (all API calls via composables/useApi.js)
 plugins/
-└── Forgekeeper.Scraper.Mmf/      # Built-in MyMiniFactory scraper plugin
-
-tests/
-├── Forgekeeper.Tests/            # xUnit unit + integration tests
-└── Forgekeeper.E2E/              # Playwright E2E tests
+├── Forgekeeper.Scraper.Mmf/     # built-in MMF plugin (v1.1.x) + manifest.json
+└── manifest.schema.json         # plugin manifest schema
+sidecars/mmf-fetch/              # Python fetch sidecar (own image: forgekeeper-mmf-fetch)
+tests/Forgekeeper.Tests/         # xUnit unit + integration (SQLite/InMemory)
+tests/Forgekeeper.E2E/           # Playwright
+k8s/, charts/                    # generic example manifests (prod lives in inxaos-flux)
 ```
 
-## Critical Rules
+## Plugin system and manifest
+- `PluginHostService` discovers plugin dirs, validates `manifest.json` (`ManifestValidationService`, schema in
+  `plugins/manifest.schema.json`), checks SDK compatibility (`SdkCompatibilityChecker`) and loads each plugin
+  **once**, together with its manifest (#79). Don't add code paths that load the assembly a second time.
+- Two plugin locations: image-bundled `/app/plugins` (BuiltinPluginsDirectory) and installed `/data/plugins`.
+  `Plugins:PreferBundled=true` makes the image win. **Prod must keep `Plugins__PreferBundled: "true"`**, or the
+  stale v1.0.0 MMF plugin on `/data/plugins/mmf` loads instead.
+- Plugin settings live in Postgres (`plugin_configs`), not env vars. Secrets are stored as `__token__*` keys.
+- Sync progress: SSE at `/api/v1/plugins/{slug}/progress`; status at `/api/v1/plugins/{slug}/status` (`isRunning`).
 
-### EF Core / Database
-- **Snake_case naming:** `UseSnakeCaseNamingConvention()` — all tables, columns, indexes are snake_case
-- **All [FromQuery] params MUST be nullable:** `int?`, `bool?`, `string?` — non-nullable causes 400 binding errors
-- **JSONB columns** (PrintHistory, Components, Extra, PrintSettings): mark as `.IsModified = true` after changes
-- **Batch SaveChangesAsync:** never save more than 50 entities at once (Postgres parameter limit ~65K)
-- **Use .AsNoTracking()** on read-only queries
-- **Don't use .Any(p => p.Property == "value")** in LINQ-to-SQL on JSONB collections — InMemory provider can't translate it. Use `.Count > 0` for the DB query, check properties at the app layer.
+## MMF sync safety (read before touching sync code or running one)
+- **`DRY_RUN=true`** in `plugin_configs` unless the boss approved a real sync. Dry run writes reports to
+  `/library/sources/mmf/.forgekeeper-reports/` and changes nothing.
+- **`MAX_ITEMS`** caps downloads per run (skipped/already-present items don't use a slot). Use a small value for the
+  first real run after any change; resume to continue.
+- Start a fresh **Sync**, not **Resume**, unless you mean to continue a checkpoint. Stale `running` rows in
+  `sync_runs` used to resume old checkpoints (#27, fixed).
+- Partial-download folders and `.part` files are ignored and swept; a "success" with no files is not counted (#75 #77 #28).
+- Memory is bounded (#74): downloads stream to disk, extraction is queued, and **`MAX_UNZIP_BACKLOG`** (default 2)
+  makes downloads wait when that many archives are waiting to be extracted. Lower it if memory is tight.
+- The plugin writes `dates.downloaded` in metadata.json and the scanner keeps `downloaded_at` (#76).
+- **Watchdogs/log monitors:** match HTTP status codes in context (e.g. `HTTP 403`, `status=429`, `"StatusCode":503`),
+  never bare numbers. A bare `403` matched byte counts and IDs and fired false alarms.
+- **Never hard-delete** library files or rows. Move to a `.trash-*` dir (the scanner skips dot-dirs) and take a DB
+  backup (`pg_dump` of the forgekeeper DB) first.
+- **Data ops (merge, rehome, backfill, bulk moves) only when `isRunning=false`** for every plugin and no scan is
+  running. The orphan-merge job enforces this and returns 409 otherwise.
 
-### API Conventions
-- **Max 500 per bulk operation** — enforce on all bulk endpoints
-- **Paginated responses** use `PaginatedResult<T>` with `Items`, `TotalCount`, `Page`, `PageSize`
-- **Prometheus metrics** at `/metrics` (text/plain format)
-- **SSE streaming** at `/plugins/{slug}/progress` for sync progress
-- **metadata.json writeback** — when user edits are saved, `MetadataWritebackService` syncs them to disk
+## Maintenance API (`/api/v1/maintenance`)
+All default to dry run; pass `apply=true` to write.
+- `POST /mmf-orphans/merge?apply=&includeLive=&reportDir=` — **async** (#73): returns **202** with
+  `statusUrl`; poll `GET /mmf-orphans/merge/status` (`status`, `blockedBy`). Returns **409** while a scan, a
+  plugin sync or another maintenance job runs. Reports go to `/library/sources/mmf/.forgekeeper-reports`.
+- `POST /source/backfill?apply=` — fix `source` on models (synchronous).
+- MMF re-home: `POST /api/v1/plugins/mmf/rehome/plan`, then `.../rehome/apply?report=<file>.json` after review.
 
-### Plugin System
-- Plugins implement `ILibraryScraper` from `Forgekeeper.PluginSdk`
-- Loaded via `AssemblyLoadContext` isolation in `PluginHostService`
-- Each plugin has a `manifest.json` (validated by `ManifestValidationService`)
-- SDK version compatibility checked by `SdkCompatibilityChecker`
-- `SdkInfo.Version = "1.0.0"` — the host SDK version constant
+## Settings added recently
+| Setting | Where | Default | Purpose |
+|---|---|---|---|
+| `MAX_UNZIP_BACKLOG` | plugin_configs (mmf) | 2 | download backpressure on the extraction queue (#74) |
+| `MAX_ITEMS` | plugin_configs (mmf) | 0 (no cap) | cap per sync run |
+| `DRY_RUN` | plugin_configs (mmf) | false in code — keep `true` in prod | report-only sync |
+| `Scanner:RepairNonUtf8Names` | appsettings / env `Scanner__RepairNonUtf8Names` | false | rename non-UTF-8 file names to valid UTF-8 instead of only warning (#82) |
+| `Plugins:PreferBundled` | env `Plugins__PreferBundled` | false — `true` in prod | image-bundled plugin wins |
 
-### Frontend (Vue.js)
-- **Anvil theme:** warm charcoal (#1c1c1c) + amber (#f59e0b) accent
-- **All API calls** go through `useApi.js` composable — never use fetch/axios directly in components
-- **Forge-* Tailwind classes:** `bg-forge-card`, `border-forge-border`, `text-forge-accent`, etc.
-- **Large components:** PluginsView (1100+ lines), ModelsList (800+ lines) — consider extracting sub-components
-- **No markdown tables** in user-facing text (Telegram/Discord can't render them)
+## Deploy (prod)
+1. Merge to `main`. CI pushes `:main`, `:<sha>`, immutable **`:sha-<short>`** and **`:main-<UTCts>-<sha>`** (#31).
+2. Take the digest of the merge commit's build (run summary lists tags; or `docker buildx imagetools inspect
+   ghcr.io/inxaos-repo/forgekeeper:sha-<short>`).
+3. In **inxaos-flux** `apps/forgekeeper/release.yaml`, set `tag: main@sha256:<digest>` with a comment naming the
+   commit. The **mmf-fetch sidecar** (`ghcr.io/inxaos-repo/forgekeeper-mmf-fetch`) is pinned the same way —
+   bump it only when `sidecars/` changed. Branch `bob/*`, PR, `kubectl kustomize` check, merge, reconcile.
+4. Keep the main container **memory limit at 4Gi** (request 512Mi). With #74 the MMF plugin stays well under it;
+   if it OOMs, lower `MAX_UNZIP_BACKLOG` before raising the limit.
+5. Done when: pod 1/1 with 0 restarts on the new digest, log shows `Loaded plugin: MyMiniFactory v1.1.x … /app/plugins`,
+   migrations applied, no exceptions. Don't roll out while a sync is running unless the boss agrees — it kills it.
 
-### Sync & Downloads (MMF Plugin)
-- **No sync timeout** — syncs run until complete or cancelled via API
-- **Download fallback chain:** Bearer token → Session cookies → Playwright → Archive URL → Constructed archive URL
-- **File pagination:** fetch all pages from `/api/v2/objects/{id}/files` (not just first 100)
-- **object- prefix:** manifest stores `object-12345`, API wants `12345` — strip the prefix
-- **Restore mode:** `RESTORE_MODE=true` skips lastSynced check, still skips existing files on disk
-- **Resume:** `POST /plugins/{slug}/sync?resume=true` picks up from `LastProcessedIndex`
+## Code rules
+- EF: snake_case naming; all `[FromQuery]` params nullable; mark JSONB columns modified after edits; batch
+  `SaveChangesAsync` at ≤50 entities; `.AsNoTracking()` for reads; avoid `.Any(...)` on JSONB collections (SQLite
+  test provider can't translate — use `Count > 0` and filter in memory).
+- Index migrations on big tables use `CREATE INDEX CONCURRENTLY` (non-transactional migration), see #81.
+- API: bulk ops max 500; paging via `PaginatedResult<T>`; long work goes to a background job + status endpoint,
+  never a request handler (the ingress cuts requests at 60s and RequestAborted cancels the work).
+- Frontend: Anvil theme (`#1c1c1c` + amber `#f59e0b`), `forge-*` Tailwind classes, API via `useApi.js` only.
 
-### Testing
-- **330+ tests** — xUnit (unit + integration) + Playwright E2E
-- **TestDbContextFactory** uses SQLite InMemory — some Postgres features don't work (pg_trgm, JSONB .Any())
-- **ForgeTestFactory** (WebApplicationFactory) for API integration tests
-- **E2E tests** run against Docker Compose in GHA CI
-
-### Common Pitfalls (Learned the Hard Way)
-1. **InMemory EF provider** can't translate `PrintHistory.Any(p => p.Result == "success")` — use `Count > 0`
-2. **Postgres parameter limit** (~65K) — batch SaveChangesAsync at 50 entities max
-3. **SPA fallback** catches `/metrics` and other API routes if UseStaticFiles is before MapGet — order matters
-4. **Docker image is ~800MB** (includes Chromium for Playwright) — image pulls take 2+ minutes
-5. **GHCR manifest propagation** takes ~30s after push — E2E step needs retry loop
-6. **NFS file operations** are slow — don't enumerate large directories synchronously in request handlers
-7. **docker-compose.yml image ref** uses `$FORGEKEEPER_IMAGE` env var — CI sets it to GHCR tag, local uses build
-
-## Building & Testing
-
-### Local Development
-```bash
-# Backend (in dev container or with .NET 9 SDK)
-docker compose -f docker-compose.dev.yml up -d
-docker exec forgekeeper-dev bash -c "cd /src && dotnet build"
-docker exec forgekeeper-dev bash -c "cd /src && dotnet test"
-
-# Frontend
-cd src/Forgekeeper.Web && npm run dev
-
-# Full production build
-docker compose build && docker compose up -d
-```
-
-### Running Tests
-```bash
-# All tests
-dotnet test
-
-# Specific test class
-dotnet test --filter "ClassName=NewEndpointTests"
-
-# E2E (requires Docker Compose)
-docker compose --profile test run --rm e2e
-```
-
-## Key Services & What They Do
-| Service | Purpose |
-|---------|---------|
-| `FileScannerService` | Walks source directories, reads metadata.json, upserts models |
-| `SearchService` | pg_trgm fuzzy search with all filter params |
-| `PluginHostService` | Plugin discovery, loading, sync orchestration |
-| `MetadataWritebackService` | Syncs user edits back to metadata.json on disk |
-| `ManifestValidationService` | Validates plugin manifest.json files |
-| `SdkCompatibilityChecker` | Checks plugin SDK version compatibility |
-| `FilenameTemplateParser` | Regex-based template parsing for "Guess from Filename" |
-| `GitHubReleaseResolver` | Resolves plugin releases from GitHub |
-| `PluginInstallService` | Download, verify, extract, install plugins |
-| `PluginRegistryClient` | Fetches and caches the plugin registry |
-| `PluginUpdateTracker` | Tracks available plugin updates for UI badges |
-| `ImportService` | Processes unsorted files, auto-detect, confidence scoring |
-| `ThumbnailService` | Generates STL → WebP thumbnails via stl-thumb |
-
-## Database Entities
-| Entity | Table | Notes |
-|--------|-------|-------|
-| `Model3D` | `models` | Core entity. JSONB: PrintHistory, Components, PrintSettings, Extra |
-| `Creator` | `creators` | Name + source + model count |
-| `Variant` | `variants` | File-level: path, size, type, hash |
-| `Tag` | `tags` | Many-to-many with models via `model_tags` |
-| `Source` | `sources` | Configured scan sources |
-| `SyncRun` | `sync_runs` | Plugin sync history |
-| `ScanState` | `scan_states` | Per-directory scan timestamps |
-| `ImportQueueItem` | `import_queue` | Items pending import review |
-| `PluginConfig` | `plugin_configs` | Per-plugin key-value config |
-| `SavedTemplate` | `saved_templates` | Named templates for filename parsing/reorganization |
-| `ModelRelation` | `model_relations` | Related models (many-to-many self-join) |
-
-## Current Production Deployment
-
-**Live instance:** Private homelab (not publicly accessible)
-
-| Metric | Value |
-|--------|-------|
-| Models indexed | 8,800+ (8,826 at last count) |
-| Creators | 173 |
-| File variants | 200,931 |
-| Library size | 3.6 TB on ZFS over NFS |
-| Thumbnails generated | ~1,400 (worker ongoing) |
-| Tests | 330+ (xUnit + Playwright E2E) |
-| API endpoints | 70+ |
-| Vue components | 13 components, 8 views |
-
-### Infrastructure
-- **Database:** CNPG PostgreSQL 16 cluster on Kubernetes (Longhorn storage)
-- **Storage:** NFS mount from ZFS pool (4 × SATA in RAIDZ1)
-- **Container:** GHCR image (~800MB, includes Chromium for Playwright fallback)
-- **Deployment:** Flux GitOps, `imagePullPolicy: Always` for mutable `main` tag
-- **Monitoring:** Prometheus + Grafana (12-panel dashboard)
-- **CI/CD:** GitHub Actions → build → test → Docker push → E2E
-
-### MMF Plugin Production Notes
-- **FlareSolverr** required for Cloudflare bypass (deployed as separate k8s service)
-- **7,230 models** in the user's MMF library (manifest from data-library API)
-- **4,816 models** were initially "unknown" creator — caused by `object-` prefix bug (now fixed)
-- **Sync takes ~37 hours** for a full 7,230-model pass with downloads
-- **Bearer token** stored in plugin_configs as `__token__download_token`
-- **Session cookies** stored as `__token__session_cookies` (from FlareSolverr login)
-
-### Known Scale Limits
-- **Current ceiling:** ~500K models (after batching/pagination fixes)
-- **Bottleneck at 500K+:** pg_trgm GIN index size, NFS directory enumeration
-- **Bottleneck at 2M+:** Need Elasticsearch/Meilisearch, object storage, table partitioning
-- **Scanner batch size:** 50 entities per SaveChangesAsync (Postgres parameter limit)
-- **Sync timeout:** None (runs until complete or cancelled)
-- **HttpClient download timeout:** 30 minutes per file
-
-### Theme
-- **Anvil theme** (current): warm charcoal `#1c1c1c` + amber `#f59e0b`
-- CSS variables in `src/Forgekeeper.Web/src/style.css` under `@theme`
-- STL viewer mesh color: `#c8b8a8` (warm clay/stone)
-
-## API Overview (70+ endpoints)
-See `docs/api-reference.md` for the full list. Key groups:
-- `/api/v1/models` — CRUD, search, bulk ops, rename, reorganize, parse-filename, duplicates
-- `/api/v1/creators` — list (paginated), detail, models
-- `/api/v1/plugins` — list, sync, cancel, auth, config, history, diagnostics, install/update/remove, registry, reload
-- `/api/v1/scan` — trigger, progress, untracked, verify, health
-- `/api/v1/import` — process, queue, confirm, dismiss, watch-directories, scan-directory
-- `/api/v1/files` — browse (server-side file browser)
-- `/api/v1/templates` — CRUD for saved filename/reorganize templates
-- `/api/v1/export` + `/import/restore` — backup/restore
-- `/api/v1/settings` — read-only config view
-- `/api/v1/stats` — collection statistics
-- `/metrics` — Prometheus
-- `/version` — build info
-- `/mcp/*` — MCP interface (18 tools)
+## Gotchas
+1. Ingress rejects bodies >1 MB (413) and times out at 60s — upload manifests via `kubectl port-forward svc/forgekeeper 15000:5000`.
+2. SPA fallback swallows API routes if static files are mapped before endpoints.
+3. The scanner skips dot-directories (`.forgekeeper-reports`, `.trash-*`) — that's what makes trash safe.
+4. Non-UTF-8 file names used to make the scanner skip files; now it warns, or repairs with `Scanner:RepairNonUtf8Names`.
+5. `object-12345` in the MMF manifest = `12345` for the API.
+6. Image is ~800MB (Chromium for the Playwright fallback); pulls take minutes. GHCR tags take ~30s to appear after push.
+7. NFS is slow: never enumerate big directories inside a request handler.
+8. `file_issues` lookups need the `model_id`/`variant_id` indexes (#56); don't drop them.
+9. `k8s/` in this repo is an example, not prod. Prod is inxaos-flux.
+10. Nothing syncs on a schedule unless `SYNC_INTERVAL_HOURS` > 0.
