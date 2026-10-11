@@ -106,6 +106,50 @@ public static class MmfBoundedIo
         catch { return null; }
     }
 
+    /// <summary>
+    /// Read at most <paramref name="maxBytes"/> of the body as text, then replace <c>resp.Content</c> with an
+    /// equivalent streaming content (prefix + unread remainder) so the body can still be consumed once.
+    /// </summary>
+    public static async Task<string> PeekAndRewindAsync(HttpResponseMessage resp, CancellationToken ct, int maxBytes = 2048)
+    {
+        var old = resp.Content;
+        var src = await old.ReadAsStreamAsync(ct);
+        var buf = new byte[maxBytes];
+        var n = await src.ReadAtLeastAsync(buf, maxBytes, throwOnEndOfStream: false, ct);
+        var replacement = new StreamContent(new PrefixedStream(buf.AsMemory(0, n), src));
+        foreach (var h in old.Headers) replacement.Headers.TryAddWithoutValidation(h.Key, h.Value);
+        resp.Content = replacement;
+        return System.Text.Encoding.UTF8.GetString(buf, 0, n);
+    }
+
+    private sealed class PrefixedStream(ReadOnlyMemory<byte> prefix, Stream rest) : Stream
+    {
+        private ReadOnlyMemory<byte> _prefix = prefix;
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+        public override int Read(Span<byte> buffer)
+        {
+            if (_prefix.IsEmpty) return rest.Read(buffer);
+            var n = Math.Min(buffer.Length, _prefix.Length);
+            _prefix.Span[..n].CopyTo(buffer);
+            _prefix = _prefix[n..];
+            return n;
+        }
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (_prefix.IsEmpty) return rest.ReadAsync(buffer, ct);
+            return ValueTask.FromResult(Read(buffer.Span));
+        }
+        public override Task<int> ReadAsync(byte[] b, int o, int c, CancellationToken ct) => ReadAsync(b.AsMemory(o, c), ct).AsTask();
+        protected override void Dispose(bool disposing) { if (disposing) rest.Dispose(); base.Dispose(disposing); }
+        public override bool CanRead => true; public override bool CanSeek => false; public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long o, SeekOrigin s) => throw new NotSupportedException();
+        public override void SetLength(long v) => throw new NotSupportedException();
+        public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
+    }
+
     private static long SyncAndDrop(FileStream fs, long from)
     {
         fs.Flush(flushToDisk: true);

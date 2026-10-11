@@ -98,6 +98,17 @@ public class MmfBoundedMemoryTests(ITestOutputHelper output) : IDisposable
     }
 
     [Fact]
+    public async Task PeekAndRewind_BodyStillFullyReadable()
+    {
+        var data = new byte[10_000]; new Random(1).NextBytes(data);
+        var resp = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new MemoryStream(data)) };
+        resp.Content.Headers.ContentLength = data.Length;
+        await MmfBoundedIo.PeekAndRewindAsync(resp, default);
+        Assert.Equal(data.Length, resp.Content.Headers.ContentLength);
+        Assert.Equal(data, await resp.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
     public async Task UnzipBacklog_BlocksDownloadsUntilDrained()
     {
         var plugin = new MmfScraperPlugin();

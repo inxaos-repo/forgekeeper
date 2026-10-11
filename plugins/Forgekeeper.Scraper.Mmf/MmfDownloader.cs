@@ -159,8 +159,9 @@ public sealed class MmfDownloader(HttpMessageHandler handler, MmfDownloadOptions
     {
         try
         {
-            // #74: bounded read; never pull a whole (possibly huge) error body into memory.
-            return await MmfBoundedIo.PeekAsync(resp.Content, ct);
+            // #74: bounded read; never pull a whole (possibly huge) body into memory. The body may still be
+            // saved afterwards, so the peeked prefix is stitched back in front of the unread remainder.
+            return await MmfBoundedIo.PeekAndRewindAsync(resp, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { return null; }
