@@ -176,19 +176,47 @@ public class ThumbnailService : IThumbnailService
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
+        // #58: stl-thumb 0.5.0 can't parse OBJ, so feed it a temporary binary STL instead.
+        var renderInput = stlPath;
+        string? tempStl = null;
+        if (stlPath.EndsWith(".obj", StringComparison.OrdinalIgnoreCase)
+            && _config.GetValue("Thumbnails:ConvertObj", true))
+        {
+            try
+            {
+                tempStl = Path.Combine(Path.GetTempPath(), $"fk-obj-{Guid.NewGuid():N}.stl");
+                if (ObjToStl.Convert(stlPath, tempStl) == 0)
+                {
+                    FailedPaths.TryAdd(stlPath, 0);
+                    _logger.LogWarning("[thumbnail] Skipping {Path}: OBJ has no faces", stlPath);
+                    TryDelete(tempStl);
+                    return;
+                }
+                renderInput = tempStl;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OutOfMemoryException)
+            {
+                FailedPaths.TryAdd(stlPath, 0);
+                _logger.LogWarning("[thumbnail] OBJ conversion failed for {Path}: {Error}", stlPath, ex.Message);
+                TryDelete(tempStl);
+                return;
+            }
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName = renderer!,
-            Arguments = $"\"{stlPath}\" \"{outputPath}\" --size {size}",
+            Arguments = $"\"{renderInput}\" \"{outputPath}\" --size {size}",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
 
+        Process? process = null;
         try
         {
-            using var process = Process.Start(psi);
+            process = Process.Start(psi);
             if (process == null)
             {
                 _logger.LogWarning("Failed to start thumbnail renderer: {Renderer}", renderer);
@@ -197,7 +225,7 @@ public class ThumbnailService : IThumbnailService
 
             // Use a timeout to avoid hanging on a single file
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(TimeSpan.FromSeconds(30));
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(_config.GetValue("Thumbnails:TimeoutSeconds", 30.0)));
 
             await process.WaitForExitAsync(timeoutCts.Token);
 
@@ -210,12 +238,38 @@ public class ThumbnailService : IThumbnailService
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
+            // #58: the timed-out renderer used to keep running (and the file was retried
+            // every pass). Kill it and remember the path like any other failure.
+            KillQuietly(process);
+            FailedPaths.TryAdd(stlPath, 0);
             _logger.LogWarning("Thumbnail generation timed out for {Path}", stlPath);
+        }
+        catch (OperationCanceledException)
+        {
+            KillQuietly(process);
+            throw;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Thumbnail generation failed for {Path}", stlPath);
         }
+        finally
+        {
+            process?.Dispose();
+            TryDelete(tempStl);
+        }
+    }
+
+    private static void TryDelete(string? path)
+    {
+        if (path == null) return;
+        try { File.Delete(path); } catch { /* temp file */ }
+    }
+
+    private static void KillQuietly(Process? process)
+    {
+        try { if (process is { HasExited: false }) process.Kill(entireProcessTree: true); }
+        catch { /* already gone */ }
     }
 
     public async Task ProcessPendingAsync(CancellationToken ct = default)
