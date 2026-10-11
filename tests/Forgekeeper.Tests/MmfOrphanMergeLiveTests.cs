@@ -194,3 +194,7 @@ public class MmfOrphanMergeLiveTests : IDisposable
         finally { LibraryMaintenanceGate.Exit("test"); }
     }
 }
+
+/// <summary>The gate is process-wide: holding it would defer scans in other test classes running in parallel.</summary>
+[CollectionDefinition("LibraryMaintenanceGate", DisableParallelization = true)]
+public class LibraryMaintenanceGateCollection;
