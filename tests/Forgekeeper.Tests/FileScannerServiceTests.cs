@@ -266,6 +266,44 @@ public class FileScannerServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ScanAsync_DoesNotWipeDownloadedAt_WhenMetadataLacksIt()
+    {
+        // #76: a rescan of a folder whose metadata.json has no dates.downloaded must not null the column.
+        var dbName = $"TestDb_{Guid.NewGuid()}";
+        CreateModelDirectory("thangs", "Creator1", "Model1", ["a.stl"]);
+        _metadataService.Setup(m => m.ReadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SourceMetadata { Name = "Model1", Dates = new MetadataDates() });
+        await CreateServiceWithSharedDb(dbName).ScanAsync(incremental: false);
+
+        var when = new DateTime(2026, 10, 10, 23, 5, 0, DateTimeKind.Utc);
+        using (var db = TestDbContextFactory.Create(dbName))
+        {
+            (await db.Models.SingleAsync()).DownloadedAt = when;
+            await db.SaveChangesAsync();
+        }
+
+        await CreateServiceWithSharedDb(dbName).ScanAsync(incremental: false);
+
+        using var db2 = TestDbContextFactory.Create(dbName);
+        Assert.Equal(when, (await db2.Models.SingleAsync()).DownloadedAt);
+    }
+
+    [Fact]
+    public async Task ScanAsync_SetsDownloadedAt_FromMetadataDatesDownloaded()
+    {
+        var dbName = $"TestDb_{Guid.NewGuid()}";
+        CreateModelDirectory("thangs", "Creator1", "Model1", ["a.stl"]);
+        var when = new DateTime(2026, 10, 11, 0, 31, 0, DateTimeKind.Utc);
+        _metadataService.Setup(m => m.ReadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SourceMetadata { Name = "Model1", Dates = new MetadataDates { Downloaded = when } });
+
+        await CreateServiceWithSharedDb(dbName).ScanAsync(incremental: false);
+
+        using var db = TestDbContextFactory.Create(dbName);
+        Assert.Equal(when, (await db.Models.SingleAsync()).DownloadedAt);
+    }
+
+    [Fact]
     public async Task ScanAsync_IncrementalSkipsUnchangedDirectories()
     {
         var dbName = $"TestDb_{Guid.NewGuid()}";
