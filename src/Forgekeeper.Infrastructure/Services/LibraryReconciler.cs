@@ -99,6 +99,88 @@ public sealed class SourceIdIndex
     }
 }
 
+/// <summary>
+/// "Info-only" folders: a model folder that holds only a metadata.json sidecar (or nothing, or only
+/// previews/notes) and no actual model files. NEW_ONLY must not treat such a folder as "already in
+/// library" — it is downloaded into the existing folder instead (in place, same DB row).
+/// </summary>
+public static class ModelFolderContent
+{
+    /// <summary>Extensions that count as real model content (meshes, slicer projects, archives).</summary>
+    public static readonly IReadOnlySet<string> ContentExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ".stl", ".obj", ".3mf", ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".lys", ".lyt", ".chitubox",
+        ".ctb", ".cbddlp", ".pwmx", ".pwmo", ".goo", ".prz", ".photon", ".sl1", ".blend", ".step", ".stp",
+        ".gcode", ".ply", ".fbx", ".amf", ".ztl", ".skp", ".max", ".ma", ".mb", ".c4d", ".dae", ".glb", ".gltf",
+    };
+
+    /// <summary>True when <paramref name="dir"/> (recursively, ignoring hidden entries and .part files) contains at least one content file.</summary>
+    public static bool HasContentFiles(string dir)
+    {
+        try
+        {
+            if (!Directory.Exists(dir)) return false;
+            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+            {
+                var rel = Path.GetRelativePath(dir, f);
+                if (rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(s => s.StartsWith('.')))
+                    continue;
+                if (ContentExtensions.Contains(Path.GetExtension(f))) return true;
+            }
+            return false;
+        }
+        catch { return true; } // unreadable: don't claim it is empty (never trigger a re-download on I/O errors)
+    }
+
+    /// <summary>An existing folder that has no content files (sidecar-only, empty, previews only).</summary>
+    public static bool IsInfoOnly(string? dir) => dir != null && Directory.Exists(dir) && !HasContentFiles(dir);
+
+    /// <summary>Every info-only model folder under &lt;sourceDir&gt;/&lt;creator&gt;/&lt;model&gt; (hidden folders skipped).</summary>
+    public static IReadOnlyList<InfoOnlyFolder> FindInfoOnly(string sourceDir)
+    {
+        var result = new List<InfoOnlyFolder>();
+        foreach (var creator in SourceIdIndex.SafeDirs(sourceDir).OrderBy(d => d, StringComparer.Ordinal))
+        foreach (var model in SourceIdIndex.SafeDirs(creator).OrderBy(d => d, StringComparer.Ordinal))
+        {
+            if (HasContentFiles(model)) continue;
+            var meta = Path.Combine(model, "metadata.json");
+            result.Add(new InfoOnlyFolder(Path.GetFileName(creator), Path.GetFileName(model), model,
+                File.Exists(meta), SourceIdIndex.ReadExternalId(meta), ReadExpectedBytes(meta)));
+        }
+        return result;
+    }
+
+    /// <summary>Sum of files[].size in a metadata.json sidecar, if present.</summary>
+    public static long? ReadExpectedBytes(string metadataPath)
+    {
+        if (!File.Exists(metadataPath)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(metadataPath));
+            if (!doc.RootElement.TryGetProperty("files", out var files) || files.ValueKind != JsonValueKind.Array) return null;
+            long total = 0;
+            foreach (var f in files.EnumerateArray())
+                if (f.ValueKind == JsonValueKind.Object && f.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number && sz.TryGetInt64(out var n))
+                    total += n;
+            return total;
+        }
+        catch { return null; }
+    }
+}
+
+public sealed record InfoOnlyFolder(string Creator, string Folder, string Path, bool HasMetadata, string? ExternalId, long? ExpectedBytes);
+
+/// <summary>NEW_ONLY selection decision for one manifest item.</summary>
+public enum DownloadSelection
+{
+    /// <summary>Already in library with content (or ambiguous) — skip.</summary>
+    Skip,
+    /// <summary>Nothing on disk — download into a new folder.</summary>
+    New,
+    /// <summary>Folder exists (by id or name) but holds no content files — download into it in place.</summary>
+    RepairInfoOnly,
+}
+
 /// <summary>Pure classification + report writing for DRY_RUN and the unknown/ re-home plan.</summary>
 public static class LibraryReconciler
 {
@@ -149,6 +231,23 @@ public static class LibraryReconciler
         }
 
         return new(model.ExternalId, model.Name, model.CreatorName, ReconcileStatus.New, null, target, null, sources);
+    }
+
+    /// <summary>
+    /// NEW_ONLY decision. An item is "already in library" only when its folder has real content files;
+    /// sidecar-only / empty folders are selected for an in-place repair. Conflicts are never selected.
+    /// </summary>
+    public static DownloadSelection SelectForDownload(ReconcileEntry entry, Func<string, bool>? hasContent = null)
+    {
+        hasContent ??= ModelFolderContent.HasContentFiles;
+        return entry.Status switch
+        {
+            ReconcileStatus.New => DownloadSelection.New,
+            ReconcileStatus.OnDiskById or ReconcileStatus.OnDiskByName
+                when entry.ExistingPath != null && Directory.Exists(entry.ExistingPath) && !hasContent(entry.ExistingPath)
+                => DownloadSelection.RepairInfoOnly,
+            _ => DownloadSelection.Skip,
+        };
     }
 
     private static bool SamePath(string a, string b) =>

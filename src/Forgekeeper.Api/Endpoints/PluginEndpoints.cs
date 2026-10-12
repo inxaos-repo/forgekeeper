@@ -541,6 +541,26 @@ public static class PluginEndpoints
         }).WithName("UploadPluginManifest")
         .DisableAntiforgery();
 
+        // GET /api/v1/plugins/{slug}/maintenance/info-only — read-only: model folders that hold only a
+        // metadata.json sidecar (or nothing) and no content files. NEW_ONLY syncs re-download these in place.
+        group.MapGet("/{slug}/maintenance/info-only", async (string slug, int? limit, PluginHostService pluginHost, CancellationToken ct) =>
+        {
+            if (pluginHost.GetPlugin(slug) is null) return Results.NotFound(new { message = $"Plugin '{slug}' not found" });
+            var (dir, folders) = await pluginHost.ListInfoOnlyAsync(slug, ct);
+            var byCreator = folders.GroupBy(f => f.Creator)
+                .Select(g => new { creator = g.Key, count = g.Count(), expectedBytes = g.Sum(f => f.ExpectedBytes ?? 0) })
+                .OrderByDescending(x => x.count).ThenBy(x => x.creator).ToList();
+            return Results.Ok(new
+            {
+                sourceDirectory = dir,
+                total = folders.Count,
+                withMetadata = folders.Count(f => f.HasMetadata),
+                expectedBytes = folders.Sum(f => f.ExpectedBytes ?? 0),
+                byCreator,
+                folders = folders.Take(Math.Clamp(limit ?? 1000, 0, 100000)),
+            });
+        }).WithName("ListPluginInfoOnlyFolders");
+
         // POST /api/v1/plugins/{slug}/rehome/plan — offline: write a rehome-unknown report
         // from the latest uploaded manifest. Moves nothing.
         group.MapPost("/{slug}/rehome/plan", async (string slug, PluginHostService pluginHost, CancellationToken ct) =>
@@ -644,6 +664,7 @@ public static class PluginEndpoints
             TotalModels = status.TotalModels,
             ScrapedModels = status.ScrapedModels,
             FailedModels = status.FailedModels,
+            RepairedInfoOnly = status.RepairedInfoOnly,
             Error = status.Error,
             CurrentProgress = status.CurrentProgress is not null ? new ScrapeProgressResponse
             {
@@ -697,6 +718,8 @@ public class PluginSyncStatusResponse
     public int TotalModels { get; set; }
     public int ScrapedModels { get; set; }
     public int FailedModels { get; set; }
+    /// <summary>Info-only (sidecar-only / empty) folders filled in place during the current/last sync.</summary>
+    public int RepairedInfoOnly { get; set; }
     public string? Error { get; set; }
     public ScrapeProgressResponse? CurrentProgress { get; set; }
 }
