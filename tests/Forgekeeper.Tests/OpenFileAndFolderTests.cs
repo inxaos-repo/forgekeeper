@@ -124,7 +124,7 @@ public class OpenFileEndpointTests : IClassFixture<OpenFileTestFactory>
     }
 
     [Fact]
-    public async Task Detail_includes_windows_paths_and_links()
+    public async Task Detail_includes_windows_paths_but_no_explorer_links_by_default()
     {
         var dir = Path.Combine(_factory.Root, "Creator", "Model");
         Directory.CreateDirectory(dir);
@@ -133,14 +133,18 @@ public class OpenFileEndpointTests : IClassFixture<OpenFileTestFactory>
 
         var json = JsonDocument.Parse(await _client.GetStringAsync($"/api/v1/models/{modelId}")).RootElement;
         Assert.Equal(@"\\samba.k8s.inxaos.com\warehousepool\3d printing\Creator\Model", json.GetProperty("windowsBasePath").GetString());
-        Assert.Equal("file://samba.k8s.inxaos.com/warehousepool/3d%20printing/Creator/Model", json.GetProperty("baseFileUrl").GetString());
-        Assert.StartsWith("forgekeeper-open://open?path=", json.GetProperty("openFolderUrl").GetString());
+        Assert.True(IsNullOrMissing(json, "baseFileUrl"));
+        Assert.True(IsNullOrMissing(json, "openFolderUrl"));
 
         var v = json.GetProperty("variants")[0];
         Assert.Equal(Path.Combine(dir, "part.stl"), v.GetProperty("absolutePath").GetString());
         Assert.Equal(@"\\samba.k8s.inxaos.com\warehousepool\3d printing\Creator\Model\part.stl", v.GetProperty("windowsPath").GetString());
-        Assert.StartsWith("forgekeeper-open://select?path=", v.GetProperty("revealUrl").GetString());
+        Assert.True(IsNullOrMissing(v, "revealUrl"));
+        Assert.True(IsNullOrMissing(v, "fileUrl"));
     }
+
+    internal static bool IsNullOrMissing(JsonElement e, string name)
+        => !e.TryGetProperty(name, out var p) || p.ValueKind == JsonValueKind.Null;
 
     [Fact]
     public async Task Download_streams_attachment_and_inline()
@@ -190,6 +194,58 @@ public class OpenFileEndpointTests : IClassFixture<OpenFileTestFactory>
         var json = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/files/path-mapping")).RootElement;
         Assert.True(json.GetProperty("configured").GetBoolean());
         Assert.Equal(_factory.Root, json.GetProperty("linuxRoot").GetString());
-        Assert.Equal("forgekeeper-open", json.GetProperty("protocolScheme").GetString());
+        Assert.False(json.GetProperty("explorerProtocolEnabled").GetBoolean());
+        Assert.True(OpenFileEndpointTests.IsNullOrMissing(json, "protocolScheme"));
+    }
+}
+
+public class ExplorerEnabledTestFactory : OpenFileTestFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Library:EnableExplorerProtocol"] = "true",
+        }));
+    }
+}
+
+public class ExplorerProtocolEnabledTests : IClassFixture<ExplorerEnabledTestFactory>
+{
+    private readonly ExplorerEnabledTestFactory _factory;
+    private readonly HttpClient _client;
+
+    public ExplorerProtocolEnabledTests(ExplorerEnabledTestFactory factory)
+    {
+        _factory = factory;
+        _client = factory.CreateClient();
+    }
+
+    [Fact]
+    public async Task Detail_includes_explorer_links_when_enabled()
+    {
+        var dir = Path.Combine(_factory.Root, "CE", "ME");
+        Directory.CreateDirectory(dir);
+        Guid modelId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var creator = new Creator { Id = Guid.NewGuid(), Name = $"C_{Guid.NewGuid():N}", Source = SourceType.Manual };
+            var model = new Model3D { Id = Guid.NewGuid(), Name = "E", CreatorId = creator.Id, Creator = creator, BasePath = dir, Source = SourceType.Manual };
+            var variant = new Variant { Id = Guid.NewGuid(), ModelId = model.Id, Model = model, FilePath = "p.stl", FileName = "p.stl", FileType = FileType.Stl, VariantType = VariantType.Unsupported };
+            db.Creators.Add(creator); db.Models.Add(model); db.Variants.Add(variant);
+            await db.SaveChangesAsync();
+            modelId = model.Id;
+        }
+
+        var json = JsonDocument.Parse(await _client.GetStringAsync($"/api/v1/models/{modelId}")).RootElement;
+        Assert.Equal("file://samba.k8s.inxaos.com/warehousepool/3d%20printing/CE/ME", json.GetProperty("baseFileUrl").GetString());
+        Assert.StartsWith("forgekeeper-open://open?path=", json.GetProperty("openFolderUrl").GetString());
+        Assert.StartsWith("forgekeeper-open://select?path=", json.GetProperty("variants")[0].GetProperty("revealUrl").GetString());
+
+        var map = JsonDocument.Parse(await _client.GetStringAsync("/api/v1/files/path-mapping")).RootElement;
+        Assert.True(map.GetProperty("explorerProtocolEnabled").GetBoolean());
+        Assert.Equal("forgekeeper-open", map.GetProperty("protocolScheme").GetString());
     }
 }

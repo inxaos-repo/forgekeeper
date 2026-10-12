@@ -562,6 +562,7 @@ watch(() => route.params.id, fetchModel)
                       :title="'Copy folder path: ' + variantFolderPath(variant, model)"
                       @click.stop="copyPath(variantFolderPath(variant, model), 'd:' + variant.id)"
                     >{{ copiedKey === 'd:' + variant.id ? 'Copied!' : 'Copy folder' }}</button>
+                    <!-- Only present when Library__EnableExplorerProtocol=true (off by default, unsupported) -->
                     <button
                       v-if="variant.revealUrl"
                       class="text-forge-accent hover:text-forge-accent-hover text-xs font-medium"
@@ -820,6 +821,7 @@ watch(() => route.params.id, fetchModel)
                 class="text-forge-accent hover:text-forge-accent-hover font-medium"
                 @click="copyPath(modelFolderPath(model), 'model')"
               >{{ copiedKey === 'model' ? 'Copied!' : copiedKey === 'fail:model' ? 'Copy failed' : '📋 Copy folder path' }}</button>
+              <!-- Explorer + file:// links: only when Library__EnableExplorerProtocol=true (off by default, unsupported) -->
               <button
                 v-if="model.openFolderUrl"
                 class="text-forge-accent hover:text-forge-accent-hover font-medium"

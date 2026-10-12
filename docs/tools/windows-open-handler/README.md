@@ -1,5 +1,9 @@
 # forgekeeper-open:// (Windows Explorer handler)
 
+> **Unsupported / unused.** We decided not to ship a Windows Explorer helper. The Explorer buttons and the
+> `file://` link are hidden unless `Library__EnableExplorerProtocol=true` (default `false`). Use **Copy path** /
+> **Copy folder** instead. This folder is kept for reference only.
+
 Optional. It makes the **Explorer** / **Open in Explorer** buttons on the model page open Windows Explorer
 at the model folder, or at the folder with the file selected. Without it, use **Copy path** / **Copy folder** and
 paste the path into Explorer (Win+E, then Ctrl+L, then Ctrl+V).

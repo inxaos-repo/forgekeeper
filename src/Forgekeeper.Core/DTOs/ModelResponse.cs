@@ -45,9 +45,9 @@ public class ModelDetailResponse : ModelResponse
 
     /// <summary>Model folder as a Windows path (Library:WindowsPathPrefix), null if not configured.</summary>
     public string? WindowsBasePath { get; set; }
-    /// <summary>file:// URL of the model folder (Chrome blocks these from https; copy is the reliable path).</summary>
+    /// <summary>file:// URL of the model folder Only set when Library:EnableExplorerProtocol=true (off by default; Chrome blocks these).</summary>
     public string? BaseFileUrl { get; set; }
-    /// <summary>forgekeeper-open:// URL that opens the folder in Explorer (needs the handler from docs/tools).</summary>
+    /// <summary>forgekeeper-open:// URL that opens the folder in Explorer Only set when Library:EnableExplorerProtocol=true (off by default, unsupported).</summary>
     public string? OpenFolderUrl { get; set; }
 }
 
@@ -76,8 +76,9 @@ public class VariantResponse
     public string? AbsolutePath { get; set; }
     /// <summary>Windows path of the file, null if Library:WindowsPathPrefix isn't set.</summary>
     public string? WindowsPath { get; set; }
+    /// <summary>file:// URL of the file. Only set when Library:EnableExplorerProtocol=true.</summary>
     public string? FileUrl { get; set; }
-    /// <summary>forgekeeper-open://select?... — Explorer opens the folder with this file selected.</summary>
+    /// <summary>forgekeeper-open://select?... — Only set when Library:EnableExplorerProtocol=true (off by default, unsupported).</summary>
     public string? RevealUrl { get; set; }
 }
 

@@ -17,7 +17,8 @@ public static class FileEndpoints
                 linuxRoot = lib.LinuxRoot,
                 windowsPathPrefix = lib.WindowsPathPrefix,
                 configured = lib.WindowsPathPrefix != null,
-                protocolScheme = Forgekeeper.Core.Services.LibraryPathMapper.ProtocolScheme,
+                explorerProtocolEnabled = lib.EnableExplorerProtocol,
+                protocolScheme = lib.EnableExplorerProtocol ? Forgekeeper.Core.Services.LibraryPathMapper.ProtocolScheme : null,
             });
         }).WithName("GetPathMapping");
 
