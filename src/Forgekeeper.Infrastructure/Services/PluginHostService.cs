@@ -260,6 +260,7 @@ public class PluginHostService : BackgroundService
         status.LastSyncAt = DateTime.UtcNow;
         status.Error = null;
         status.NeedsReauth = false;
+        status.RepairedInfoOnly = 0;
 
         // Create SyncRun record
         var syncRunId = Guid.NewGuid();
@@ -279,7 +280,7 @@ public class PluginHostService : BackgroundService
             await db.SaveChangesAsync(ct);
         }
 
-        int scraped = 0, failed = 0, skipped = 0;
+        int scraped = 0, failed = 0, skipped = 0, repairedInfoOnly = 0;
         int filesDownloaded = 0; long bytesDownloaded = 0;
         int? pausedAtIndex = null;
         string syncStatus = "completed";
@@ -502,7 +503,8 @@ public class PluginHostService : BackgroundService
                 }
 
                 // Phase 2: only download items classified New; never re-download by id unless forced.
-                if (newOnly && !IsSelectedForDownload(model, idIndex, context.SourceDirectory))
+                var selection = newOnly ? SelectForDownload(model, idIndex, context.SourceDirectory) : DownloadSelection.New;
+                if (selection == DownloadSelection.Skip)
                 {
                     RecordSkip(model, currentIndex, "not new (already in library)");
                     processedSinceLastUpdate++;
@@ -571,6 +573,12 @@ public class PluginHostService : BackgroundService
                 {
                     ledgerDirty |= failedLedger.RecordSuccess(model.ExternalId);
                     scraped++;
+                    if (selection == DownloadSelection.RepairInfoOnly)
+                    {
+                        repairedInfoOnly++;
+                        status.RepairedInfoOnly = repairedInfoOnly;
+                        _logger.LogInformation("[{Slug}] Repaired info-only folder {Id} in place: {Dir}", slug, model.ExternalId, modelDir);
+                    }
                     var (fc, fb) = CountDownloaded(result.Files);
                     filesDownloaded += fc;
                     bytesDownloaded += fb;
@@ -641,8 +649,8 @@ public class PluginHostService : BackgroundService
                 catch (Exception ex) { _logger.LogWarning(ex, "[{Slug}] Could not write skip list", slug); }
             }
 
-            _logger.LogInformation("[{Slug}] Sync complete: {Scraped} scraped, {Failed} failed, {Skipped} skipped",
-                slug, scraped, failed, skipped);
+            _logger.LogInformation("[{Slug}] Sync complete: {Scraped} scraped ({Repaired} info-only folders repaired), {Failed} failed, {Skipped} skipped",
+                slug, scraped, repairedInfoOnly, failed, skipped);
             // #28: run-level sanity check — many "scraped" items but zero bytes means something
             // upstream (auth, CDN) silently broke. Flag it on the run instead of a clean "completed".
             var suspicion = HollowRunWarning(scraped, filesDownloaded, bytesDownloaded);
@@ -1322,10 +1330,27 @@ public class PluginHostService : BackgroundService
         return TimeSpan.Zero; // Disabled by default
     }
 
-    /// <summary>True when an item is New (not on disk by id or name) — the only items a New-only sync downloads.</summary>
+    /// <summary>
+    /// True when a New-only sync should download the item: it is New (not on disk by id or name), or its
+    /// existing folder is info-only (metadata.json sidecar / empty, no content files) and gets repaired in place.
+    /// </summary>
     internal static bool IsSelectedForDownload(ScrapedModel model, SourceIdIndex idIndex, string sourceDir) =>
-        LibraryReconciler.Classify(model, idIndex, sourceDir,
-            (c, n) => FindExistingModelDir(sourceDir, c, n), SanitizePath).Status == ReconcileStatus.New;
+        SelectForDownload(model, idIndex, sourceDir) != DownloadSelection.Skip;
+
+    internal static DownloadSelection SelectForDownload(ScrapedModel model, SourceIdIndex idIndex, string sourceDir) =>
+        LibraryReconciler.SelectForDownload(LibraryReconciler.Classify(model, idIndex, sourceDir,
+            (c, n) => FindExistingModelDir(sourceDir, c, n), SanitizePath));
+
+    /// <summary>List info-only model folders (sidecar-only / empty, no content files) for a plugin's source dir. Read-only.</summary>
+    public async Task<(string SourceDirectory, IReadOnlyList<InfoOnlyFolder> Folders)> ListInfoOnlyAsync(string slug, CancellationToken ct)
+    {
+        if (!_plugins.TryGetValue(slug, out var loaded))
+            throw new InvalidOperationException($"Plugin '{slug}' not found");
+        var context = await BuildPluginContextAsync(slug, loaded.Scraper, ct);
+        var dir = context.SourceDirectory;
+        var folders = await Task.Run(() => ModelFolderContent.FindInfoOnly(dir), ct);
+        return (dir, folders);
+    }
 
     /// <summary>Config value, falling back to the plugin schema's DefaultValue.</summary>
     internal static string? GetConfigOrDefault(ILibraryScraper scraper, IReadOnlyDictionary<string, string> config, string key) =>
@@ -1556,6 +1581,9 @@ public class PluginSyncStatus
 
     /// <summary>Set when a sync paused because the source rejected our token; cleared on next sync start.</summary>
     public bool NeedsReauth { get; set; }
+
+    /// <summary>Info-only (sidecar-only / empty) folders filled in place during the current/last sync.</summary>
+    public int RepairedInfoOnly { get; set; }
 
     /// <summary>Path of the last DRY_RUN report (JSON), if any.</summary>
     public string? LastReportPath { get; set; }
