@@ -1300,6 +1300,12 @@ Returns full diagnostic information for a loaded plugin.
 
 ### `GET /api/v1/variants/{id}/download` — Download Variant File
 
+Query: `inline=true` omits the attachment filename, so the browser shows images and PDFs in a tab. Range requests are supported.
+The resolved path must stay inside the model folder and a configured library root, otherwise the response is **403**.
+`GET /api/v1/models/{id}` also returns `windowsBasePath`, `baseFileUrl`, `openFolderUrl`, and per variant `absolutePath`,
+`windowsPath`, `fileUrl`, `revealUrl` (see configuration.md, "Open file / folder").
+`GET /api/v1/files/path-mapping` returns `{ linuxRoot, windowsPathPrefix, configured, protocolScheme }`.
+
 Returns the file directly with appropriate content type (`model/stl`, `model/obj`, `model/3mf`, etc.).
 
 ### `GET /api/v1/variants/{id}/thumbnail` — Get Variant Thumbnail

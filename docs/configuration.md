@@ -231,3 +231,26 @@ The middleware (`ApiKeyMiddleware`) checks for the `X-Api-Key` header on every r
 - Use `FORGEKEEPER_ENCRYPTION_KEY` to protect stored plugin credentials
 - In Kubernetes, use Secrets (not ConfigMaps) for sensitive values
 - Generate keys with `openssl rand -hex 32`
+
+## Open file / folder (Windows paths)
+
+The model page has buttons to open a file or its folder. To make the copied paths work on Windows, map the
+container library root to the Windows share:
+
+| Setting | Env var | Default | Notes |
+|---|---|---|---|
+| `Library:WindowsPathPrefix` | `Library__WindowsPathPrefix` | unset | e.g. `\\samba.k8s.inxaos.com\warehousepool\3d printing` (or `W:\3d printing` if mapped) |
+| `Library:LinuxRoot` | `Library__LinuxRoot` | first `Storage:BasePaths` | Container path that the prefix replaces (`/library` in k8s) |
+
+In the inxaos cluster, `/library` is NFS `192.168.4.10:/warehousepool/3d printing`. The `samba` deployment
+(LB `192.168.2.178`, `samba.k8s.inxaos.com`) serves the same tree as share `warehousepool`, and arrakis has it mapped as `W:`.
+
+How the buttons behave:
+- **Open** (PDF and images only): `GET /api/v1/variants/{id}/download?inline=true` opens in a new tab.
+- **Download**: streams the file as an attachment. In Chrome, clicking the finished download opens it in the default app (the slicer for STL).
+- **Copy path** / **Copy folder** / **📋 Copy folder path**: copy the Windows path, or the container path if no prefix is set. This always works.
+- **Explorer** / **🗂️ Open in Explorer**: `forgekeeper-open://` links. These need the optional handler in `docs/tools/windows-open-handler/`.
+- **file:// link**: shown for completeness. Chrome blocks `file://` navigation from https pages, so use Copy instead.
+
+Downloads are restricted to paths inside the model folder and a configured library root. Anything outside returns 403.
+`GET /api/v1/files/path-mapping` shows the active mapping.

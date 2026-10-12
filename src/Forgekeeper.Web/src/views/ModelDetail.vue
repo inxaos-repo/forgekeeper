@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi.js'
 import StlViewer from '../components/StlViewer.vue'
 import { pickDefaultPreview } from '../utils/viewer.js'
+import { variantCopyPath, variantFolderPath, modelFolderPath, isBrowserViewable, copyText } from '../utils/paths.js'
 import SourceBadge from '../components/SourceBadge.vue'
 import StarRating from '../components/StarRating.vue'
 import TagEditor from '../components/TagEditor.vue'
@@ -17,6 +18,15 @@ import Breadcrumbs from '../components/Breadcrumbs.vue'
 const route = useRoute()
 const router = useRouter()
 const api = useApi()
+
+// Open file / open folder (see docs/configuration.md "Open file / folder")
+const copiedKey = ref('')
+async function copyPath(text, key) {
+  const ok = await copyText(text)
+  copiedKey.value = ok ? key : `fail:${key}`
+  setTimeout(() => { if (copiedKey.value.endsWith(key)) copiedKey.value = '' }, 1800)
+}
+function openUrl(url) { if (url) window.location.href = url }
 
 const model = ref(null)
 const allTags = ref([])
@@ -528,13 +538,36 @@ watch(() => route.params.id, fetchModel)
                     </span>
                     <span class="text-xs text-forge-text-muted">{{ formatSize(variant.fileSizeBytes) }}</span>
                     <a
+                      v-if="isBrowserViewable(variant.fileName)"
+                      :href="api.getVariantDownloadUrl(variant.id) + '?inline=true'"
+                      target="_blank" rel="noopener"
+                      class="text-forge-accent hover:text-forge-accent-hover text-xs font-medium"
+                      title="Open in a new browser tab"
+                      @click.stop
+                    >Open</a>
+                    <a
                       :href="api.getVariantDownloadUrl(variant.id)"
                       class="text-forge-accent hover:text-forge-accent-hover text-xs font-medium"
+                      title="Download (Chrome: click the download to open it in your default app)"
                       @click.stop
                       download
-                    >
-                      Download
-                    </a>
+                    >Download</a>
+                    <button
+                      class="text-forge-accent hover:text-forge-accent-hover text-xs font-medium"
+                      :title="'Copy file path: ' + variantCopyPath(variant, model)"
+                      @click.stop="copyPath(variantCopyPath(variant, model), 'f:' + variant.id)"
+                    >{{ copiedKey === 'f:' + variant.id ? 'Copied!' : 'Copy path' }}</button>
+                    <button
+                      class="text-forge-accent hover:text-forge-accent-hover text-xs font-medium"
+                      :title="'Copy folder path: ' + variantFolderPath(variant, model)"
+                      @click.stop="copyPath(variantFolderPath(variant, model), 'd:' + variant.id)"
+                    >{{ copiedKey === 'd:' + variant.id ? 'Copied!' : 'Copy folder' }}</button>
+                    <button
+                      v-if="variant.revealUrl"
+                      class="text-forge-accent hover:text-forge-accent-hover text-xs font-medium"
+                      title="Show in Explorer (needs the forgekeeper-open handler, docs/tools/windows-open-handler)"
+                      @click.stop="openUrl(variant.revealUrl)"
+                    >Explorer</button>
                   </div>
                 </div>
               </div>
@@ -779,8 +812,27 @@ watch(() => route.params.id, fetchModel)
           </a>
 
           <!-- Filesystem path -->
-          <div class="text-xs text-forge-text-muted bg-forge-bg rounded-lg px-3 py-2 font-mono break-all">
-            📁 {{ model.basePath }}
+          <div class="text-xs text-forge-text-muted bg-forge-bg rounded-lg px-3 py-2 space-y-2">
+            <div class="font-mono break-all">📁 {{ modelFolderPath(model) }}</div>
+            <div v-if="model.windowsBasePath" class="font-mono break-all opacity-70">🐧 {{ model.basePath }}</div>
+            <div class="flex flex-wrap gap-3">
+              <button
+                class="text-forge-accent hover:text-forge-accent-hover font-medium"
+                @click="copyPath(modelFolderPath(model), 'model')"
+              >{{ copiedKey === 'model' ? 'Copied!' : copiedKey === 'fail:model' ? 'Copy failed' : '📋 Copy folder path' }}</button>
+              <button
+                v-if="model.openFolderUrl"
+                class="text-forge-accent hover:text-forge-accent-hover font-medium"
+                title="Needs the forgekeeper-open handler (docs/tools/windows-open-handler)"
+                @click="openUrl(model.openFolderUrl)"
+              >🗂️ Open in Explorer</button>
+              <a
+                v-if="model.baseFileUrl"
+                :href="model.baseFileUrl"
+                class="text-forge-text-muted hover:text-forge-accent"
+                title="file:// link. Chrome blocks these from https pages; right-click → copy link, or use Copy folder path"
+              >file:// link</a>
+            </div>
           </div>
         </div>
 
