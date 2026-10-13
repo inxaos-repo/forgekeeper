@@ -22,7 +22,6 @@ namespace Forgekeeper.Infrastructure.Services;
 /// </summary>
 public class MmfOrphanMergeService(ForgeDbContext db, IMetadataService metadata, ILogger<MmfOrphanMergeService> logger)
 {
-    private static readonly Regex MmfId = new(@"^(object-)?\d+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex NonWord = new(@"[^\p{L}\p{N}]+", RegexOptions.Compiled);
 
     public record PairInfo(Guid OrphanId, Guid KeepId, string Creator, string Name, string OrphanPath, string KeepPath,
@@ -44,7 +43,8 @@ public class MmfOrphanMergeService(ForgeDbContext db, IMetadataService metadata,
 
     /// <summary>True when the identity looks like a real MyMiniFactory object (numeric/object-NNN id or MMF URL).</summary>
     public static bool IsMmfIdentity(string? sourceId, string? sourceUrl) =>
-        (!string.IsNullOrWhiteSpace(sourceId) && MmfId.IsMatch(sourceId.Trim()))
+        // Leading zeros rejected: "001" is a Google Drive export suffix, not an MMF object (see SourceDetector).
+        Forgekeeper.Core.Services.SourceDetector.IsMmfId(sourceId)
         || (sourceUrl?.Contains("myminifactory.com", StringComparison.OrdinalIgnoreCase) ?? false);
 
     public static string NormalizeName(string? name) =>

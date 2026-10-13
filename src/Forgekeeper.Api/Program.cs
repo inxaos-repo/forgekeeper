@@ -47,6 +47,7 @@ builder.Services.AddDbContext<ForgeDbContext>(options =>
 builder.Services.AddScoped<MetadataWritebackService>();
 builder.Services.AddScoped<FileIssueService>();
 builder.Services.AddScoped<MmfOrphanMergeService>();
+builder.Services.AddScoped<SourceRecategorizeService>();
 builder.Services.AddSingleton(sp => new MmfOrphanMergeJob(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<IScannerService>(),
@@ -114,6 +115,23 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 var app = builder.Build();
+
+// CLI mode: forgekeeper source-recategorize [--apply] [--no-files] [--report-dir DIR]
+// DRY-RUN by default. Never migrates: the schema must already be at the current migration.
+if (args.Length > 0 && args[0] == "source-recategorize")
+{
+    var apply = args.Contains("--apply");
+    var readFiles = !args.Contains("--no-files");
+    var dirIdx = Array.IndexOf(args, "--report-dir");
+    var reportDir = dirIdx >= 0 && dirIdx + 1 < args.Length ? args[dirIdx + 1] : "/tmp";
+    using var cliScope = app.Services.CreateScope();
+    var svc = cliScope.ServiceProvider.GetRequiredService<SourceRecategorizeService>();
+    var report = await svc.RunAsync(apply, readFiles);
+    Console.WriteLine(SourceRecategorizeService.Format(report));
+    var path = await MmfOrphanMergeService.WriteReportAsync(reportDir, apply ? "source-recategorize-applied" : "source-recategorize-dryrun", report);
+    Console.WriteLine($"full report: {path}");
+    return 0;
+}
 
 // Apply migrations on startup (skip for InMemory/testing)
 if (!app.Environment.IsEnvironment("Testing"))

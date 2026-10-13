@@ -1,3 +1,4 @@
+using Forgekeeper.Core.Services;
 using System.Text.Json;
 using Forgekeeper.Core.DTOs;
 using Forgekeeper.Core.Enums;
@@ -330,25 +331,31 @@ public class FileScannerService : IScannerService
             ?? metadata?.Creator?.Username
             ?? parsed.CreatorName);
 
-        var creator = await db.Creators.FirstOrDefaultAsync(
-            c => c.Name == creatorName && c.Source == parsed.Source, ct)
-            // Also check the local cache for creators added in this batch (not yet saved)
-            ?? db.Creators.Local.FirstOrDefault(c => c.Name == creatorName && c.Source == parsed.Source);
-
-        if (creator == null)
+        // Decide the source BEFORE resolving the creator, so a Patreon/Unknown model in the
+        // sources/mmf catch-all doesn't hang off the MMF identity of the same creator.
+        var existingRow = await db.Models.AsNoTracking()
+            .Where(m => m.BasePath == modelDir)
+            .Select(m => new { m.SourceId, m.SourceUrl, m.SourceDetection, m.Source })
+            .FirstOrDefaultAsync(ct);
+        var decision = SourceDetector.Detect(new SourceEvidence
         {
-            creator = new Creator
-            {
-                Id = Guid.NewGuid(),
-                Name = creatorName,
-                Source = parsed.Source,
-                SourceUrl = metadata?.Creator?.ProfileUrl,
-                ExternalId = metadata?.Creator?.ExternalId,
-                AvatarUrl = metadata?.Creator?.AvatarUrl,
-            };
-            db.Creators.Add(creator);
-            // No SaveChanges here — EF Core resolves FK ordering automatically on batch save
-        }
+            FolderSlug = parsed.SourceSlug,
+            FolderName = Path.GetFileName(modelDir.TrimEnd('/')),
+            MetadataSource = metadata?.Source,
+            MetadataVersion = metadata?.MetadataVersion,
+            MetadataExternalId = metadata?.ExternalId,
+            MetadataExternalUrl = metadata?.ExternalUrl,
+            ParsedSourceId = parsed.SourceId,
+            PluginSourceId = existingRow?.SourceId,
+            PluginSourceUrl = existingRow?.SourceUrl,
+        });
+        // A human override is sticky; the scanner never re-decides it.
+        if (existingRow?.SourceDetection == "override")
+            decision = decision with { Source = existingRow.Source, Detection = "override" };
+
+        var creator = await CreatorIdentityResolver.ResolveAsync(
+            db, creatorName, decision.Source,
+            metadata?.Creator?.ProfileUrl, metadata?.Creator?.ExternalId, metadata?.Creator?.AvatarUrl, ct);
 
         // Get or create model
         var model = await db.Models
@@ -377,11 +384,24 @@ public class FileScannerService : IScannerService
         model.Name = SanitizeMetadataValue(metadata?.Name ?? parsed.ModelName);
         model.SourceId = metadata?.ExternalId ?? parsed.SourceId;
         model.SourceUrl = metadata?.ExternalUrl;
-        // #67: the whole library lives under sources/mmf/, so the adapter claims everything. Only rows with a
-        // real MMF identity (numeric/object-NNN id or myminifactory URL) are Mmf; the rest are local scans.
-        if (parsed.Source == SourceType.Mmf)
-            model.Source = MmfOrphanMergeService.IsMmfIdentity(model.SourceId, model.SourceUrl)
-                ? SourceType.Mmf : SourceType.Manual;
+        model.SourceUrl ??= existingRow?.SourceUrl;
+        // #67 superseded: SourceDetector applies folder -> metadata -> plugin, and uses Unknown
+        // (not Manual) for catch-all folders with no evidence.
+        model.Source = decision.Source;
+        model.SourceDetection = decision.Detection;
+        model.CreatorId = creator.Id;
+        if (decision.SourceKey != model.SourceKey)
+        {
+            var taken = decision.SourceKey != null && (
+                db.Models.Local.Any(m => m.SourceKey == decision.SourceKey && m.Id != model.Id) ||
+                await db.Models.AnyAsync(
+                m => m.SourceKey == decision.SourceKey && m.Id != model.Id, ct));
+            if (taken)
+                _logger.LogWarning("Source key {Key} already owned by another model; {Path} left without one (duplicate download?)",
+                    decision.SourceKey, modelDir);
+            else
+                model.SourceKey = decision.SourceKey;
+        }
         model.Description = metadata?.Description;
         model.Extra = metadata?.Extra != null ? JsonSerializer.Serialize(metadata.Extra) : null;
         model.ExternalCreatedAt = Forgekeeper.Infrastructure.Data.UtcDateTime.Normalize(metadata?.Dates?.Created);

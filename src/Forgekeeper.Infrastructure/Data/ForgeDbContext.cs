@@ -53,6 +53,11 @@ public class ForgeDbContext : DbContext
             entity.Property(e => e.AvatarUrl).HasMaxLength(1000);
 
             entity.HasIndex(e => new { e.Name, e.Source }).IsUnique();
+            entity.HasIndex(e => e.CanonicalCreatorId);
+            entity.HasOne(e => e.CanonicalCreator)
+                .WithMany(e => e.Aliases)
+                .HasForeignKey(e => e.CanonicalCreatorId)
+                .OnDelete(DeleteBehavior.SetNull);
             entity.HasIndex(e => e.Name)
                 .HasMethod("gin")
                 .HasOperators("gin_trgm_ops");
@@ -118,6 +123,11 @@ public class ForgeDbContext : DbContext
             entity.HasIndex(e => e.CreatorId);
             entity.HasIndex(e => e.Source);
             entity.HasIndex(e => new { e.Source, e.SourceId }).HasDatabaseName("ix_models_source_source_id");
+            entity.Property(e => e.SourceKey).HasMaxLength(300);
+            entity.Property(e => e.SourceDetection).HasMaxLength(20);
+            entity.HasIndex(e => e.SourceKey).IsUnique()
+                .HasFilter("source_key IS NOT NULL")
+                .HasDatabaseName("ux_models_source_key");
             entity.HasIndex(e => e.LicenseType);
             entity.HasIndex(e => e.CollectionName);
             entity.HasIndex(e => e.AcquisitionMethod);

@@ -38,6 +38,10 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(1000)")
                         .HasColumnName("avatar_url");
 
+                    b.Property<Guid?>("CanonicalCreatorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("canonical_creator_id");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
@@ -74,6 +78,9 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
 
                     b.HasKey("Id")
                         .HasName("pk_creators");
+
+                    b.HasIndex("CanonicalCreatorId")
+                        .HasDatabaseName("ix_creators_canonical_creator_id");
 
                     b.HasIndex("Name")
                         .HasDatabaseName("ix_creators_name");
@@ -375,6 +382,11 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(50)")
                         .HasColumnName("source");
 
+                    b.Property<string>("SourceDetection")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("source_detection");
+
                     b.Property<Guid?>("SourceEntityId")
                         .HasColumnType("uuid")
                         .HasColumnName("source_entity_id");
@@ -383,6 +395,11 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)")
                         .HasColumnName("source_id");
+
+                    b.Property<string>("SourceKey")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("source_key");
 
                     b.Property<string>("SourceUrl")
                         .HasMaxLength(1000)
@@ -446,6 +463,11 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
 
                     b.HasIndex("SourceEntityId")
                         .HasDatabaseName("ix_models_source_entity_id");
+
+                    b.HasIndex("SourceKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_models_source_key")
+                        .HasFilter("source_key IS NOT NULL");
 
                     b.HasIndex("Source", "SourceId")
                         .HasDatabaseName("ix_models_source_source_id");
@@ -890,6 +912,17 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                     b.ToTable("model_tags", (string)null);
                 });
 
+            modelBuilder.Entity("Forgekeeper.Core.Models.Creator", b =>
+                {
+                    b.HasOne("Forgekeeper.Core.Models.Creator", "CanonicalCreator")
+                        .WithMany("Aliases")
+                        .HasForeignKey("CanonicalCreatorId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_creators_creators_canonical_creator_id");
+
+                    b.Navigation("CanonicalCreator");
+                });
+
             modelBuilder.Entity("Forgekeeper.Core.Models.FileIssue", b =>
                 {
                     b.HasOne("Forgekeeper.Core.Models.Model3D", "Model")
@@ -981,6 +1014,8 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Forgekeeper.Core.Models.Creator", b =>
                 {
+                    b.Navigation("Aliases");
+
                     b.Navigation("Models");
                 });
 

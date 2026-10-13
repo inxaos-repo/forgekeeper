@@ -11,6 +11,16 @@ public class Model3D
     public SourceType Source { get; set; }
     public Guid? SourceEntityId { get; set; }
     public string? SourceUrl { get; set; }
+
+    /// <summary>
+    /// Normalized platform identity ("mmf:597143", "thangs:123"). Unique when
+    /// non-null. Null when we have no trustworthy platform id (writeback GUIDs,
+    /// Drive export suffixes, manual imports) — those fall back to BasePath.
+    /// </summary>
+    public string? SourceKey { get; set; }
+
+    /// <summary>How <see cref="Source"/> was decided: folder | metadata | plugin | override.</summary>
+    public string? SourceDetection { get; set; }
     public string? Description { get; set; }
     public string? Category { get; set; }
     public string? Scale { get; set; }
