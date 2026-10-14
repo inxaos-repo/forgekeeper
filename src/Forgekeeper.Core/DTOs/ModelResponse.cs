@@ -42,6 +42,13 @@ public class ModelDetailResponse : ModelResponse
     public List<ComponentInfo>? Components { get; set; }
     public PrintSettingsInfo? PrintSettings { get; set; }
     public List<RelatedModelSummary> RelatedModels { get; set; } = [];
+
+    /// <summary>Model folder as a Windows path (Library:WindowsPathPrefix), null if not configured.</summary>
+    public string? WindowsBasePath { get; set; }
+    /// <summary>file:// URL of the model folder Only set when Library:EnableExplorerProtocol=true (off by default; Chrome blocks these).</summary>
+    public string? BaseFileUrl { get; set; }
+    /// <summary>forgekeeper-open:// URL that opens the folder in Explorer Only set when Library:EnableExplorerProtocol=true (off by default, unsupported).</summary>
+    public string? OpenFolderUrl { get; set; }
 }
 
 /// <summary>
@@ -65,6 +72,14 @@ public class VariantResponse
     public long FileSizeBytes { get; set; }
     public string? ThumbnailPath { get; set; }
     public PhysicalProperties? PhysicalProperties { get; set; }
+    /// <summary>Full path inside the container (BasePath + FilePath).</summary>
+    public string? AbsolutePath { get; set; }
+    /// <summary>Windows path of the file, null if Library:WindowsPathPrefix isn't set.</summary>
+    public string? WindowsPath { get; set; }
+    /// <summary>file:// URL of the file. Only set when Library:EnableExplorerProtocol=true.</summary>
+    public string? FileUrl { get; set; }
+    /// <summary>forgekeeper-open://select?... — Only set when Library:EnableExplorerProtocol=true (off by default, unsupported).</summary>
+    public string? RevealUrl { get; set; }
 }
 
 public class ModelUpdateRequest

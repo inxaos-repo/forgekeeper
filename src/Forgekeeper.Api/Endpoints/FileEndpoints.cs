@@ -8,6 +8,20 @@ public static class FileEndpoints
     {
         var group = app.MapGroup("/api/v1/files").WithTags("Files");
 
+        // GET /api/v1/files/path-mapping — how library paths map to Windows (for the UI and debugging).
+        group.MapGet("/path-mapping", (IConfiguration config) =>
+        {
+            var lib = LibraryPathSettings.From(config);
+            return Results.Ok(new
+            {
+                linuxRoot = lib.LinuxRoot,
+                windowsPathPrefix = lib.WindowsPathPrefix,
+                configured = lib.WindowsPathPrefix != null,
+                explorerProtocolEnabled = lib.EnableExplorerProtocol,
+                protocolScheme = lib.EnableExplorerProtocol ? Forgekeeper.Core.Services.LibraryPathMapper.ProtocolScheme : null,
+            });
+        }).WithName("GetPathMapping");
+
         // GET /api/v1/files/browse?path=/mnt/3dprinting
         // Server-side directory browser — returns folder/file listing for the given path.
         // Security: only paths within configured Storage:BasePaths or common mount points

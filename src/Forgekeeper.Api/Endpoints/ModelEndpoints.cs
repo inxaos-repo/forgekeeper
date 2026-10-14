@@ -63,8 +63,10 @@ public static class ModelEndpoints
         group.MapGet("/{id:guid}", async (
             Guid id,
             IModelRepository repo,
+            IConfiguration config,
             CancellationToken ct) =>
         {
+            var lib = LibraryPathSettings.From(config);
             var model = await repo.GetByIdAsync(id, ct);
             if (model == null) return Results.NotFound();
 
@@ -130,6 +132,24 @@ public static class ModelEndpoints
                     PhysicalProperties = v.PhysicalProperties,
                 }).ToList(),
             };
+
+            response.WindowsBasePath = lib.ToWindows(model.BasePath);
+            // Explorer (forgekeeper-open://) and file:// links are off by default (Library:EnableExplorerProtocol).
+            if (lib.EnableExplorerProtocol)
+            {
+                response.BaseFileUrl = Forgekeeper.Core.Services.LibraryPathMapper.ToFileUrl(response.WindowsBasePath);
+                response.OpenFolderUrl = Forgekeeper.Core.Services.LibraryPathMapper.ToProtocolUrl(response.WindowsBasePath, select: false);
+            }
+            foreach (var v in response.Variants)
+            {
+                v.AbsolutePath = string.IsNullOrEmpty(model.BasePath) ? v.FilePath : Path.Combine(model.BasePath, v.FilePath);
+                v.WindowsPath = lib.ToWindows(v.AbsolutePath);
+                if (lib.EnableExplorerProtocol)
+                {
+                    v.FileUrl = Forgekeeper.Core.Services.LibraryPathMapper.ToFileUrl(v.WindowsPath);
+                    v.RevealUrl = Forgekeeper.Core.Services.LibraryPathMapper.ToProtocolUrl(v.WindowsPath, select: true);
+                }
+            }
 
             return Results.Ok(response);
         }).WithName("GetModel");
