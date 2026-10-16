@@ -551,7 +551,7 @@ public class ForgekeeperMcpServer
                     ["gameSystem"] = new() { Description = "Filter by game system" },
                     ["creator"] = new() { Description = "Filter by creator name (substring match)" },
                     ["tags"] = new() { Description = "Comma-separated tag names — model must have ALL specified tags" },
-                    ["source"] = new() { Description = "Filter by source", Enum = ["Mmf", "Thangs", "Cults3d", "Thingiverse", "Patreon", "Manual"] },
+                    ["source"] = new() { Description = "Filter by source", Enum = ["Mmf", "Thangs", "Cults3d", "Thingiverse", "Patreon", "Gumroad", "Manual", "Unknown"] },
                     ["scale"] = new() { Description = "Filter by scale (e.g., '28mm', '32mm', '75mm')" },
                     ["printed"] = new() { Type = "boolean", Description = "Filter by print status" },
                     ["sortBy"] = new() { Description = "Sort field", Enum = ["name", "date", "rating", "filecount", "size", "creator"], Default = "name" },

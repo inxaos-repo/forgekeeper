@@ -79,6 +79,25 @@ public static class CreatorEndpoints
             return Results.Ok(response);
         }).WithName("GetCreator");
 
+        // Per-source identities of one canonical creator (e.g. Print Minis on MMF + Patreon + Unknown).
+        group.MapGet("/{id:guid}/identities", async (Guid id, ForgeDbContext db, CancellationToken ct) =>
+        {
+            var c = await db.Creators.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
+            if (c == null) return Results.NotFound();
+            var root = c.CanonicalCreatorId ?? c.Id;
+            var ids = await db.Creators.AsNoTracking()
+                .Where(x => x.Id == root || x.CanonicalCreatorId == root)
+                .Select(x => new
+                {
+                    x.Id, x.Name, x.Source, x.SourceUrl, x.ExternalId,
+                    IsCanonical = x.Id == root,
+                    ModelCount = db.Models.Count(m => m.CreatorId == x.Id),
+                })
+                .OrderByDescending(x => x.IsCanonical).ThenBy(x => x.Source)
+                .ToListAsync(ct);
+            return Results.Ok(new { canonicalCreatorId = root, identities = ids });
+        }).WithName("GetCreatorIdentities");
+
         group.MapGet("/{id:guid}/models", async (
             Guid id,
             [FromQuery] int? page,

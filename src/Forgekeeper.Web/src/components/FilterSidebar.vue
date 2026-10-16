@@ -31,17 +31,17 @@ function emitFilters() {
 
 // Toggle a source checkbox
 function toggleSource(source) {
-  const current = localFilters.value.source || ''
+  const current = localFilters.value.sourceType || ''
   const sources = current ? current.split(',') : []
   const idx = sources.indexOf(source)
   if (idx >= 0) sources.splice(idx, 1)
   else sources.push(source)
-  localFilters.value.source = sources.join(',') || undefined
+  localFilters.value.sourceType = sources.join(',') || undefined
   emitFilters()
 }
 
 function isSourceChecked(source) {
-  return (localFilters.value.source || '').split(',').includes(source)
+  return (localFilters.value.sourceType || '').split(',').includes(source)
 }
 
 function setFilter(key, value) {
@@ -71,7 +71,9 @@ const sources = [
   { key: 'patreon', label: 'Patreon' },
   { key: 'cults3d', label: 'Cults3D' },
   { key: 'thingiverse', label: 'Thingiverse' },
+  { key: 'gumroad', label: 'Gumroad' },
   { key: 'manual', label: 'Manual' },
+  { key: 'unknown', label: 'Unknown' },
 ]
 
 const categories = [
@@ -130,7 +132,7 @@ onMounted(async () => {
 
     <!-- Source checkboxes -->
     <div>
-      <h4 class="text-xs font-medium text-forge-text-muted mb-2 uppercase">Source</h4>
+      <h4 class="text-xs font-medium text-forge-text-muted mb-2 uppercase" title="Platform the model came from (not its folder)">Source</h4>
       <label
         v-for="src in sources"
         :key="src.key"

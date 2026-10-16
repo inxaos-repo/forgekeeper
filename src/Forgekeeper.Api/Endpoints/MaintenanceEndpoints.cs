@@ -38,5 +38,14 @@ public static class MaintenanceEndpoints
             [FromQuery] bool? apply,
             CancellationToken ct) => Results.Ok(await svc.BackfillSourceAsync(apply == true, ct)))
             .WithName("BackfillModelSource");
+
+        // Full re-categorization (folder -> metadata -> plugin) + per-source creator identities.
+        // DRY-RUN unless apply=true. DB only; never touches files.
+        group.MapPost("/source/recategorize", async (
+            SourceRecategorizeService svc,
+            [FromQuery] bool? apply,
+            [FromQuery] bool? readFiles,
+            CancellationToken ct) => Results.Ok(await svc.RunAsync(apply == true, readFiles != false, ct)))
+            .WithName("RecategorizeModelSource");
     }
 }

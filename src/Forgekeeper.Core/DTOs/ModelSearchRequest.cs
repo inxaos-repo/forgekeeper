@@ -6,6 +6,12 @@ public class ModelSearchRequest
 {
     public string? Query { get; set; }
     public Guid? CreatorId { get; set; }
+
+    /// <summary>Match models from every per-source identity of this creator.</summary>
+    public Guid? CanonicalCreatorId { get; set; }
+
+    /// <summary>Any-of platform filter (?sourceType=patreon,unknown).</summary>
+    public List<Forgekeeper.Core.Enums.SourceType>? Sources { get; set; }
     public string? Category { get; set; }
     public string? GameSystem { get; set; }
     public string? Scale { get; set; }

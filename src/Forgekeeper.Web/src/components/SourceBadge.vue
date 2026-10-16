@@ -16,7 +16,9 @@ const sourceConfig = {
   patreon:     { label: 'Patreon',     bg: 'bg-source-patreon/20',  text: 'text-source-patreon' },
   cults3d:     { label: 'Cults3D',     bg: 'bg-source-cults3d/20',  text: 'text-source-cults3d' },
   thingiverse: { label: 'Thingiverse', bg: 'bg-source-thingiverse/20', text: 'text-source-thingiverse' },
+  gumroad:     { label: 'Gumroad',     bg: 'bg-source-patreon/20',  text: 'text-source-patreon' },
   manual:      { label: 'Manual',      bg: 'bg-source-manual/20',   text: 'text-source-manual' },
+  unknown:     { label: 'Unknown',     bg: 'bg-source-manual/20',   text: 'text-forge-text-muted' },
 }
 
 const config = computed(() => {

@@ -1,3 +1,4 @@
+using Forgekeeper.Core.Enums;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Forgekeeper.Core.DTOs;
@@ -24,6 +25,8 @@ public static class ModelEndpoints
             [FromQuery] string? gameSystem,
             [FromQuery] string? scale,
             [FromQuery] string? source,
+            [FromQuery] string? sourceType,
+            [FromQuery] Guid? canonicalCreatorId,
             [FromQuery] string? creator,
             [FromQuery] string? tags,
             [FromQuery] string? licenseType,
@@ -45,6 +48,12 @@ public static class ModelEndpoints
                 GameSystem = gameSystem,
                 Scale = scale,
                 SourceSlug = source,
+                // source = folder slug (sources/<slug>/); sourceType = actual platform (Mmf, Patreon, Unknown...)
+                Sources = string.IsNullOrWhiteSpace(sourceType) ? null : sourceType
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(t => Enum.TryParse<SourceType>(t, ignoreCase: true, out var st) ? st : (SourceType?)null)
+                    .Where(t => t.HasValue).Select(t => t!.Value).ToList(),
+                CanonicalCreatorId = canonicalCreatorId,
                 Creator = creator,
                 Tags = tags,
                 LicenseType = licenseType,

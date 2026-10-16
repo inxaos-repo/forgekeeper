@@ -44,6 +44,15 @@ public class SearchService : ISearchService
         if (request.CreatorId.HasValue)
             query = query.Where(m => m.CreatorId == request.CreatorId.Value);
 
+        if (request.Sources is { Count: > 0 } srcs)
+            query = query.Where(m => srcs.Contains(m.Source));
+
+        if (request.CanonicalCreatorId.HasValue)
+        {
+            var ids = await CreatorIdentityResolver.IdentityIdsAsync(_db, request.CanonicalCreatorId.Value, ct);
+            query = query.Where(m => ids.Contains(m.CreatorId));
+        }
+
         if (!string.IsNullOrEmpty(request.Category))
             query = query.Where(m => m.Category == request.Category);
 

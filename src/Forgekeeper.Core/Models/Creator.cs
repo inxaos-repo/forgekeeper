@@ -14,6 +14,15 @@ public class Creator
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
+    /// <summary>
+    /// A Creator row is a per-source identity ("Print Minis" on MMF, "Print Minis"
+    /// on Patreon). When set, this row is an alias of the canonical creator.
+    /// Null means this row IS canonical.
+    /// </summary>
+    public Guid? CanonicalCreatorId { get; set; }
+
     // Navigation
+    public Creator? CanonicalCreator { get; set; }
+    public List<Creator> Aliases { get; set; } = [];
     public List<Model3D> Models { get; set; } = [];
 }

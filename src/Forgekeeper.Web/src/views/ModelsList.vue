@@ -23,6 +23,7 @@ const showFilters = ref(false)
 
 const filters = reactive({
   source: route.query.source || undefined,
+  sourceType: route.query.sourceType || undefined,
   creatorId: route.query.creatorId || undefined,
   category: route.query.category || undefined,
   gameSystem: route.query.gameSystem || undefined,
@@ -433,6 +434,7 @@ function syncQueryParams() {
   const query = {}
   if (searchQuery.value) query.search = searchQuery.value
   if (filters.source) query.source = filters.source
+  if (filters.sourceType) query.sourceType = filters.sourceType
   if (filters.creatorId) query.creatorId = filters.creatorId
   if (filters.category) query.category = filters.category
   if (filters.gameSystem) query.gameSystem = filters.gameSystem
