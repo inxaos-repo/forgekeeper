@@ -47,6 +47,10 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(200)")
                         .HasColumnName("external_id");
 
+                    b.Property<Guid?>("MergedIntoId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("merged_into_id");
+
                     b.Property<int>("ModelCount")
                         .HasColumnType("integer")
                         .HasColumnName("model_count");
@@ -75,6 +79,10 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                     b.HasKey("Id")
                         .HasName("pk_creators");
 
+                    b.HasIndex("MergedIntoId")
+                        .HasDatabaseName("ix_creators_merged_into_id")
+                        .HasFilter("merged_into_id IS NOT NULL");
+
                     b.HasIndex("Name")
                         .HasDatabaseName("ix_creators_name");
 
@@ -86,6 +94,169 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .HasDatabaseName("ix_creators_name_source");
 
                     b.ToTable("creators", (string)null);
+                });
+
+            modelBuilder.Entity("Forgekeeper.Core.Models.CreatorAlias", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("Alias")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("alias");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("creator_id");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("NormalizedAlias")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("normalized_alias");
+
+                    b.Property<Guid?>("SourceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_creator_aliases");
+
+                    b.HasIndex("NormalizedAlias")
+                        .HasDatabaseName("ix_creator_aliases_normalized_alias");
+
+                    b.HasIndex("CreatorId", "NormalizedAlias")
+                        .IsUnique()
+                        .HasDatabaseName("ix_creator_aliases_creator_id_normalized_alias");
+
+                    b.ToTable("creator_aliases", (string)null);
+                });
+
+            modelBuilder.Entity("Forgekeeper.Core.Models.CreatorMerge", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("MergedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("merged_at");
+
+                    b.Property<string>("MergedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("merged_by");
+
+                    b.Property<Guid>("MergedId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("merged_id");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Snapshot")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("snapshot");
+
+                    b.Property<Guid>("SurvivorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("survivor_id");
+
+                    b.Property<DateTime?>("UnmergedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("unmerged_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_creator_merges");
+
+                    b.HasIndex("MergedId")
+                        .HasDatabaseName("ix_creator_merges_merged_id");
+
+                    b.HasIndex("SurvivorId")
+                        .HasDatabaseName("ix_creator_merges_survivor_id");
+
+                    b.ToTable("creator_merges", (string)null);
+                });
+
+            modelBuilder.Entity("Forgekeeper.Core.Models.CreatorProfile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("creator_id");
+
+                    b.Property<string>("ExternalId")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("external_id");
+
+                    b.Property<string>("Handle")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("handle");
+
+                    b.Property<string>("Platform")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("platform");
+
+                    b.Property<Guid?>("SourceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_id");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("Url")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("url");
+
+                    b.HasKey("Id")
+                        .HasName("pk_creator_profiles");
+
+                    b.HasIndex("CreatorId")
+                        .HasDatabaseName("ix_creator_profiles_creator_id");
+
+                    b.HasIndex("SourceId")
+                        .HasDatabaseName("ix_creator_profiles_source_id");
+
+                    b.HasIndex("Platform", "ExternalId")
+                        .HasDatabaseName("ix_creator_profiles_platform_external_id")
+                        .HasFilter("external_id IS NOT NULL");
+
+                    b.ToTable("creator_profiles", (string)null);
                 });
 
             modelBuilder.Entity("Forgekeeper.Core.Models.FileIssue", b =>
@@ -453,6 +624,95 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                     b.ToTable("models", (string)null);
                 });
 
+            modelBuilder.Entity("Forgekeeper.Core.Models.ModelAcquisition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime?>("AcquiredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("acquired_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("ExternalId")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("external_id");
+
+                    b.Property<string>("ExternalUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("external_url");
+
+                    b.Property<string>("FileSelector")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("file_selector");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("License")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("license");
+
+                    b.Property<Guid>("ModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("model_id");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text")
+                        .HasColumnName("notes");
+
+                    b.Property<string>("OrderRef")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("order_ref");
+
+                    b.Property<string>("PledgeRef")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("pledge_ref");
+
+                    b.Property<Guid?>("SourceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_id");
+
+                    b.Property<string>("SourceSlug")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("source_slug");
+
+                    b.Property<string>("Tier")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("tier");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_model_acquisitions");
+
+                    b.HasIndex("ModelId")
+                        .HasDatabaseName("ix_model_acquisitions_model_id");
+
+                    b.HasIndex("SourceId", "Kind")
+                        .HasDatabaseName("ix_model_acquisitions_source_id_kind");
+
+                    b.ToTable("model_acquisitions", (string)null);
+                });
+
             modelBuilder.Entity("Forgekeeper.Core.Models.ModelRelation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -668,6 +928,11 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("Kind")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("kind");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(500)
@@ -683,6 +948,11 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
+
+                    b.Property<string>("WebsiteUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("website_url");
 
                     b.HasKey("Id")
                         .HasName("pk_sources");
@@ -890,6 +1160,38 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                     b.ToTable("model_tags", (string)null);
                 });
 
+            modelBuilder.Entity("Forgekeeper.Core.Models.CreatorAlias", b =>
+                {
+                    b.HasOne("Forgekeeper.Core.Models.Creator", "Creator")
+                        .WithMany("Aliases")
+                        .HasForeignKey("CreatorId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_creator_aliases_creators_creator_id");
+
+                    b.Navigation("Creator");
+                });
+
+            modelBuilder.Entity("Forgekeeper.Core.Models.CreatorProfile", b =>
+                {
+                    b.HasOne("Forgekeeper.Core.Models.Creator", "Creator")
+                        .WithMany("Profiles")
+                        .HasForeignKey("CreatorId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_creator_profiles_creators_creator_id");
+
+                    b.HasOne("Forgekeeper.Core.Models.Source", "Source")
+                        .WithMany()
+                        .HasForeignKey("SourceId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_creator_profiles_sources_source_id");
+
+                    b.Navigation("Creator");
+
+                    b.Navigation("Source");
+                });
+
             modelBuilder.Entity("Forgekeeper.Core.Models.FileIssue", b =>
                 {
                     b.HasOne("Forgekeeper.Core.Models.Model3D", "Model")
@@ -927,6 +1229,26 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
                     b.Navigation("Creator");
 
                     b.Navigation("SourceEntity");
+                });
+
+            modelBuilder.Entity("Forgekeeper.Core.Models.ModelAcquisition", b =>
+                {
+                    b.HasOne("Forgekeeper.Core.Models.Model3D", "Model")
+                        .WithMany()
+                        .HasForeignKey("ModelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_model_acquisitions_models_model_id");
+
+                    b.HasOne("Forgekeeper.Core.Models.Source", "Source")
+                        .WithMany()
+                        .HasForeignKey("SourceId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_model_acquisitions_sources_source_id");
+
+                    b.Navigation("Model");
+
+                    b.Navigation("Source");
                 });
 
             modelBuilder.Entity("Forgekeeper.Core.Models.ModelRelation", b =>
@@ -981,7 +1303,11 @@ namespace Forgekeeper.Infrastructure.Data.Migrations
 
             modelBuilder.Entity("Forgekeeper.Core.Models.Creator", b =>
                 {
+                    b.Navigation("Aliases");
+
                     b.Navigation("Models");
+
+                    b.Navigation("Profiles");
                 });
 
             modelBuilder.Entity("Forgekeeper.Core.Models.Model3D", b =>

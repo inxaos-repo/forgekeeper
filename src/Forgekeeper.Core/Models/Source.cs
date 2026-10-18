@@ -34,6 +34,12 @@ public class Source
     /// </summary>
     public bool AutoScan { get; set; } = true;
 
+    /// <summary>#91: "platform" (creator storefront), "channel" (delivery-only, e.g. Telegram), "manual". Null = legacy row.</summary>
+    public string? Kind { get; set; }
+
+    /// <summary>#91: homepage of the platform, if any.</summary>
+    public string? WebsiteUrl { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 

@@ -20,6 +20,10 @@ public class ForgeDbContext : DbContext
     public DbSet<SavedTemplate> SavedTemplates => Set<SavedTemplate>();
     public DbSet<SyncRun> SyncRuns => Set<SyncRun>();
     public DbSet<FileIssue> FileIssues => Set<FileIssue>();
+    public DbSet<CreatorProfile> CreatorProfiles => Set<CreatorProfile>();
+    public DbSet<CreatorAlias> CreatorAliases => Set<CreatorAlias>();
+    public DbSet<CreatorMerge> CreatorMerges => Set<CreatorMerge>();
+    public DbSet<ModelAcquisition> ModelAcquisitions => Set<ModelAcquisition>();
 
     /// <summary>
     /// #37: Npgsql refuses DateTime Kind=Local for timestamptz. Normalise every DateTime on
@@ -56,6 +60,8 @@ public class ForgeDbContext : DbContext
             entity.HasIndex(e => e.Name)
                 .HasMethod("gin")
                 .HasOperators("gin_trgm_ops");
+            // #92: merged creators point at their survivor (nullable, reversible)
+            entity.HasIndex(e => e.MergedIntoId).HasFilter("merged_into_id IS NOT NULL");
         });
 
         // Model3D
@@ -231,6 +237,78 @@ public class ForgeDbContext : DbContext
             entity.Property(e => e.BasePath).HasMaxLength(2000).IsRequired();
             entity.Property(e => e.AdapterType).HasMaxLength(200).IsRequired();
             entity.HasIndex(e => e.Slug).IsUnique();
+            entity.Property(e => e.Kind).HasMaxLength(50);
+            entity.Property(e => e.WebsiteUrl).HasMaxLength(1000);
+        });
+
+        // #92 CreatorProfile
+        modelBuilder.Entity<CreatorProfile>(entity =>
+        {
+            entity.ToTable("creator_profiles");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Platform).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Handle).HasMaxLength(500);
+            entity.Property(e => e.Url).HasMaxLength(1000);
+            entity.Property(e => e.ExternalId).HasMaxLength(200);
+            entity.HasOne(e => e.Creator).WithMany(c => c.Profiles)
+                .HasForeignKey(e => e.CreatorId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Source).WithMany()
+                .HasForeignKey(e => e.SourceId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasIndex(e => e.CreatorId);
+            entity.HasIndex(e => new { e.Platform, e.ExternalId }).HasFilter("external_id IS NOT NULL");
+        });
+
+        // #92 CreatorAlias
+        modelBuilder.Entity<CreatorAlias>(entity =>
+        {
+            entity.ToTable("creator_aliases");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Alias).HasMaxLength(500).IsRequired();
+            entity.Property(e => e.NormalizedAlias).HasMaxLength(500).IsRequired();
+            entity.Property(e => e.Kind).HasMaxLength(50).IsRequired();
+            entity.HasOne(e => e.Creator).WithMany(c => c.Aliases)
+                .HasForeignKey(e => e.CreatorId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(e => e.NormalizedAlias);
+            entity.HasIndex(e => new { e.CreatorId, e.NormalizedAlias }).IsUnique();
+        });
+
+        // #92 CreatorMerge (reversible)
+        modelBuilder.Entity<CreatorMerge>(entity =>
+        {
+            entity.ToTable("creator_merges");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Snapshot).HasColumnType("jsonb").IsRequired();
+            entity.Property(e => e.Reason).HasMaxLength(1000);
+            entity.Property(e => e.MergedBy).HasMaxLength(200);
+            entity.HasIndex(e => e.SurvivorId);
+            entity.HasIndex(e => e.MergedId);
+        });
+
+        // #93 ModelAcquisition (origin vs via)
+        modelBuilder.Entity<ModelAcquisition>(entity =>
+        {
+            entity.ToTable("model_acquisitions");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+            entity.Property(e => e.Kind).HasConversion<string>().HasMaxLength(20);
+            entity.Property(e => e.SourceSlug).HasMaxLength(100);
+            entity.Property(e => e.ExternalId).HasMaxLength(200);
+            entity.Property(e => e.ExternalUrl).HasMaxLength(1000);
+            entity.Property(e => e.License).HasMaxLength(200);
+            entity.Property(e => e.Tier).HasMaxLength(200);
+            entity.Property(e => e.OrderRef).HasMaxLength(200);
+            entity.Property(e => e.PledgeRef).HasMaxLength(200);
+            entity.Property(e => e.FileSelector).HasColumnType("jsonb");
+            entity.Property(e => e.Notes).HasColumnType("text");
+            entity.HasOne(e => e.Model).WithMany()
+                .HasForeignKey(e => e.ModelId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Source).WithMany()
+                .HasForeignKey(e => e.SourceId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasIndex(e => e.ModelId);
+            entity.HasIndex(e => new { e.SourceId, e.Kind });
         });
 
         // PluginConfig

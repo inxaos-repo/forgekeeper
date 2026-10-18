@@ -11,9 +11,14 @@ public class Creator
     public string? ExternalId { get; set; }
     public string? AvatarUrl { get; set; }
     public int ModelCount { get; set; }
+
+    /// <summary>#92: set when this creator was merged into another (reversible via creator_merges).</summary>
+    public Guid? MergedIntoId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     // Navigation
     public List<Model3D> Models { get; set; } = [];
+    public List<CreatorProfile> Profiles { get; set; } = [];
+    public List<CreatorAlias> Aliases { get; set; } = [];
 }

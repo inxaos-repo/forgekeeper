@@ -46,6 +46,8 @@ builder.Services.AddDbContext<ForgeDbContext>(options =>
 // Repositories
 builder.Services.AddScoped<MetadataWritebackService>();
 builder.Services.AddScoped<FileIssueService>();
+builder.Services.AddScoped<CreatorIdentityService>();
+builder.Services.AddScoped<MultiSourceBackfillService>();
 builder.Services.AddScoped<MmfOrphanMergeService>();
 builder.Services.AddSingleton(sp => new MmfOrphanMergeJob(
     sp.GetRequiredService<IServiceScopeFactory>(),
@@ -319,6 +321,7 @@ app.MapGet("/metrics", async (IServiceProvider services, PluginHostService plugi
 app.MapModelEndpoints();
 app.MapMaintenanceEndpoints();
 app.MapCreatorEndpoints();
+app.MapMultiSourceEndpoints();
 app.MapTagEndpoints();
 app.MapScanEndpoints();
 app.MapImportEndpoints();
