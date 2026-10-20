@@ -511,10 +511,28 @@ watch(() => route.params.id, fetchModel)
 
           <!-- Variants grouped by type -->
           <div class="space-y-4">
-            <h3 class="text-sm font-semibold text-forge-text-muted uppercase">Variants</h3>
+            <div class="flex items-center justify-between gap-3">
+              <h3 class="text-sm font-semibold text-forge-text-muted uppercase">Variants</h3>
+              <a
+                v-if="orderedGroups.length"
+                :href="api.getModelZipUrl(model.id)"
+                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-forge-accent text-white hover:bg-forge-accent-hover"
+                title="Download every file of this model as one ZIP"
+                download
+              >⬇ Download all (ZIP)</a>
+            </div>
 
             <div v-for="group in orderedGroups" :key="group.type" class="space-y-2">
-              <h4 class="text-sm font-medium text-forge-text">{{ group.label }}</h4>
+              <div class="flex items-center justify-between gap-3">
+                <h4 class="text-sm font-medium text-forge-text">{{ group.label }}</h4>
+                <a
+                  v-if="group.variants.length > 1"
+                  :href="api.getModelZipUrl(model.id, group.type)"
+                  class="text-forge-accent hover:text-forge-accent-hover text-xs font-medium"
+                  :title="`Download all ${group.variants.length} ${group.label} files as a ZIP`"
+                  download
+                >⬇ ZIP ({{ group.variants.length }})</a>
+              </div>
               <div class="space-y-1">
                 <div
                   v-for="variant in group.variants"
