@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi.js'
 import StlViewer from '../components/StlViewer.vue'
 import { pickDefaultPreview } from '../utils/viewer.js'
+import { groupVariants, VARIANT_TYPE_ORDER } from '../utils/variants.js'
 import { variantCopyPath, variantFolderPath, modelFolderPath, isBrowserViewable, copyText } from '../utils/paths.js'
 import SourceBadge from '../components/SourceBadge.vue'
 import StarRating from '../components/StarRating.vue'
@@ -83,17 +84,8 @@ const scales = ['28mm', '32mm', '54mm', '75mm', '15mm', '6mm', 'Other']
 const technologies = ['resin', 'fdm', 'sla', 'msla']
 const printResults = ['success', 'failed', 'partial']
 
-// Group variants by type
-const variantGroups = computed(() => {
-  if (!model.value?.variants) return {}
-  const groups = {}
-  for (const v of model.value.variants) {
-    const type = v.variantType || 'other'
-    if (!groups[type]) groups[type] = []
-    groups[type].push(v)
-  }
-  return groups
-})
+// Group variants by type (API sends PascalCase enum names; normalize to camelCase keys)
+const variantGroups = computed(() => groupVariants(model.value?.variants))
 
 const variantTypeLabels = {
   supported: '✅ Supported',
@@ -107,7 +99,7 @@ const variantTypeLabels = {
   other: '📄 Other',
 }
 
-const variantTypeOrder = ['supported', 'presupported', 'unsupported', 'lycheeProject', 'chituboxProject', 'gcode', 'printProject', 'previewImage', 'other']
+const variantTypeOrder = VARIANT_TYPE_ORDER
 
 const orderedGroups = computed(() =>
   variantTypeOrder
