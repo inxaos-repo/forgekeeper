@@ -119,6 +119,12 @@ export function useApi() {
     return `${API_BASE}/variants/${variantId}/download`
   }
 
+  /** ZIP of every file of a model, optionally only one variant type (e.g. 'supported'). */
+  function getModelZipUrl(modelId, variantType = null) {
+    const q = variantType ? `?variantType=${encodeURIComponent(variantType)}` : ''
+    return `${API_BASE}/models/${modelId}/download.zip${q}`
+  }
+
   function getVariantThumbnailUrl(variantId) {
     return `${API_BASE}/variants/${variantId}/thumbnail`
   }
@@ -414,6 +420,7 @@ export function useApi() {
     // Variants
     getVariantDownloadUrl,
     getVariantThumbnailUrl,
+    getModelZipUrl,
     // Tags
     getTags,
     addTagToModel,

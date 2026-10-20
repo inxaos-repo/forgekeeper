@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useApi } from '../composables/useApi.js'
 import StlViewer from '../components/StlViewer.vue'
 import { pickDefaultPreview } from '../utils/viewer.js'
+import { groupVariants, VARIANT_TYPE_ORDER } from '../utils/variants.js'
 import { variantCopyPath, variantFolderPath, modelFolderPath, isBrowserViewable, copyText } from '../utils/paths.js'
 import SourceBadge from '../components/SourceBadge.vue'
 import StarRating from '../components/StarRating.vue'
@@ -83,17 +84,8 @@ const scales = ['28mm', '32mm', '54mm', '75mm', '15mm', '6mm', 'Other']
 const technologies = ['resin', 'fdm', 'sla', 'msla']
 const printResults = ['success', 'failed', 'partial']
 
-// Group variants by type
-const variantGroups = computed(() => {
-  if (!model.value?.variants) return {}
-  const groups = {}
-  for (const v of model.value.variants) {
-    const type = v.variantType || 'other'
-    if (!groups[type]) groups[type] = []
-    groups[type].push(v)
-  }
-  return groups
-})
+// Group variants by type (API sends PascalCase enum names; normalize to camelCase keys)
+const variantGroups = computed(() => groupVariants(model.value?.variants))
 
 const variantTypeLabels = {
   supported: '✅ Supported',
@@ -107,7 +99,7 @@ const variantTypeLabels = {
   other: '📄 Other',
 }
 
-const variantTypeOrder = ['supported', 'presupported', 'unsupported', 'lycheeProject', 'chituboxProject', 'gcode', 'printProject', 'previewImage', 'other']
+const variantTypeOrder = VARIANT_TYPE_ORDER
 
 const orderedGroups = computed(() =>
   variantTypeOrder
@@ -511,10 +503,28 @@ watch(() => route.params.id, fetchModel)
 
           <!-- Variants grouped by type -->
           <div class="space-y-4">
-            <h3 class="text-sm font-semibold text-forge-text-muted uppercase">Variants</h3>
+            <div class="flex items-center justify-between gap-3">
+              <h3 class="text-sm font-semibold text-forge-text-muted uppercase">Variants</h3>
+              <a
+                v-if="orderedGroups.length"
+                :href="api.getModelZipUrl(model.id)"
+                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-forge-accent text-white hover:bg-forge-accent-hover"
+                title="Download every file of this model as one ZIP"
+                download
+              >⬇ Download all (ZIP)</a>
+            </div>
 
             <div v-for="group in orderedGroups" :key="group.type" class="space-y-2">
-              <h4 class="text-sm font-medium text-forge-text">{{ group.label }}</h4>
+              <div class="flex items-center justify-between gap-3">
+                <h4 class="text-sm font-medium text-forge-text">{{ group.label }}</h4>
+                <a
+                  v-if="group.variants.length > 1"
+                  :href="api.getModelZipUrl(model.id, group.type)"
+                  class="text-forge-accent hover:text-forge-accent-hover text-xs font-medium"
+                  :title="`Download all ${group.variants.length} ${group.label} files as a ZIP`"
+                  download
+                >⬇ ZIP ({{ group.variants.length }})</a>
+              </div>
               <div class="space-y-1">
                 <div
                   v-for="variant in group.variants"

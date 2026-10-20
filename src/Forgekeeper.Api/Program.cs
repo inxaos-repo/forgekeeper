@@ -327,6 +327,7 @@ app.MapScanEndpoints();
 app.MapImportEndpoints();
 app.MapStatsEndpoints();
 app.MapVariantEndpoints();
+app.MapModelZipEndpoints();
 app.MapSourceEndpoints();
 app.MapPluginEndpoints();
 app.MapTemplateEndpoints();
