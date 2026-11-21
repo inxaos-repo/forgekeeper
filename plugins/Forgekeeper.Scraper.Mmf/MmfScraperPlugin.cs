@@ -2014,12 +2014,8 @@ public partial class MmfScraperPlugin : ILibraryScraper, IAsyncDisposable
         return false;
     }
 
-    internal static string SanitizeFilename(string? name)
-    {
-        if (string.IsNullOrEmpty(name)) return "unknown";
-        var invalid = Path.GetInvalidFileNameChars();
-        return new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim();
-    }
+    // #104: same sanitizer as the host (PluginSdk.PathNames) so folder/file names never diverge.
+    internal static string SanitizeFilename(string? name) => PathNames.Sanitize(name);
 
     /// <summary>Parse model details from raw JSON (avoids typed deserialization issues with MMF's inconsistent API).</summary>
     internal static MmfModelDetails ParseModelDetails(JsonElement root)
