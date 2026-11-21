@@ -740,9 +740,10 @@ public class FileScannerService : IScannerService
     }
 
     /// <summary>
-    /// Reconcile DB records against filesystem — log models whose directory has gone missing.
-    /// Uses the caller's shared DbContext (read-only; no writes, no SaveChanges).
-    /// Does NOT load Variants — only checks Directory.Exists on the model path.
+    /// Reconcile DB records against filesystem. Models whose directory is missing are re-homed (#104):
+    /// if exactly one existing folder under the source carries a metadata.json with the model's source id
+    /// and no other model owns that path, BasePath is updated in place (after a folder reorg the files are
+    /// still there, only the recorded path is stale). Anything unresolved is logged as missing.
     /// </summary>
     private async Task ReconcileSourceAsync(string sourceDir, ForgeDbContext db, CancellationToken ct)
     {
@@ -750,19 +751,64 @@ public class FileScannerService : IScannerService
         var models = await db.Models
             .Where(m => m.BasePath.StartsWith(sourceDir))
             .AsNoTracking()
-            .Select(m => new { m.Id, m.Name, m.BasePath })
+            .Select(m => new { m.Id, m.Name, m.BasePath, m.SourceId })
             .ToListAsync(ct);
 
-        foreach (var model in models)
+        var missing = models.Where(m => !Directory.Exists(m.BasePath)).ToList();
+        if (missing.Count == 0) return;
+
+        var metaIndex = new SourceIdIndex();
+        metaIndex.ScanMetadata(sourceDir);
+        var owned = new HashSet<string>(models.Select(m => Path.TrimEndingDirectorySeparator(m.BasePath)), StringComparer.Ordinal);
+        var rehomed = 0;
+
+        foreach (var model in missing)
         {
             ct.ThrowIfCancellationRequested();
-
-            if (!Directory.Exists(model.BasePath))
+            var newPath = ResolveStalePath(model.SourceId, metaIndex, owned);
+            if (newPath != null)
             {
-                _logger.LogWarning(
-                    "Model directory missing for {ModelName} (ID: {ModelId}): {BasePath}",
-                    model.Name, model.Id, model.BasePath);
+                var entity = await db.Models.FirstOrDefaultAsync(m => m.Id == model.Id, ct);
+                if (entity != null)
+                {
+                    _logger.LogInformation("Re-homed stale path for {ModelName} (ID: {ModelId}): {Old} -> {New}",
+                        model.Name, model.Id, model.BasePath, newPath);
+                    entity.BasePath = newPath;
+                    entity.UpdatedAt = DateTime.UtcNow;
+                    owned.Remove(Path.TrimEndingDirectorySeparator(model.BasePath));
+                    owned.Add(newPath);
+                    rehomed++;
+                    continue;
+                }
             }
+            _logger.LogWarning(
+                "Model directory missing for {ModelName} (ID: {ModelId}): {BasePath}",
+                model.Name, model.Id, model.BasePath);
         }
+
+        if (rehomed > 0)
+        {
+            await db.SaveChangesAsync(ct);
+            _logger.LogInformation("Re-homed {Count} model(s) with stale paths under {SourceDir}", rehomed, sourceDir);
+        }
+    }
+
+    /// <summary>
+    /// #104: pick the folder a stale DB row should point at — the single existing metadata.json folder for
+    /// <paramref name="sourceId"/> that no other model already owns. Null when unknown or ambiguous.
+    /// </summary>
+    internal static string? ResolveStalePath(string? sourceId, SourceIdIndex metaIndex, IReadOnlySet<string> ownedPaths)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId)) return null;
+        var candidates = metaIndex.MetadataFolders(sourceId)
+            .Where(Directory.Exists)
+            .Where(p => !ownedPaths.Contains(Path.TrimEndingDirectorySeparator(p)))
+            .ToList();
+        if (candidates.Count > 1)
+        {
+            var withContent = candidates.Where(ModelFolderContent.HasContentFiles).ToList();
+            if (withContent.Count == 1) return withContent[0];
+        }
+        return candidates.Count == 1 ? candidates[0] : null;
     }
 }

@@ -533,7 +533,9 @@ public class PluginHostService : BackgroundService
                 var modelName = SanitizePath(model.Name);
 
                 // D5: identity first (DB → metadata.json), then fuzzy name match.
-                var idMatches = idIndex.Lookup(model.ExternalId);
+                // #104: stale DB paths (e.g. after a folder reorg) are skipped by ResolveExisting, and a
+                // folder with content beats an info-only stub, so we don't fall through to mmf/unknown.
+                var idMatches = idIndex.ResolveExisting(model.ExternalId);
                 if (idMatches.Count > 1)
                     _logger.LogWarning("[{Slug}] {Id} is claimed by {Count} folders; using the first", slug, model.ExternalId, idMatches.Count);
                 var modelDir = idMatches.FirstOrDefault()
@@ -1450,11 +1452,8 @@ public class PluginHostService : BackgroundService
         return index;
     }
 
-    private static string SanitizePath(string name)
-    {
-        var invalid = Path.GetInvalidFileNameChars();
-        return new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim();
-    }
+    // #104: one sanitizer for host + plugins (PluginSdk.PathNames).
+    private static string SanitizePath(string name) => PathNames.Sanitize(name);
 
     /// <summary>
     /// Fuzzy-match a model directory on disk. Handles name variations between
@@ -1463,13 +1462,22 @@ public class PluginHostService : BackgroundService
     /// </summary>
     private static string? FindExistingModelDir(string sourceDir, string creatorDir, string modelName)
     {
-        // Exact match first
+        // #104: an exact-name folder only wins if it has content. Otherwise a separator-equivalent
+        // sibling with content (legacy "A-B" vs host "A_B") is the real folder — never shadow it
+        // with an empty stub, and never create a new sibling next to it.
         var exactPath = Path.Combine(sourceDir, creatorDir, modelName);
-        if (Directory.Exists(exactPath)) return exactPath;
+        var creatorExact = Path.Combine(sourceDir, creatorDir);
+        var equivalent = PathNames.FindEquivalentDirectory(creatorExact, modelName, ModelFolderContent.HasContentFiles);
+        if (equivalent != null) return equivalent;
 
         // Find creator directory (fuzzy)
         var creatorPath = FindFuzzyDir(sourceDir, creatorDir);
         if (creatorPath == null) return null;
+        if (!string.Equals(creatorPath, creatorExact, StringComparison.Ordinal))
+        {
+            equivalent = PathNames.FindEquivalentDirectory(creatorPath, modelName, ModelFolderContent.HasContentFiles);
+            if (equivalent != null) return equivalent;
+        }
 
         // Find model directory within creator (fuzzy)
         var modelPath = FindFuzzyDir(creatorPath, modelName);

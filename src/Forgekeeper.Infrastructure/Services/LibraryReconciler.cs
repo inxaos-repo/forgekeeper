@@ -67,6 +67,31 @@ public sealed class SourceIdIndex
         return [];
     }
 
+    /// <summary>
+    /// #104: like <see cref="Lookup"/> but only returns folders that exist on disk. DB paths that no
+    /// longer exist (stale after a reorg) are dropped and the metadata.json layer is consulted instead.
+    /// When several folders claim the id and exactly one has content, only that one is returned.
+    /// </summary>
+    public IReadOnlyCollection<string> ResolveExisting(string externalId, Func<string, bool>? exists = null, Func<string, bool>? hasContent = null)
+    {
+        exists ??= Directory.Exists;
+        hasContent ??= ModelFolderContent.HasContentFiles;
+        var key = NormalizeKey(externalId);
+        IReadOnlyCollection<string> found = [];
+        if (_db.TryGetValue(key, out var d)) found = d.Where(exists).ToList();
+        if (found.Count == 0 && _meta.TryGetValue(key, out var m)) found = m.Where(exists).ToList();
+        if (found.Count > 1)
+        {
+            var withContent = found.Where(hasContent).ToList();
+            if (withContent.Count == 1) return withContent;
+        }
+        return found;
+    }
+
+    /// <summary>All metadata.json folders claiming this id (no DB layer). Used to re-home stale DB paths.</summary>
+    public IReadOnlyCollection<string> MetadataFolders(string externalId) =>
+        _meta.TryGetValue(NormalizeKey(externalId), out var m) ? m : [];
+
     /// <summary>Scan &lt;sourceDir&gt;/&lt;creator&gt;/&lt;model&gt;/metadata.json for externalId.</summary>
     public void ScanMetadata(string sourceDir)
     {
@@ -194,7 +219,8 @@ public static class LibraryReconciler
         var creatorDir = sanitize(model.CreatorName ?? "unknown");
         var modelName = sanitize(model.Name);
         var target = Path.Combine(sourceDir, creatorDir, modelName);
-        var byId = index.Lookup(model.ExternalId);
+        // #104: ignore stale DB paths and info-only siblings when a real folder exists.
+        var byId = index.ResolveExisting(model.ExternalId);
         var byName = nameMatch(creatorDir, modelName);
         var sources = model.Acquisitions.Count > 0
             ? string.Join('|', model.Acquisitions.Select(a => a.Source).Distinct())
