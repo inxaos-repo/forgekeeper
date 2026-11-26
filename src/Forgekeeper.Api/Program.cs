@@ -29,7 +29,15 @@ builder.Host.UseSerilog((context, config) =>
 
 // Database — configure NpgsqlDataSource with dynamic JSON support for JSONB columns
 var connectionString = builder.Configuration.GetConnectionString("ForgeDb");
-var npgsqlDataSource = new Npgsql.NpgsqlDataSourceBuilder(connectionString)
+// Full scans walk the filesystem for minutes between DB calls, so pooled connections sit idle
+// long enough for the service path (kube-proxy IPVS) to drop them; the next query then dies with
+// "Connection reset by peer". TCP keepalives keep the path warm, and a short idle lifetime makes
+// the pool discard connections before they can go stale. Explicit connection-string values win.
+var csb = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
+if (csb.KeepAlive == 0) csb.KeepAlive = 30;
+if (csb.TcpKeepAlive == false) csb.TcpKeepAlive = true;
+if (csb.ConnectionIdleLifetime == 300) csb.ConnectionIdleLifetime = 60;
+var npgsqlDataSource = new Npgsql.NpgsqlDataSourceBuilder(csb.ConnectionString)
     .EnableDynamicJson()
     .Build();
 
