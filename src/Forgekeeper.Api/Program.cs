@@ -41,13 +41,19 @@ var npgsqlDataSource = new Npgsql.NpgsqlDataSourceBuilder(csb.ConnectionString)
     .EnableDynamicJson()
     .Build();
 
+// #107: a single reset pooled connection used to fail a whole scan. Retry transient failures
+// (Npgsql marks the broken connector, so the retry opens a fresh one). No code path uses explicit
+// user transactions, which EF's retrying strategy would otherwise reject.
+static void ConfigureNpgsql(Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure.NpgsqlDbContextOptionsBuilder o) =>
+    o.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
+
 builder.Services.AddDbContextFactory<ForgeDbContext>(options =>
-    options.UseNpgsql(npgsqlDataSource)
+    options.UseNpgsql(npgsqlDataSource, ConfigureNpgsql)
         .UseSnakeCaseNamingConvention()
         .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)));
 
 builder.Services.AddDbContext<ForgeDbContext>(options =>
-    options.UseNpgsql(npgsqlDataSource)
+    options.UseNpgsql(npgsqlDataSource, ConfigureNpgsql)
         .UseSnakeCaseNamingConvention()
         .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)));
 
