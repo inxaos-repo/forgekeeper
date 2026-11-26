@@ -252,6 +252,41 @@ public class FileScannerService : IScannerService
                     }
                 }
 
+                // #110: pack layouts (e.g. manual/KS 3200/7. EGYPT/models/model_009/*.stl) nest deeper than
+                // creator/model. When the candidate has no model files of its own, look deeper (bounded) and
+                // make each lowest model-bearing folder its own model. mmf/patreon keep their existing behaviour.
+                if (!IsFixedDepthSource(sourceName))
+                {
+                    var nested = FindNestedModelDirs(modelDir, NestedMaxDepth);
+                    if (ShouldSplitContainer(modelDir, nested))
+                    {
+                        var creatorName = Path.GetFileName(creatorDir);
+                        lock (_lock) _progress.NestedContainers++;
+                        if (await db.Models.AsNoTracking().AnyAsync(m => m.BasePath == modelDir, ct))
+                        {
+                            // Old "giant" row for the container. Not deleted (needs boss approval); it is no
+                            // longer rescanned, so it stops counting as found. Logged for cleanup.
+                            lock (_lock) _progress.SupersededContainerRows++;
+                            _logger.LogWarning("Container folder has a model row superseded by {Count} nested models: {Path}", nested.Count, modelDir);
+                        }
+                        foreach (var leaf in nested)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            try
+                            {
+                                bool changed = await ProcessModelDirectoryAsync(leaf, incremental, db, sourceEntity, ct,
+                                    creatorOverride: creatorName, nameOverride: NestedModelName(modelDir, leaf));
+                                if (changed) pendingChanges++;
+                            }
+                            catch (Exception ex) { _logger.LogError(ex, "Failed to process model: {Path}", leaf); }
+
+                            if (pendingChanges >= SaveBatchSize)
+                                await FlushBatchAsync();
+                        }
+                        continue;
+                    }
+                }
+
                 try
                 {
                     bool changed = await ProcessModelDirectoryAsync(modelDir, incremental, db, sourceEntity, ct);
@@ -281,7 +316,9 @@ public class FileScannerService : IScannerService
         bool incremental,
         ForgeDbContext db,
         Source? sourceEntity,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? creatorOverride = null,
+        string? nameOverride = null)
     {
         // Check if already scanned (incremental mode) — AsNoTracking since we may not continue
         if (incremental)
@@ -303,11 +340,14 @@ public class FileScannerService : IScannerService
         if (adapter == null)
         {
             _logger.LogDebug("No adapter for: {Path}", modelDir);
+            lock (_lock) _progress.SkippedNoAdapter++;
             return false;
         }
 
         var parsed = adapter.ParseModelDirectory(modelDir);
         if (parsed == null) return false;
+        if (creatorOverride != null) parsed.CreatorName = creatorOverride;
+        if (nameOverride != null) parsed.ModelName = nameOverride;
 
         // #75/#77: a folder holding only a .part temp file and/or a stub metadata.json (interrupted
         // download) is not a model. Don't create a zero-file row for it; no ScanState is recorded,
@@ -316,6 +356,7 @@ public class FileScannerService : IScannerService
             && !await db.Models.AsNoTracking().AnyAsync(m => m.BasePath == modelDir, ct))
         {
             _logger.LogInformation("Skipping stub/partial-download folder (no content files): {Path}", modelDir);
+            lock (_lock) _progress.SkippedStub++;
             return false;
         }
 
@@ -624,6 +665,77 @@ public class FileScannerService : IScannerService
             ".pdf" => FileType.Pdf,
             _ => FileType.Other
         };
+    }
+
+    public const int NestedMaxDepth = 4;
+
+    // Folder names that mean "variant/part of this model", not "a separate model".
+    private static readonly HashSet<string> VariantFolderNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "supported", "sup", "unsupported", "unsup", "nosup", "presupported", "pre-supported", "presup",
+        "pre supported", "lys", "chitubox", "stl", "stls", "obj", "3mf", "files", "parts", "bases", "base",
+        "separated", "split", "merged", "one piece", "onepiece", "printable", "print files",
+    };
+
+    // Generic container segments dropped from nested model names.
+    private static readonly HashSet<string> GenericSegmentNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "models", "model", "figures", "figure", "stl", "stls", "files",
+    };
+
+    private static bool IsFixedDepthSource(string sourceName) =>
+        sourceName.Equals("mmf", StringComparison.OrdinalIgnoreCase)
+        || sourceName.Equals("patreon", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// #110: split only clear pack layouts: leaves two+ levels down (category/models/model_009) or many
+    /// sibling leaves. A model with a couple of part folders (Body/, Weapons/) stays one model.
+    /// </summary>
+    public static bool ShouldSplitContainer(string containerDir, List<string> nested)
+    {
+        if (nested.Count == 0 || (nested.Count == 1 && nested[0] == containerDir)) return false;
+        if (nested.Count >= NestedMinSiblingLeaves) return true;
+        return nested.Any(l => Path.GetRelativePath(containerDir, l).Replace('\\', '/').Split('/').Length >= 2);
+    }
+
+    public const int NestedMinSiblingLeaves = 10;
+
+    private static bool HasDirectModelFiles(string dir)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(dir, "*", SearchOption.TopDirectoryOnly)
+                .Any(f => ModelFileExtensions.Contains(Path.GetExtension(f)));
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// #110: the folders under <paramref name="dir"/> that are models. A folder with model files of its own,
+    /// or whose model-bearing children are only variant folders (supported/unsupported/...), is one model.
+    /// Otherwise each model-bearing child is searched, up to <paramref name="depth"/> levels.
+    /// Returns [dir] for ordinary models, [] if nothing below has model files.
+    /// </summary>
+    public static List<string> FindNestedModelDirs(string dir, int depth)
+    {
+        if (HasDirectModelFiles(dir)) return [dir];
+        var children = SafeGetDirectories(dir).Where(HasModelFiles).ToList();
+        if (children.Count == 0) return [];
+        if (depth <= 0 || children.All(c => VariantFolderNames.Contains(Path.GetFileName(c).Trim())))
+            return [dir];
+        var result = new List<string>();
+        foreach (var child in children)
+            result.AddRange(FindNestedModelDirs(child, depth - 1));
+        return result;
+    }
+
+    /// <summary>#110: "7. EGYPT &amp; THE TOMBS / model_009" from container + leaf path.</summary>
+    public static string NestedModelName(string containerDir, string leafDir)
+    {
+        var rel = Path.GetRelativePath(containerDir, leafDir).Replace('\\', '/');
+        var segs = rel.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Where(s => !GenericSegmentNames.Contains(s.Trim()));
+        return string.Join(" / ", new[] { Path.GetFileName(containerDir) }.Concat(segs));
     }
 
     private static bool HasModelFiles(string dir)
